@@ -3,12 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <meta name="robots" content="noindex, nofollow">
 <title>DSH 手机镜像 · 登录</title>
 <link rel="stylesheet" href="/font.css">
 <style>
-  :root { --bg:#0f1115; --card:#181b22; --line:#262b35; --fg:#e8eaed; --dim:#9aa3b2; --accent:#4c8dff; --bad:#ff6b6b; --warn:#ffb454; }
+  :root {
+    color-scheme: light dark;
+    --bg:#0f1115; --card:#181b22; --line:#262b35; --fg:#e8eaed; --dim:#9aa3b2;
+    --accent:#4c8dff; --bad:#ff6b6b; --warn:#ffb454;
+    --code:#0b0d11; --on-accent:#fff; --bad-bg:#2a1618; --line-bad:#5c2b2f; --danger-fg:#ffb3b3;
+  }
+  /* 浅色主题：和 app.css 那套对齐（近白底 + DeepSeek 的蓝 #4d6bfe） */
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#f6f7f9; --card:#ffffff; --line:#e2e5ea; --fg:#1b1f24; --dim:#575f6b;
+      --accent:#4d6bfe; --bad:#c62828; --warn:#9a6700;
+      --code:#f2f4f7; --on-accent:#ffffff; --bad-bg:#fdecea; --line-bad:#f2c2c2; --danger-fg:#b3261e;
+    }
+  }
   * { box-sizing:border-box; }
   body {
     margin:0; min-height:100vh; padding:24px 16px; background:var(--bg); color:var(--fg);
@@ -22,18 +37,18 @@
   label { display:block; font-size:13px; color:var(--dim); margin:0 0 6px; }
   input[type=text], input[type=password] {
     width:100%; padding:13px 14px; margin-bottom:16px; font-size:16px; color:var(--fg);
-    background:#0b0d11; border:1px solid var(--line); border-radius:11px; outline:none;
+    background:var(--code); border:1px solid var(--line); border-radius:11px; outline:none;
   }
   input[type=text]:focus, input[type=password]:focus { border-color:var(--accent); }
   button {
-    width:100%; padding:14px; border:0; border-radius:11px; background:var(--accent); color:#fff;
+    width:100%; padding:14px; border:0; border-radius:11px; background:var(--accent); color:var(--on-accent);
     font-size:16px; font-weight:600; cursor:pointer;
   }
   button:active { transform:scale(.99); }
-  .err { background:#2a1618; border:1px solid #5c2b2f; color:#ffb3b3; border-radius:10px; padding:11px 13px; font-size:14px; margin-bottom:16px; }
+  .err { background:var(--bad-bg); border:1px solid var(--line-bad); color:var(--danger-fg); border-radius:10px; padding:11px 13px; font-size:14px; margin-bottom:16px; }
   .note { color:var(--dim); font-size:12.5px; margin-top:16px; line-height:1.75; }
   .warn { color:var(--warn); }
-  code { background:#0b0d11; border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:12.5px;
+  code { background:var(--code); border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:12.5px;
          font-family:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 </style>
 </head>

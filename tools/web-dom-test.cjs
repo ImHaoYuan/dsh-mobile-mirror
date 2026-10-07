@@ -58,6 +58,21 @@ class Frag {
   }
 }
 
+/**
+ * 极简选择器匹配：`tag` / `.cls` / `tag.cls`。
+ * 只认这三种 —— app.js 用到的选择器都能覆盖，认不出的写法直接不匹配。
+ */
+function matchesPart(child, part) {
+  const m = /^([a-zA-Z][\w-]*)?(?:\.([\w-]+))?$/.exec(String(part));
+  if (!m) return false;
+  const tag = m[1] || '';
+  const cls = m[2] || '';
+  if (!tag && !cls) return false;
+  if (tag && child.tagName !== tag.toUpperCase()) return false;
+  if (cls && !child._classes.has(cls)) return false;
+  return true;
+}
+
 class El {
   constructor(tag) {
     this.nodeType = 1;
@@ -135,6 +150,9 @@ class El {
   addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
   dispatch(type, ev) { (this._listeners[type] || []).forEach((fn) => fn(ev || {})); }
   scrollTo() { this.scrollTop = this.scrollHeight; }
+  // 复制兜底路径会调这两个（textarea + execCommand），真 DOM 有，这里给个空实现
+  select() {}
+  setSelectionRange() {}
   querySelector(sel) {
     const parts = String(sel).split(',').map((s) => s.trim());
     const walk = (node) => {
@@ -150,18 +168,18 @@ class El {
     };
     return walk(this);
   }
-  /** 支持类选择器（.cls）与标签名（button / input）；够 app.js 用就行。 */
+  /**
+   * 支持 `tag`、`.cls` 和 `tag.cls`（如 `pre.md-code`）；够 app.js 用就行，
+   * 不是通用实现 —— 不支持的写法一律不匹配（而不是抛错）。
+   */
   querySelectorAll(sel) {
-    const parts = String(sel).split(',').map((s) => s.trim());
+    const parts = String(sel).split(',').map((s) => s.trim()).filter(Boolean);
     const out = [];
     const walk = (node) => {
       for (const child of node.childNodes) {
         if (child.nodeType !== 1) continue;
         for (const p of parts) {
-          const hit = p.charAt(0) === '.'
-            ? child._classes.has(p.slice(1))
-            : child.tagName === p.toUpperCase();
-          if (hit) { out.push(child); break; }
+          if (matchesPart(child, p)) { out.push(child); break; }
         }
         walk(child);
       }
@@ -329,11 +347,12 @@ function appState() {
   return globalThis.DSHMobileMirror.state;
 }
 
+let appExports = null;
 function loadApp() {
   const tmp = path.join(os.tmpdir(), 'dsh-mm-dom-app-' + process.pid + '.cjs');
   fs.copyFileSync(APP_JS, tmp);
   delete require.cache[tmp];
-  require(tmp);
+  appExports = require(tmp);
   return tmp;
 }
 
@@ -534,6 +553,11 @@ async function main() {
   await scenarioP3();
   await scenarioP4();
   await scenarioP5();
+  await scenarioG();
+  await scenarioH();
+  await scenarioI();
+  await scenarioSubagent();
+  await scenarioTurnFailure();
 
   summary();
 }
@@ -1296,6 +1320,498 @@ async function scenarioP5() {
   es.emit('message', JSON.stringify({ e: 'event', d: { type: 'brand/new', seq: 4, time: NOW, data: null } }));
   await tick();
   eq('未知事件类型也不产生节点', registry['stream'].childNodes.length, before);
+}
+
+/* ===================== 场景 G：代码块头部条 / 复制键 ===================== */
+
+/**
+ * Node 21+ 自带 `globalThis.navigator`，而且是只读 getter —— 直接赋值在严格模式下会抛错。
+ * 用 defineProperty 覆盖才稳。
+ */
+function setNavigator(value) {
+  Object.defineProperty(globalThis, 'navigator', { value, configurable: true, writable: true });
+}
+
+async function scenarioG() {
+  console.log('\n[场景 G] 代码块头部条与复制键');
+
+  // 假 DOM 的 insertAdjacentHTML 不解析 HTML，markdown 不会变成真实元素，
+  // 所以这里直接给 decorateCodeBlocks 喂一个手搭的容器。
+  // 测的仍然是真函数 + 真（假）DOM 行为：包不包、包几层、点复制键复制到什么。
+  buildDom('yes');
+  fakeLocalStorage = {};
+  routes = { '/api/sessions': () => resp({ items: [
+    { id: 'g1', title: '复制测试', running: false, blank: false, agentAvailable: true, updatedAt: NOW, cwd: 'D:\\proj\\alpha' }
+  ] }) };
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  const P = appExports;
+  const el = (t) => globalThis.document.createElement(t);
+
+  function codeBlock(lang, text) {
+    const box = el('div');
+    const pre = el('pre');
+    pre.className = 'md-code';
+    if (lang !== null) pre.setAttribute('data-lang', lang);
+    pre.textContent = text;
+    box.appendChild(pre);
+    return box;
+  }
+
+  // ---- 装饰 ----
+  const box = codeBlock('javascript', 'const a = 1');
+  P.decorateCodeBlocks(box);
+  eq('pre 被包进 .code-block', findAll(box, 'code-block').length, 1);
+  eq('头部条只有一个', findAll(box, 'code-head').length, 1);
+  eq('语言名取自 data-lang', findAll(box, 'code-lang')[0].textContent, 'javascript');
+  eq('有复制键', findAll(box, 'copy-btn').length, 1);
+  eq('复制键初始文案', findAll(box, 'copy-btn')[0].textContent, '复制');
+  eq('pre 没有被丢掉', findAll(box, 'md-code').length, 1);
+  ok('pre 现在挂在 .code-block 下面',
+    findAll(box, 'md-code')[0].parentNode._classes.has('code-block'),
+    String(findAll(box, 'md-code')[0].parentNode.className));
+
+  // ---- 幂等：同一个容器重复装饰不该套两层 ----
+  P.decorateCodeBlocks(box);
+  eq('重复装饰不会套两层', findAll(box, 'code-block').length, 1);
+  eq('重复装饰不会多出复制键', findAll(box, 'copy-btn').length, 1);
+
+  // ---- 没有 data-lang 时给占位 ----
+  const box2 = codeBlock(null, 'x');
+  P.decorateCodeBlocks(box2);
+  eq('没有语言信息时用占位', findAll(box2, 'code-lang')[0].textContent, '代码');
+
+  // ---- 多个代码块一起装饰 ----
+  const box3 = el('div');
+  const preA = el('pre'); preA.className = 'md-code'; preA.setAttribute('data-lang', 'js'); preA.textContent = 'A';
+  const preB = el('pre'); preB.className = 'md-code'; preB.textContent = 'B';
+  box3.appendChild(preA); box3.appendChild(preB);
+  P.decorateCodeBlocks(box3);
+  eq('两个代码块各包一层', findAll(box3, 'code-block').length, 2);
+  eq('两个复制键', findAll(box3, 'copy-btn').length, 2);
+  eq('装饰后顺序不变', findAll(box3, 'md-code').map((p) => p.textContent).join(''), 'AB');
+
+  // ---- 点击复制：navigator.clipboard 成功路径 ----
+  let copied = null;
+  setNavigator({ clipboard: { writeText: (t) => { copied = t; return Promise.resolve(); } } });
+  findAll(box, 'copy-btn')[0].dispatch('click');
+  await tick();
+  eq('复制的是代码正文', copied, 'const a = 1');
+  eq('复制成功给出反馈', findAll(box, 'copy-btn')[0].textContent, '已复制');
+  eq('反馈带 done 类', findAll(box, 'copy-btn')[0]._classes.has('done'), true);
+
+  // ---- writeText 被拒（非安全上下文会这样）→ 退回 execCommand ----
+  let execCalled = 0;
+  globalThis.document.execCommand = () => { execCalled += 1; return true; };
+  setNavigator({ clipboard: { writeText: () => Promise.reject(new Error('not secure')) } });
+  findAll(box3, 'copy-btn')[0].dispatch('click');
+  await tick(); await tick();
+  eq('writeText 被拒时退回 execCommand', execCalled, 1);
+  eq('兜底路径也给出成功反馈', findAll(box3, 'copy-btn')[0].textContent, '已复制');
+
+  // ---- 完全没有 clipboard → 直接兜底，不该抛错 ----
+  setNavigator({});
+  let threw = null;
+  try { findAll(box3, 'copy-btn')[1].dispatch('click'); await tick(); } catch (e) { threw = e; }
+  ok('没有 clipboard 也不抛错', !threw, threw && threw.stack);
+  eq('没有 clipboard 时兜底同样生效', findAll(box3, 'copy-btn')[1].textContent, '已复制');
+
+  // ---- 反馈会自动复位 ----
+  await new Promise((r) => setTimeout(r, 1300));
+  eq('反馈 1.2 秒后复位', findAll(box, 'copy-btn')[0].textContent, '复制');
+  eq('复位时去掉 done 类', findAll(box, 'copy-btn')[0]._classes.has('done'), false);
+
+  // ---- 复制失败时如实反馈 ----
+  globalThis.document.execCommand = () => false;
+  setNavigator({});
+  findAll(box3, 'copy-btn')[0].dispatch('click');
+  await tick(); await tick();
+  eq('复制失败时如实说失败', findAll(box3, 'copy-btn')[0].textContent, '复制失败');
+  eq('失败时不加 done 类', findAll(box3, 'copy-btn')[0]._classes.has('done'), false);
+
+  // ---- 助手消息上的复制键：走真实的 SSE 渲染路径，不是手搭容器 ----
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  es.emit('message', JSON.stringify({
+    e: 'snapshot',
+    d: {
+      header: { id: 'g1', cwd: 'D:\\proj\\alpha', createdAt: NOW, agentPreset: 'standard' },
+      cursor: 0, hasMore: false, assistantStream: null, records: [],
+      projections: { title: '复制测试' }
+    }
+  }));
+  await tick();
+  es.emit('message', JSON.stringify({
+    e: 'event',
+    d: {
+      type: 'assistant/message', seq: 1, time: NOW,
+      data: {
+        role: 'assistant', id: 'a1',
+        blocks: [{ type: 'text', text: '这是正文' }, { type: 'reasoning', text: '想了半天' }],
+        usage: { inputTokens: 3, outputTokens: 5 }, interrupted: false, model: 'wb-test'
+      }
+    }
+  }));
+  await tick();
+
+  const stream = registry['stream'];
+  eq('助手消息渲染出来了', findAll(stream, 'assistant').length, 1);
+  const metaRow = findAll(stream, 'meta')[0];
+  ok('助手消息有元信息行', !!metaRow);
+  const msgCopy = findAll(metaRow, 'copy-btn');
+  eq('元信息行里有复制键', msgCopy.length, 1);
+  let copiedMsg = null;
+  setNavigator({ clipboard: { writeText: (t) => { copiedMsg = t; return Promise.resolve(); } } });
+  msgCopy[0].dispatch('click');
+  await tick();
+  eq('只复制正文，不含思考过程', copiedMsg, '这是正文');
+
+  // 纯工具调用的一轮没有正文 → 不该出现一个点了复制到空字符串的键
+  es.emit('message', JSON.stringify({
+    e: 'event',
+    d: {
+      type: 'assistant/message', seq: 2, time: NOW,
+      data: {
+        role: 'assistant', id: 'a2',
+        blocks: [{ type: 'tool-call', id: 'c1', name: 'read_file', args: '{}' }],
+        usage: null, interrupted: false, model: 'wb-test'
+      }
+    }
+  }));
+  await tick();
+  const metas = findAll(stream, 'meta');
+  eq('没有正文时不出现复制键', findAll(metas[metas.length - 1], 'copy-btn').length, 0);
+}
+
+/* ===================== 场景 H：进场动画 ===================== */
+
+/**
+ * 这组测的是最容易写错的地方：进场动画**只能**加在实时新增的消息上。
+ * 快照重建一次插入几十条历史，若都加动画，打开会话时一屏会同时乱动 ——
+ * 而且这种 bug 不报错、只是难看，很容易被改回去。
+ */
+async function scenarioH() {
+  console.log('\n[场景 H] 进场动画只加在实时新增的消息上');
+
+  buildDom('yes');
+  fakeLocalStorage = {};
+  routes = {
+    '/api/sessions': () => resp({ items: [
+      { id: 'h1', title: '动画测试', running: false, blank: false, agentAvailable: true, updatedAt: NOW, cwd: 'D:\\proj\\alpha' }
+    ] })
+  };
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+
+  function snap(records, cursor) {
+    return JSON.stringify({
+      e: 'snapshot',
+      d: {
+        header: { id: 'h1', cwd: 'D:\\proj\\alpha', createdAt: NOW, agentPreset: 'standard' },
+        cursor: cursor, hasMore: false, assistantStream: null,
+        records: records, projections: { title: '动画测试' }
+      }
+    });
+  }
+  function assistant(seq, text) {
+    return { type: 'assistant/message', seq: seq, time: NOW,
+      data: { role: 'assistant', blocks: [{ type: 'text', text: text }], usage: null, interrupted: false, model: null } };
+  }
+  function live(seq, text) {
+    return JSON.stringify({ e: 'event', d: assistant(seq, text) });
+  }
+
+  // ---- 1. 快照重建的历史消息不该带动画 ----
+  es.emit('message', snap([{ type: 'user/message', seq: 1, time: NOW,
+    data: { role: 'user', id: 'u1', blocks: [{ type: 'text', text: '开场' }] } }], 1));
+  await tick();
+  const stream = registry['stream'];
+  eq('快照渲染的消息不带 .msg-in', countClass(stream, 'msg-in'), 0);
+
+  // ---- 2. 实时新增的消息该带动画 ----
+  es.emit('message', live(2, 'LIVE'));
+  await tick();
+  eq('实时新增的消息带 .msg-in', countClass(stream, 'msg-in'), 1);
+
+  // ---- 3. 再次快照重建：整棵树重建，不该有任何 .msg-in ----
+  es.emit('message', snap([
+    { type: 'user/message', seq: 1, time: NOW,
+      data: { role: 'user', id: 'u1', blocks: [{ type: 'text', text: '开场' }] } },
+    assistant(2, 'LIVE'),
+    assistant(3, 'REPLAY')
+  ], 3));
+  await tick();
+  eq('快照重建后一条 .msg-in 都没有', countClass(stream, 'msg-in'), 0);
+  ok('重建后历史消息确实渲染了', dump(stream).indexOf('REPLAY') !== -1);
+
+  // ---- 4. 重建之后实时消息仍带动画 —— 这条抓的是"replaying 卡在 true" ----
+  es.emit('message', live(4, 'AFTER'));
+  await tick();
+  eq('重建之后实时消息仍然带动画（replaying 已复位）', countClass(stream, 'msg-in'), 1);
+}
+
+async function scenarioI() {
+  console.log('\n[场景 I] 动效的 JS 侧：错开只播一次 / 按钮反馈 / toast 退场');
+
+  const twoSessions = () => resp({ items: [
+    { id: 'i1', title: '会话甲', running: false, blank: false, agentAvailable: true, updatedAt: NOW, cwd: 'D:\\proj\\alpha' },
+    { id: 'i2', title: '会话乙', running: false, blank: false, agentAvailable: true, updatedAt: NOW, cwd: 'D:\\proj\\alpha' }
+  ] });
+
+  buildDom('yes');
+  fakeLocalStorage = {};
+  // routes 是按场景各自定义的 —— 漏了 'POST /api/prompt' 就会落到 404，
+  // 于是"失败"与"成功"两条路径都变成同一种失败（not-found）。
+  routes = {
+    '/api/sessions': twoSessions,
+    'POST /api/prompt': () => {
+      const next = promptReplies.shift();
+      if (!next) return resp({ accepted: true, duplicate: false });
+      return next.promise ? next.promise : resp(next.body, next.status);
+    }
+  };
+  fetchLog = [];
+  promptReplies = [];
+  loadApp();
+  await tick(); await tick();
+
+  // ---- 1. 第一次渲染：分组头与会话行按文档顺序依次错开 ----
+  const rows = findAll(registry['list'], 'session');
+  eq('列表渲染出两行', rows.length, 2);
+  eq('会话行带 .list-in', rows[0]._classes.has('list-in'), true);
+  eq('分组头先出场（0ms）', findAll(registry['list'], 'group-head')[0].style.animationDelay, '0ms');
+  eq('第一行延迟 24ms', rows[0].style.animationDelay, '24ms');
+  eq('第二行延迟 48ms（依次错开）', rows[1].style.animationDelay, '48ms');
+
+  // ---- 2. 再刷新一次：整棵重建，但**不能重播** ----
+  // 列表每 10 秒会重新拉一次（renderSessions 每次都先 textContent=''）；
+  // 若每回重建都重放动画，界面会一直闪。
+  registry['btn-refresh'].dispatch('click');
+  await tick(); await tick();
+  eq('刷新后列表仍是两行', findAll(registry['list'], 'session').length, 2);
+  eq('刷新不重播错开动画', countClass(registry['list'], 'list-in'), 0);
+
+  // ---- 3. 进会话：标题淡入 ----
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  const es = lastES;
+  es.emit('message', snapshot([], 0, { projections: { title: '会话甲' } }));
+  await tick();
+  eq('进会话后标题带 .title-in', registry['chat-title']._classes.has('title-in'), true);
+
+  // ---- 4. 发一条会失败的：按钮抖动 + toast 进出场 ----
+  // 把非 0ms 的定时器抓下来手动触发，免得真等 4 秒。
+  // 0ms 的必须放行 —— tick() 本身就是 setTimeout(r, 0)，拦了整个场景会卡死。
+  const realSetTimeout = globalThis.setTimeout;
+  const timers = [];
+  globalThis.setTimeout = function (fn, ms) {
+    if (!ms) return realSetTimeout(fn, 0);
+    timers.push({ fn: fn, ms: ms });
+    return 90000 + timers.length;
+  };
+  // 按毫秒数找，不靠入队顺序 —— flashSend 的 600ms 排在 toast 的 4000ms 前面
+  function takeTimer(ms) {
+    const i = timers.findIndex((t) => t.ms === ms);
+    return i === -1 ? null : timers.splice(i, 1)[0].fn;
+  }
+  try {
+    const input = registry['composer-input'];
+    input.value = '会失败的';
+    input.dispatch('input');
+    // 注意形状：promptReplies 收的是 { body, status } 普通对象，
+    // 不是 routes 用的 resp(...) —— 写错形状会被当成"没有状态码"，
+    // 于是连成功的那次也走失败分支（这条断言就是这么被带出来的）。
+    promptReplies.push({ body: { error: 'prompt-failed', message: '上游炸了' }, status: 502 });
+    registry['composer-send'].dispatch('click');
+    await tick(); await tick(); await tick();
+
+    eq('失败时 toast 可见', registry['toast'].hidden, false);
+    ok('失败 toast 带上游原因（说明确实走的是失败分支）',
+      registry['toast'].textContent.indexOf('上游炸了') !== -1, registry['toast'].textContent);
+    eq('失败时按钮抖了一下', registry['composer-send']._classes.has('shake'), true);
+    eq('失败时还没有退场类', registry['toast']._classes.has('toast-out'), false);
+
+    // 自动隐藏（4000ms）先跑：加退场类，但**还不隐藏**
+    const hide = takeTimer(4000);
+    eq('抓到 toast 自动隐藏定时器（4000ms）', typeof hide, 'function');
+    if (hide) hide();
+    eq('退场时先加 .toast-out（播淡出）', registry['toast']._classes.has('toast-out'), true);
+    eq('退场动画播完前不隐藏', registry['toast'].hidden, false);
+
+    // 退场收尾（180ms）再跑：这时才真隐藏
+    const done = takeTimer(180);
+    eq('抓到退场收尾定时器（180ms）', typeof done, 'function');
+    if (done) done();
+    eq('动画播完才隐藏', registry['toast'].hidden, true);
+    eq('隐藏时清掉退场类（否则下次进场会接着淡出）',
+      registry['toast']._classes.has('toast-out'), false);
+
+    // ---- 5. 再发一条成功的：脉冲环 ----
+    // 上一轮失败把原文回填进输入框了，直接点发送即可（requestId 会被复用）
+    promptReplies.push({ body: { accepted: true, duplicate: false }, status: 200 });
+    registry['composer-send'].dispatch('click');
+    await tick(); await tick(); await tick();
+    eq('成功发送后按钮脉冲一下', registry['composer-send']._classes.has('pulse'), true);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+}
+
+/* ===================== 场景 J：子智能体的标记与排序 ===================== */
+/**
+ * 用户反馈「手机镜像看不到子智能体」。
+ *
+ * 查证下来 DSH 是**会**返回它们的：`sessionController.list()` 对活动会话完全不筛，
+ * 只对冷会话要求有 `cwd`；实测两个子智能体会话的 `cwd` 都是有值的。而
+ * `mirror.js` 的 `normalizeSummary()` 也把 `origin` / `parentSessionId` 透传了出来。
+ * 缺的只是**网页端从来没用过这两个字段** —— 所以子会话长得和普通会话一模一样，
+ * 混在列表里认不出来。
+ *
+ * 这个场景钉住三件事：标记、缩进、排在父会话后面；外加一条"排序绝不能吃掉会话"。
+ */
+async function scenarioSubagent() {
+  console.log('\n[场景 J] 子智能体：标记 / 缩进 / 排在父会话后面');
+  buildDom('yes');
+
+  // 服务端按 updatedAt 降序给。子会话比父会话新，所以**天然会排在父会话前面** ——
+  // 这正是要修的情况，靠断言把"排到父后面"钉死。
+  const child = { id: 'c1', title: '子任务', running: true, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha', origin: 'subagent', parentSessionId: 'p1' };
+  const other = { id: 'o1', title: '普通会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 3000, cwd: 'D:\\proj\\alpha' };
+  // 父会话不在本组的孤儿子会话：必须照常显示，不能被排序吃掉
+  const orphan = { id: 'c2', title: '孤儿子会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 4000, cwd: 'D:\\proj\\alpha', parentSessionId: 'not-here' };
+  const parent = { id: 'p1', title: '父会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 5000, cwd: 'D:\\proj\\alpha' };
+
+  const items = [child, other, orphan, parent];
+
+  routes = {
+    '/api/sessions': () => resp({ items: items, groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: items, updatedAt: NOW - 1000, running: true }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+
+  const rows = findAll(registry['list'], 'session');
+  eq('四条会话一条不少（排序没有吃掉任何会话）', rows.length, 4);
+
+  const titles = rows.map(function (r) {
+    const t = findAll(r, 'session-title')[0];
+    return t ? t.textContent : '';
+  });
+  eq('子会话紧跟父会话，其它会话相对顺序不变', titles.join('|'), '普通会话|孤儿子会话|父会话|子任务');
+
+  eq('子会话带 session-child（缩进 + 引导线）', rows[3]._classes.has('session-child'), true);
+  eq('孤儿子会话也带 session-child', rows[1]._classes.has('session-child'), true);
+  eq('普通会话不带 session-child', rows[0]._classes.has('session-child'), false);
+  eq('父会话不带 session-child', rows[2]._classes.has('session-child'), false);
+
+  eq('子会话有「子智能体」标签', findAll(rows[3], 'tag-sub').length, 1);
+  eq('标签文案', findAll(rows[3], 'tag-sub')[0].textContent, '子智能体');
+  eq('父会话没有子智能体标签', findAll(rows[2], 'tag-sub').length, 0);
+  eq('普通会话没有子智能体标签', findAll(rows[0], 'tag-sub').length, 0);
+
+  // 子会话仍然可以点进去（不能因为缩进/标记把交互弄坏）
+  rows[3].dispatch('click');
+  await tick();
+  eq('点子会话能进对话页', registry['view-chat'].hidden, false);
+}
+
+/* ===================== 场景 K：轮次失败的报错正文 ===================== */
+/**
+ * 用户报「电脑上 DSH 报『本轮运行失败 API 密钥无效』，手机上没显示」。
+ *
+ * 根因在数据层：`mirror.js` 的 `turn/end` 原先只透传 `reason.kind`，
+ * 把 `reason.error`（`LlmFailure`: message / code / status）整个丢掉了；
+ * 网页端也只把 `'error'` 映射成一句「本轮出错」。于是手机上只剩一句干巴巴的状态。
+ */
+async function scenarioTurnFailure() {
+  console.log('\n[场景 K] 轮次失败：报错正文 + toast + 快照不重弹');
+  buildDom('yes');
+
+  const s1 = { id: 's1', title: '会失败的会话', running: true, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha' };
+
+  routes = {
+    '/api/sessions': () => resp({ items: [s1], groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: [s1], updatedAt: NOW - 1000, running: true }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  const stream = registry['stream'];
+
+  // ---- 1. 实时失败：正文要出来，并且弹 toast ----
+  // 注意形状：这里要发**投影后**的 data（reason 是字符串 kind，error 平级挂在 data 上），
+  // 也就是 mirror.js 真正下发给网页的那个形状 —— 不是 DSH 原始的
+  // `reason: { kind, error }`。发错形状测的就是不存在的东西。
+  registry['toast'].hidden = true;
+  es.emit('message', JSON.stringify({
+    e: 'event',
+    d: { type: 'turn/end', seq: 2, time: NOW, data: { turn: 1, reason: 'error', error: { message: 'API 密钥无效', code: 'INVALID_API_KEY', status: 401 } } }
+  }));
+  await tick();
+  ok('实时失败渲染出报错正文', dump(stream).indexOf('本轮出错：API 密钥无效') !== -1, dump(stream).slice(-160));
+  ok('实时失败渲染出错误码与 HTTP 状态', dump(stream).indexOf('INVALID_API_KEY · HTTP 401') !== -1);
+  eq('实时失败带 failed 类（比 warn 更重的样式）', countClass(stream, 'failed') >= 1, true);
+  eq('实时失败弹了 toast', registry['toast'].hidden, false);
+  ok('toast 是同一句错误', registry['toast'].textContent.indexOf('API 密钥无效') !== -1, registry['toast'].textContent);
+
+  // ---- 2. 快照重放历史错误：照样渲染，但**不弹 toast** ----
+  // 否则每次打开会话都会为几天前的一次失败弹窗。
+  registry['toast'].hidden = true;
+  es.emit('message', JSON.stringify({
+    e: 'snapshot',
+    d: {
+      header: { id: 's1', cwd: 'D:\\proj\\alpha', createdAt: NOW - 5000 },
+      cursor: 2, hasMore: false, assistantStream: null,
+      records: [
+        { type: 'turn/start', seq: 1, time: NOW - 4000, data: { turn: 1 } },
+        { type: 'turn/end', seq: 2, time: NOW - 3000, data: { turn: 1, reason: 'error', error: { message: '几天前的那次失败' } } }
+      ]
+    }
+  }));
+  await tick();
+  ok('快照重放照样渲染历史错误', dump(stream).indexOf('几天前的那次失败') !== -1, dump(stream).slice(-160));
+  eq('快照重放不为历史错误弹 toast', registry['toast'].hidden, true);
+
+  // ---- 3. completed：既不 failed 也不弹 ----
+  // seq 要递增：上面的快照把游标推到了 2，比游标旧的事件会被当成重复丢掉。
+  registry['toast'].hidden = true;
+  es.emit('message', JSON.stringify({ e: 'event', d: { type: 'turn/end', seq: 10, time: NOW, data: { turn: 2, reason: 'completed' } } }));
+  await tick();
+  ok('completed 仍显示完成文案', dump(stream).indexOf('本轮完成') !== -1);
+  eq('completed 不弹 toast', registry['toast'].hidden, true);
+
+  // ---- 4. error 但没有正文：仍算失败（那一轮确实白跑了），退回朴素文案 ----
+  registry['toast'].hidden = true;
+  es.emit('message', JSON.stringify({ e: 'event', d: { type: 'turn/end', seq: 11, time: NOW, data: { turn: 3, reason: 'error' } } }));
+  await tick();
+  ok('没有正文时退回朴素文案', dump(stream).indexOf('本轮出错') !== -1);
+  eq('没有正文时仍然弹 toast（不能当正常结束）', registry['toast'].hidden, false);
+
+  // ---- 5. 容忍原始形状：reason 是对象时取它的 kind，不能渲染成 [object Object] ----
+  registry['toast'].hidden = true;
+  es.emit('message', JSON.stringify({ e: 'event', d: { type: 'turn/end', seq: 12, time: NOW, data: { turn: 4, reason: { kind: 'aborted' } } } }));
+  await tick();
+  ok('原始 reason 对象取 kind 而不是 [object Object]',
+    dump(stream).indexOf('本轮已中止') !== -1 && dump(stream).indexOf('[object Object]') === -1, dump(stream).slice(-120));
+  eq('aborted 不弹 toast（用户自己停的）', registry['toast'].hidden, true);
 }
 
 function summary() {

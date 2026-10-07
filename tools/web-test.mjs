@@ -1,10 +1,12 @@
 /**
  * P3 测试：手机界面（lib/web/*）与接线（lib/index.js）。
  *
- * 三个部分：
+ * 四个部分：
  *   ① index.html / app.css 静态检查 —— 新增的节点与类名真的在文件里、顺序也对
  *   ② app.js 纯函数用例 —— 复制成 .cjs 后 require，取出 PURE 导出
  *   ③ 回归护栏 —— 两个"不会报错、只会安静显示错值"的字段名坑，用源码断言钉死
+ *   ④ lib/client.js（桌面设置面板）—— bundle 包裹格式、槽注册参数、与主机侧路由
+ *      的路径逐字一致；这些写错**全都不报错**，只会安静地少一页面板
  *
  * 为什么需要 ③：模式读错来源只会把"创造模式"显示成"standard"，模型读错键只会让芯片
  * 永远为空 —— 两者都不抛异常，单测也抓不到，只能靠断言源码来防止回退。
@@ -41,6 +43,20 @@ function has(name, haystack, needle) {
 }
 function hasNot(name, haystack, needle) {
   check(name, !String(haystack).includes(needle), `不该出现 ${JSON.stringify(needle)}`)
+}
+/**
+ * 取一条规则的声明体（`selector {` 到第一个 `}`）。
+ *
+ * 断言"某条规则用了哪个变量"时，比在全文里搜字符串准得多：`var(--code-font)`
+ * 全文有十几处，搜到哪一处都算过。同时它也**不锁具体数值** —— 字号、颜色值
+ * 以后想调就调，测试不用跟着改（锁死数值的断言每次微调都要改一遍，很快就没人维护了）。
+ */
+function rule(source, selector) {
+  const text = String(source)
+  const i = text.indexOf(selector + ' {')
+  if (i === -1) return ''
+  const j = text.indexOf('}', i)
+  return j === -1 ? '' : text.slice(i, j)
 }
 /**
  * 去掉整行注释后再做源码断言。
@@ -107,6 +123,13 @@ has('列表页有"新建会话"按钮', html, 'id="btn-new"')
 check('新建按钮在刷新按钮之前',
   html.indexOf('id="btn-new"') !== -1 && html.indexOf('id="btn-new"') < html.indexOf('id="btn-refresh"'))
 
+// APK 的原生返回键依赖这两个 id：它读 #view-list 判断"是否在聊天页"，
+// 在聊天页就点 #btn-back 回列表。改 HTML 若把 id 改掉，返回键会**静默**退化成
+// "永远直接退出"，不报任何错。所以在这里钉住。
+// （配套的 setView 断言在下面 code 变量声明之后 —— 这个位置还用不了 code。）
+has('视图容器 id 是 view-list（APK 返回键判断的就是它）', html, 'id="view-list"')
+has('返回按钮 id 是 btn-back（APK 返回键会点击它）', html, 'id="btn-back"')
+
 // 字体：三个页面都要引 font.css，否则登录页/设置页没有 JetBrains Mono
 const FONT_CSS = path.join(WEB, 'font.css')
 const fontCss = fs.readFileSync(FONT_CSS, 'utf8')
@@ -127,17 +150,22 @@ check('附带了 OFL 许可证全文（OFL 要求随字体分发）',
   fs.existsSync(path.join(WEB, 'fonts', 'OFL.txt')) &&
   fs.readFileSync(path.join(WEB, 'fonts', 'OFL.txt'), 'utf8').includes('SIL OPEN FONT LICENSE Version 1.1'))
 
-// 代码字体只作用于"真的是代码"的地方，正文与思考过程不动
+// 代码字体只作用于"真的是代码"的地方，正文与思考过程不动。
+// 这里只断言"用了哪个字体变量"，不锁字号 —— 见 rule() 的说明。
 has('CSS 定义了 --code-font', css, '--code-font: "JetBrains Mono"')
-has('.md code 用代码字体', css, 'font:13px/1.5 var(--code-font)')
-has('代码块用代码字体', css, 'font:12.5px/1.6 var(--code-font)')
-has('工具参数用代码字体', css, 'font:12.5px/1.6 var(--code-font); color:#c7d0dd')
-has('调试 JSON 用代码字体', css, 'font:11.5px/1.55 var(--code-font)')
-has('思考过程仍用系统等宽（不是代码）', css, 'font:12.5px/1.65 var(--mono)')
+has('CSS 定义了 --mono', css, '--mono: ui-monospace')
+has('.md code 用代码字体', rule(css, '.md code'), 'var(--code-font)')
+has('代码块用代码字体', rule(css, '.md pre.md-code code'), 'var(--code-font)')
+has('工具参数用代码字体', rule(css, '.tool-args'), 'var(--code-font)')
+has('调试 JSON 用代码字体', rule(css, '.dbg-json'), 'var(--code-font)')
+has('代码块语言名用代码字体', rule(css, '.code-lang'), 'var(--code-font)')
+has('思考过程仍用系统等宽', rule(css, '.reason-body'), 'var(--mono)')
+hasNot('思考过程不要用代码字体', rule(css, '.reason-body'), 'var(--code-font)')
+has('正文不套代码字体', rule(css, '.md'), 'line-height')
 
 // Markdown 新样式的挂钩
 for (const cls of ['.md-table', '.md-check', '.md-check.on', '.md-task', '.md del', '.md img',
-  '.sheet-block', '.sheet-input', '.md pre.md-code[data-lang]::before']) {
+  '.sheet-block', '.sheet-input']) {
   has(`CSS 有 ${cls}`, css, cls)
 }
 has('表格容器可横向滚动', css, 'overflow-x:auto')
@@ -347,6 +375,12 @@ has('mirror 有 createSession', mirrorCode, 'export async function createSession
 has('拒绝相对路径（会落到 DSH 进程 cwd 上）', mirrorCode, 'path-not-absolute')
 has('只放行 http/https 的图片与链接', code, 'function safeUrl(url)')
 
+// 配套上面「视图容器 id」的断言：光有 id 不够，还得确认 setView 切换的是 view-list。
+// 若有人把 setView 改成切 #list，APK 返回键的判断会永远为假 —— 不报错，但返回键失效。
+check('setView 切换的是 view-list，不是 list（写成 list 会让返回键永远失效）',
+  code.indexOf("els.viewList = $('view-list')") !== -1 &&
+  code.indexOf("els.viewList.hidden = name !== 'list'") !== -1)
+
 // 入口层
 has('index 注入 workspaceRegistry', indexCode, "'workspaceRegistry'")
 has('workspaceRegistry 单独 inject（不连累 presets/agents）', indexCode, "root.inject(['workspaceRegistry']")
@@ -392,6 +426,350 @@ hasNot('projectEvent 里不再出现 omitted 标记', mirrorCode, 'omitted: true
 // 客户端侧的对应处理也一并删掉，免得留死代码
 hasNot('客户端不再有 renderSystemNote', code, 'renderSystemNote')
 hasNot('CSS 里没有 .sys-note', css, '.sys-note')
+
+/* ==================== ⑦ 借鉴 DeepSeek 的界面改造 ==================== */
+console.log('\n———— ⑦ DeepSeek 风格改造 ————')
+
+// 1. 助手消息不带气泡 —— 借 DeepSeek 最核心的一条：回复是"正文"，不是"消息条"
+has('助手消息去气泡', rule(css, '.msg.assistant > .body > .bubble'), 'background:transparent')
+has('助手消息铺满栏宽', rule(css, '.msg.assistant > .body'), 'max-width:100%')
+has('用户气泡仍然限宽', rule(css, '.msg .body'), 'max-width:min(88%, 680px)')
+has('用户气泡有底色', rule(css, '.msg.me > .body > .bubble'), 'var(--me)')
+
+// 2. 代码块头部条 + 复制键
+for (const cls of ['.code-block', '.code-head', '.code-lang', '.copy-btn']) {
+  has(`CSS 有 ${cls}`, css, `${cls} {`)
+}
+has('复制成功有反馈样式', css, '.copy-btn.done')
+hasNot('语言角标 ::before 已换成真实头部条', css, 'pre.md-code[data-lang]::before')
+has('app.js 有 decorateCodeBlocks', code, 'function decorateCodeBlocks(')
+has('app.js 在 renderBlocksInto 末尾统一装饰（唯一接缝）', code, 'decorateCodeBlocks(container)')
+has('复制走 navigator.clipboard', code, 'navigator.clipboard.writeText')
+has('复制有 execCommand 兜底（非 https 下 writeText 会 reject）', code, "document.execCommand('copy')")
+has('助手消息也有复制键', code, "copyButton('复制', function () { return plain; })")
+has('装饰过的代码块不会重复包一层', code, "pre.parentNode.className === 'code-block'")
+
+// 3. 模式/模型芯片下移到输入区（手机单手操作时顶栏是拇指最难够的区域）
+has('index.html 有 .chat-foot', html, 'class="chat-foot"')
+has('芯片容器改挂 .chat-sub', html, 'class="chat-sub" id="chat-sub"')
+hasNot('顶栏不再放芯片容器', html, 'class="topbar-sub" id="chat-sub"')
+check('芯片条排在输入框之前（紧贴其上方）',
+  html.indexOf('id="chat-sub"') !== -1 && html.indexOf('id="chat-sub"') < html.indexOf('id="composer"'))
+has('发送键做成圆形', rule(css, '.composer .btn-send'), 'border-radius:50%')
+has('发送键保留可访问名', html, 'aria-label="发送"')
+
+// 4. 消息里的"块芯片"改名，不再和顶栏芯片撞规则（同名时后者会覆盖前者的全部重叠属性）
+has('块芯片改用 .block-chip', code, "'block-chip block-chip-'")
+has('CSS 有 .block-chip', css, '.block-chip {')
+hasNot('app.js 不再把块芯片叫 chip', code, "el.className = 'chip chip-'")
+
+// 5. 会话列表：扁平行 + 时间靠右
+has('会话行不再是卡片', rule(css, '.session'), 'background:transparent')
+has('会话行用分隔线分条', rule(css, '.session'), 'border-bottom')
+has('时间挂在行右端', code, 'if (sub.textContent) btn.appendChild(sub)')
+has('分组标题走小号灰字', rule(css, '.group-name'), 'var(--dim)')
+
+/* ==================== ⑧ 两套主题 ==================== */
+console.log('\n———— ⑧ 两套主题（跟随系统）————')
+
+has('主页声明支持两套配色', html, 'name="color-scheme" content="light dark"')
+has('地址栏颜色跟系统走（深）', html, 'media="(prefers-color-scheme: dark)"')
+has('地址栏颜色跟系统走（浅）', html, 'media="(prefers-color-scheme: light)"')
+has('app.css 声明 color-scheme', css, 'color-scheme: light dark')
+has('app.css 有浅色分支', css, '@media (prefers-color-scheme: light)')
+for (const page of ['login.html', 'setup.html']) {
+  const pageSrc = fs.readFileSync(path.join(WEB, page), 'utf8')
+  has(`${page} 也跟系统走`, pageSrc, '@media (prefers-color-scheme: light)')
+  has(`${page} 声明支持两套配色`, pageSrc, 'name="color-scheme" content="light dark"')
+}
+
+/**
+ * 把两个主题块从 CSS 里挖掉（换成等长空白，行号不变），再扫描剩下的部分。
+ * 不挖掉的话，`:root` 里那一堆颜色字面量会把扫描结果全占满。
+ */
+function withoutThemeBlocks(source) {
+  let text = String(source)
+  const cuts = []
+  const rootAt = text.indexOf(':root {')
+  if (rootAt !== -1) cuts.push([rootAt, text.indexOf('\n}', rootAt) + 2])
+  const lightAt = text.indexOf('@media (prefers-color-scheme: light) {')
+  if (lightAt !== -1) {
+    const closeAt = text.indexOf('\n}\n', lightAt)
+    cuts.push([lightAt, closeAt === -1 ? text.length : closeAt + 3])
+  }
+  for (const [a, b] of cuts) {
+    // 换成**等长空格**而不是删掉：删掉会让后面那一段的偏移量整体前移，
+    // 于是第二个块就切错位置了（而且行号也会对不上）。
+    text = text.slice(0, a) + text.slice(a, b).replace(/[^\n]/g, ' ') + text.slice(b)
+  }
+  return text
+}
+
+const cssNoTheme = withoutThemeBlocks(css)
+const stray = []
+cssNoTheme.split('\n').forEach((line, i) => {
+  const t = line.trim()
+  if (t.startsWith('*') || t.startsWith('/*')) return
+  if (/#[0-9a-fA-F]{3,8}\b|rgba?\(/.test(line)) stray.push(`第 ${i + 1} 行：${t}`)
+})
+eq('主题块之外没有硬编码颜色', stray.length, 0)
+for (const s of stray.slice(0, 12)) console.log(`        ${s}`)
+
+/**
+ * 这两条是主题化的真正护栏：
+ *   - 引用了没定义的变量 → var() 没有回退值时会退化成 currentColor，
+ *     深色下可能看不出来，浅色下就是一块错色（这次真踩到过一次 --ok-line）。
+ *   - 浅色没覆盖某个颜色变量 → 那个变量在浅色下沿用深色值，同样是错色。
+ */
+const usedVars = [...new Set((css.match(/var\((--[a-z0-9-]+)\)/g) || []).map((s) => s.slice(4, -1)))]
+const allDefined = new Set([...css.matchAll(/^\s*(--[a-z0-9-]+):/gm)].map((m) => m[1]))
+const missingVars = usedVars.filter((v) => !allDefined.has(v))
+eq('用到的变量都有定义', missingVars.length, 0)
+for (const v of missingVars.slice(0, 12)) console.log(`        未定义：${v}`)
+
+const rootBlock = css.slice(css.indexOf(':root {'), css.indexOf('\n}', css.indexOf(':root {')))
+const lightAt = css.indexOf('@media (prefers-color-scheme: light) {')
+const lightBlock = lightAt === -1 ? '' : css.slice(lightAt, css.indexOf('\n}\n', lightAt))
+const rootVars = [...rootBlock.matchAll(/^\s*(--[a-z0-9-]+):/gm)].map((m) => m[1])
+const lightVars = new Set([...lightBlock.matchAll(/^\s*(--[a-z0-9-]+):/gm)].map((m) => m[1]))
+// 字体不随主题变，不要求覆盖
+const notOverridden = rootVars.filter((v) => !lightVars.has(v) && v !== '--mono' && v !== '--code-font')
+eq('浅色主题覆盖了所有颜色变量', notOverridden.length, 0)
+for (const v of notOverridden.slice(0, 12)) console.log(`        浅色漏了：${v}`)
+
+/* ==================== ⑨ P7：动效 ==================== */
+console.log('\n———— ⑨ 动效 ————')
+
+// 新消息进场：方向按消息归属区分（自己发的从右、助手的从左）
+has('CSS 有 .msg-in 进场动画', css, '.msg-in { animation:msg-in-left')
+has('自己发的消息从右侧进场', css, '.msg-in.me { animation-name:msg-in-right; }')
+has('CSS 有 msg-in-left 关键帧', css, '@keyframes msg-in-left {')
+has('CSS 有 msg-in-right 关键帧', css, '@keyframes msg-in-right {')
+has('进场动画尊重 prefers-reduced-motion', css, '@media (prefers-reduced-motion:reduce) { .msg-in { animation:none; } }')
+
+// 这条是这轮最要紧的护栏：进场动画只能加在"实时新增"的节点上。
+// 快照重建一次插几十条历史，若都加动画，打开会话时一屏会同时乱动。
+has('state 里有 replaying 标志', code, 'replaying: false')
+has('applySnapshot 期间置位 replaying', code, 'state.replaying = true')
+has('appendEvent 只对实时新增加 msg-in', code,
+  "if (host === els.stream && !state.replaying) node.classList.add('msg-in')")
+check('replaying 用 try/finally 复位（渲染中途抛错也不会卡在 true）',
+  code.indexOf('state.replaying = true;\n    try {') !== -1 &&
+  code.indexOf('} finally {\n      state.replaying = false;\n    }') !== -1)
+
+// 会话列表错开进场
+has('CSS 有列表进场动画', css, '.list-in { animation:list-in')
+has('CSS 有 list-in 关键帧', css, '@keyframes list-in {')
+has('列表进场尊重 prefers-reduced-motion', css, '@media (prefers-reduced-motion:reduce) { .list-in { animation:none; } }')
+has('有 staggerList', code, 'function staggerList()')
+has('有错开收集器', code, 'function collectStagger(node, out)')
+has('renderSessions 收尾调用 staggerList', code, 'els.list.appendChild(frag);\n    staggerList();')
+// 列表每 10 秒会整棵重建（renderSessions 先 textContent=''），必须只播一次，
+// 否则界面每 10 秒闪一次。
+has('错开进场只播一次（有标志）', code, 'var listStaggered = false;')
+has('标志生效（已播过就返回）', code, 'if (listStaggered || reducedMotion()) return;')
+// 延迟封顶：会话多时不能让最后一行排到一秒以后
+has('错开延迟有封顶', code, 'Math.min(i, 11) * 24')
+
+// 流式输出的"正在写"渐变呼吸条
+has('流式气泡有渐变呼吸条', css, '.live-bubble::after {')
+has('呼吸条用渐变（且颜色走变量，不写死）', css,
+  'background:linear-gradient(180deg, transparent, var(--accent), transparent);')
+has('CSS 有 cursor-breathe 关键帧', css, '@keyframes cursor-breathe')
+has('呼吸条尊重 prefers-reduced-motion', css, '.live-bubble::after { animation:none; opacity:.7; }')
+
+// 折叠卡展开
+has('折叠卡展开有内容动画', css, 'details.fold[open] > *:not(summary) { animation:fold-in')
+has('CSS 有 fold-in 关键帧', css, '@keyframes fold-in {')
+has('展开时箭头旋转', css, 'details.fold[open] > summary .group-caret { transform:rotate(180deg); }')
+has('折叠卡展开尊重 prefers-reduced-motion', css,
+  'details.fold[open] > *:not(summary) { animation:none; }')
+
+// 提示条与悬浮件
+has('CSS 有 toast 进场', css, '.toast { animation:toast-in')
+has('CSS 有 toast 退场', css, '.toast.toast-out { animation:toast-out')
+has('CSS 有 toast-in 关键帧', css, '@keyframes toast-in {')
+has('CSS 有 toast-out 关键帧', css, '@keyframes toast-out {')
+has('有 hideToast（先播退场再隐藏）', code, 'function hideToast()')
+has('hideToast 加的是 toast-out 类', code, "els.toast.classList.add('toast-out')")
+has('回到最新按钮有进场', css, '.to-bottom { animation:rise-in')
+has('断线横幅有进场', css, '.banner { animation:drop-in')
+has('顶栏提示有进场', css, '.top-hint { animation:hint-in')
+has('悬浮件尊重 prefers-reduced-motion', css,
+  '.toast, .toast.toast-out, .to-bottom, .banner, .top-hint { animation:none; }')
+
+// 提问卡片选中反馈
+has('选中项勾号弹出', css, '.q-opt.on .q-mark { animation:mark-pop')
+has('CSS 有 mark-pop 关键帧', css, '@keyframes mark-pop {')
+has('勾号弹出尊重 prefers-reduced-motion', css, '.q-opt.on .q-mark { animation:none; }')
+
+// 换会话时顶栏标题淡入
+has('顶栏标题有进场', css, '.topbar-title.title-in { animation:title-in')
+has('CSS 有 title-in 关键帧', css, '@keyframes title-in {')
+has('只在会话真的变了时才播标题动画', code, 'headerSession !== state.sessionId')
+
+// 面板遮罩
+has('面板遮罩淡入', css, '.sheet-backdrop { animation:backdrop-in')
+has('CSS 有 backdrop-in 关键帧', css, '@keyframes backdrop-in {')
+
+// 发送按钮反馈
+has('发送成功有脉冲环', css, '.btn-send.pulse::after {')
+has('CSS 有 send-pulse 关键帧', css, '@keyframes send-pulse {')
+has('发送失败有抖动', css, '.btn-send.shake { animation:send-shake')
+has('CSS 有 send-shake 关键帧', css, '@keyframes send-shake {')
+has('有 flashSend 助手', code, 'function flashSend(kind)')
+has('发送成功调 flashSend(pulse)', code, "flashSend('pulse')")
+has('发送失败调 flashSend(shake)', code, "flashSend('shake')")
+has('按钮反馈尊重 prefers-reduced-motion', css,
+  '.btn-send.pulse::after, .btn-send.shake { animation:none; }')
+
+// 列表页 ↔ 聊天页转场
+// 顶栏两个视图共用同一个名字 —— 转场时原地交叉淡化、不位移，
+// 只有内容区滑动，"外壳不动"的层次感就来自这里。
+has('CSS 顶栏两个视图共用转场名', css, '.topbar { view-transition-name:v-topbar; }')
+has('CSS 给列表内容区起转场名', css, '#view-list .scroll { view-transition-name:v-list-body; }')
+has('CSS 给聊天内容区起转场名', css, '#view-chat .stream-wrap { view-transition-name:v-chat-body; }')
+has('CSS 给输入区起转场名', css, '#view-chat .chat-foot { view-transition-name:v-composer; }')
+has('顶栏用显式淡入淡出（不用默认的 plus-lighter）', css,
+  '::view-transition-new(v-topbar) { animation:vtx-fade-in .22s ease both; mix-blend-mode:normal; }')
+has('CSS 有 forward 方向的转场', css, 'html[data-nav="forward"]::view-transition-old(v-list-body)')
+has('forward 时新页从右侧进', css, 'html[data-nav="forward"]::view-transition-new(v-chat-body)')
+has('forward 时输入区从下方进', css, 'html[data-nav="forward"]::view-transition-new(v-composer)')
+has('CSS 有 back 方向的转场', css, 'html[data-nav="back"]::view-transition-new(v-list-body)')
+has('back 时聊天内容右退', css, 'html[data-nav="back"]::view-transition-old(v-chat-body)')
+has('back 时输入区下退', css, 'html[data-nav="back"]::view-transition-old(v-composer)')
+has('CSS 有 vtx-in-right 关键帧', css, '@keyframes vtx-in-right')
+has('CSS 有 vtx-out-left 关键帧', css, '@keyframes vtx-out-left')
+has('setView 用 View Transitions API', code, 'document.startViewTransition(apply)')
+has('setView 先特性检测（不支持时直接切，无副作用）', code,
+  "typeof document.startViewTransition !== 'function'")
+has('转场尊重 prefers-reduced-motion', code,
+  "window.matchMedia('(prefers-reduced-motion: reduce)').matches")
+check('方向写在 html[data-nav] 上，供 CSS 选择',
+  code.indexOf("document.documentElement.setAttribute('data-nav'") !== -1)
+
+// 点击反馈：原来有 :active 却没有 transition，缩放是瞬间跳变、看不出来
+has('可点元素统一补了 transition', css,
+  '.icon-btn, .btn, .ghost-btn, .btn-stop, .chip, .opt, .effort, .q-opt, .to-bottom {')
+check('点击反馈只过渡 transform 与颜色（不碰布局属性，不引起重排）',
+  css.indexOf('transition:transform .1s ease, background-color .14s ease, border-color .14s ease;') !== -1)
+
+// 转场名与 backdrop-filter 不能落在同一个元素上。
+// 按 CSS View Transitions 规范 §2.1.1，view-transition-name 不是 none 的元素
+// （**任何时候**，不只在转场期间）会形成一个 backdrop root —— 让带 backdrop-filter
+// 的元素去当 backdrop root，等于给自己的磨砂玻璃换底色。
+// 当前 .topbar 两者都曾是，模糊已按"无效功"移除；这条防的是以后有人加回来。
+// 先把注释剥掉再查 —— .topbar 那条注释里就写着 backdrop-filter，不剥等于自欺。
+const cssNoComments = css.replace(/\/\*[\s\S]*?\*\//g, '')
+const topbarRule = cssNoComments.slice(
+  cssNoComments.indexOf('.topbar {'),
+  cssNoComments.indexOf('}', cssNoComments.indexOf('.topbar {')))
+check('顶栏没有 backdrop-filter（背后是纯色，模糊是无效功，且会与转场名形成 backdrop root）',
+  topbarRule.indexOf('backdrop-filter') === -1)
+
+/* ---------------------------------------------------------------------
+ * 性能护栏：动画只许动 transform 与 opacity。
+ *
+ * 用**白名单**而不是黑名单 —— 黑名单只能挡住想到的那些布局属性，
+ * 白名单能把没想到的也一起挡住。这条比"动画好不好看"重要得多：
+ * 动 width/height/top 会触发重排，手机上立刻掉帧。
+ * ------------------------------------------------------------------- */
+const kfSteps = []
+// 关键帧的每个档位都长这样：from { ... } / to { ... } / 0%, 100% { ... }
+// 普通规则不会以 from/to/百分比开头，所以这个匹配不会误伤别的地方。
+for (const m of cssNoComments.matchAll(/(?:from|to|\d+%)(?:\s*,\s*(?:from|to|\d+%))*\s*\{([^{}]*)\}/g)) {
+  kfSteps.push(m[1])
+}
+check('关键帧扫描确实抓到了内容（正则没失效）', kfSteps.length > 20)
+const kfBad = new Set()
+for (const step of kfSteps) {
+  for (const decl of step.split(';')) {
+    const colon = decl.indexOf(':')
+    if (colon === -1) continue
+    const prop = decl.slice(0, colon).trim().toLowerCase()
+    if (prop && prop !== 'transform' && prop !== 'opacity') kfBad.add(prop)
+  }
+}
+eq('关键帧只动 transform / opacity（不触发重排）',
+  kfBad.size ? [...kfBad].join(', ') : '无', '无')
+check('过渡也没有涉及布局属性',
+  !/transition:[^;]*\b(width|height|top|left|right|bottom|margin|padding|font-size)\b/.test(css))
+
+/* ==================== ⑩ 桌面设置面板（客户端 bundle）==================== */
+console.log('\n———— ⑩ 桌面设置面板 ————')
+
+const CLIENT_JS = path.join(LIB, 'client.js')
+const clientSrc = fs.readFileSync(CLIENT_JS, 'utf8')
+const clientCode = codeOnly(clientSrc)
+
+// ① bundle 包裹格式：DSH 的客户端模块系统只认这一个入口形状，
+//    写错的话浏览器连 factory 都注册不上，而宿主侧**不会**报错。
+check('用 __ModuleLoader__.load 注册 factory', /window\.__ModuleLoader__\.load\(\{/.test(clientCode))
+check('bundle id 就是包名', /id:\s*["']dsh-mobile-mirror["']/.test(clientCode))
+check('factory 接收 require', /factory:\s*\(require\)\s*=>/.test(clientCode))
+check('导出 apply', /exports\.apply\s*=/.test(clientCode))
+check('导出 inject = [slots]', /exports\.inject\s*=\s*\[["']slots["']\]/.test(clientCode))
+check('没有 ESM 语法（bundle 是 CJS factory）', !/^\s*(import|export)\s/m.test(clientCode))
+check('client.js 有实际内容（不是空壳）', clientSrc.length > 8000, String(clientSrc.length))
+
+// ② 槽注册：id / order / label 任一处写错都不会报错，只会安静地少一页或顶掉官方页。
+has('用 slots.inject 等槽被声明出来', clientCode, 'slots.inject')
+has('注册到 settings.section', clientCode, 'settings.section')
+has('槽内 id 是自己的', clientCode, 'const SECTION_ID = "mobile-mirror"')
+has('导航文字是「手机镜像」', clientCode, 'const SECTION_LABEL = "手机镜像"')
+has('order 排在官方五页（最大 20）之后', clientCode, 'const SECTION_ORDER = 30')
+check('用 slots.register 注册组件', /slots\.register\(\s*\{/.test(clientCode))
+
+// ③ 两侧路径必须逐字一致：写错的话面板只会安静地显示"读不到主机信息"。
+const clientPath = /const INFO_PATH = "([^"]+)"/.exec(clientCode)
+const hostPath = /export const PANEL_ROUTE = '([^']+)'/.exec(indexSrc)
+check('客户端写死了 INFO_PATH', !!clientPath)
+check('主机侧写死了 PANEL_ROUTE', !!hostPath)
+eq('两侧路径逐字一致', clientPath && clientPath[1], hostPath && hostPath[1])
+eq('路径就是 /dsh-mirror/info.json', clientPath && clientPath[1], '/dsh-mirror/info.json')
+has('主机侧真的注册了这条路由', indexSrc, 'webServer.register')
+
+// ④ 失败姿势与安全边界。
+hasNot('面板不注入 HTML', clientCode, 'dangerouslySetInnerHTML')
+hasNot('面板不碰口令哈希', clientCode, 'passwordHash')
+check('fetch 用 no-store，避免拿到缓存的旧 IP', /cache:\s*"no-store"/.test(clientCode))
+check('挂载时定时刷新、卸载时清掉定时器', /setInterval\(/.test(clientCode) && /clearInterval\(/.test(clientCode))
+check('样式元素在卸载时移除', /el\.remove\(\)/.test(clientCode))
+check('拿不到 react 只打日志、不抛错', /React === null/.test(clientCode) && /console\.warn/.test(clientCode))
+check('拿不到 slots 只打日志、不抛错', clientCode.includes('没有 slots 服务'))
+check('主机侧那条路由是仅回环的', indexSrc.includes('fromLoopback(req)') && indexSrc.includes('loopback only'))
+
+// ⑤ 面板样式不许污染宿主界面：全部挂在 .mm- 前缀下。
+const cssBlock = (clientCode.split('const CSS = `')[1] || '').split('`')[0]
+check('抓到了面板样式块（正则没失效）', cssBlock.length > 500, String(cssBlock.length))
+const badSel = [...cssBlock.matchAll(/(?:^|\})\s*([^@{}]+?)\s*\{/gm)]
+  .map((m) => m[1].trim())
+  .filter((sel) => sel && !sel.split(',').every((one) => one.trim().startsWith('.mm-')))
+eq('面板样式全部挂在 .mm- 前缀下', badSel.length ? badSel.join(' | ') : '无', '无')
+has('面板用的是 DSH 主题 token（明暗主题自动跟随）', cssBlock, '--dsw-alias-')
+
+/* ---------------------------------------------------------------------
+ * 引用的关键帧名必须真的存在。
+ *
+ * 名字打错时 CSS **不会报错**，动画只是不动 —— 在真机上跟"没做"长得一模一样，
+ * 很难查。这条把"静默失效"变成"测试变红"。
+ * ------------------------------------------------------------------- */
+const kfNames = new Set()
+for (const m of cssNoComments.matchAll(/@keyframes\s+([\w-]+)/g)) kfNames.add(m[1])
+const kfMissing = new Set()
+for (const m of cssNoComments.matchAll(/animation(?:-name)?\s*:\s*([^;}\n]+)/g)) {
+  for (const raw of m[1].split(/[\s,]+/)) {
+    const t = raw.trim()
+    if (!t) continue
+    // 跳过时间、缓动函数（含逗号会被切开）、以及关键字
+    if (t === 'none' || /^[.\d]/.test(t) || t.indexOf('(') !== -1 || t.indexOf(')') !== -1) continue
+    if (/^(ease|linear|infinite|both|forwards|backwards|normal|reverse|alternate|running|paused|step)/.test(t)) continue
+    if (!kfNames.has(t)) kfMissing.add(t)
+  }
+}
+eq('引用的关键帧都真的定义了（打错名字动画会静默失效）',
+  kfMissing.size ? [...kfMissing].join(', ') : '无', '无')
+check('关键帧名扫描确实抓到了内容（正则没失效）', kfNames.size > 20)
 
 console.log(`\n${passed}/${passed + failed} 通过`)
 if (failed > 0) process.exitCode = 1

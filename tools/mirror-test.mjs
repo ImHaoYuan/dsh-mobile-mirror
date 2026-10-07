@@ -214,7 +214,58 @@ eq('stripInjectedBlocks 不动非字符串 text', stripInjectedBlocks([{ type: '
 eq('stripInjectedBlocks 不动空对象', stripInjectedBlocks([null, {}, 'x']).length, 3)
 
 eq('assistant/attempt：整条丢弃', projectEvent({ type: 'assistant/attempt', seq: 7, time: 70, data: {} }), null)
-eq('未知类型：保留 type 但不下发 data', projectEvent({ type: 'brand/new', seq: 8, time: 80, data: { big: 'x'.repeat(9999) } }).unknown, true)
+
+// ---- 未知事件：保留一份有界浅拷贝 ----
+// 排查「手机上不显示错误」时，是靠逆向 app.asar 才知道正文藏在 turn/end 的
+// reason.error 里。未接事件的字段名本身就是最好的线索，所以不能只留一个 unknown 标记。
+const bigUnknown = projectEvent({ type: 'brand/new', seq: 8, time: 80, data: { big: 'x'.repeat(9999) } })
+eq('未知类型：标记 unknown', bigUnknown.unknown, true)
+check('未知类型：超大字符串被截断，不原样下发', bigUnknown.data.big.length < 200)
+
+const shapes = projectEvent({
+  type: 'brand/new', seq: 8.5, time: 85,
+  data: { n: 1, s: 'txt', b: true, z: null, o: { nested: 'x' }, a: ['y', 'z'] },
+})
+eq('未知事件：数字照抄', shapes.data.n, 1)
+eq('未知事件：字符串照抄', shapes.data.s, 'txt')
+eq('未知事件：布尔照抄', shapes.data.b, true)
+eq('未知事件：null 照抄', shapes.data.z, null)
+eq('未知事件：嵌套对象只报形状（不递归）', shapes.data.o, '[object]')
+eq('未知事件：数组只报长度', shapes.data.a, '[array 2]')
+
+const manyKeys = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`k${i}`, i]))
+check('未知事件：键数封顶 24', Object.keys(projectEvent({ type: 'x/y', seq: 8.6, time: 86, data: manyKeys }).data).length <= 24)
+eq('未知事件：data 空对象时给 null', projectEvent({ type: 'x/y', seq: 8.7, time: 87, data: {} }).data, null)
+eq('未知事件：data 不是对象时给 null', projectEvent({ type: 'x/y', seq: 8.8, time: 88, data: 'str' }).data, null)
+eq('未知事件：data 是数组时给 null', projectEvent({ type: 'x/y', seq: 8.9, time: 89, data: [1, 2] }).data, null)
+
+// ---- 轮次失败：错误正文必须透传 ----
+// 这是用户报的「电脑上显示 API 密钥无效、手机上没有」的根因所在：
+// 原先这一行只留 reason.kind，于是正文被丢在这里。
+const failedTurn = projectEvent({
+  type: 'turn/end', seq: 8.95, time: 89.5,
+  data: {
+    turn: 2,
+    reason: {
+      kind: 'error',
+      error: { message: 'API 密钥无效', code: 'INVALID_API_KEY', status: 401, requestId: 'req-1', providerRetryAfterMs: 5000 },
+    },
+  },
+})
+eq('turn/end error：reason 仍是 error', failedTurn.data.reason, 'error')
+eq('turn/end error：正文透传', failedTurn.data.error.message, 'API 密钥无效')
+eq('turn/end error：错误码透传', failedTurn.data.error.code, 'INVALID_API_KEY')
+eq('turn/end error：HTTP 状态透传', failedTurn.data.error.status, 401)
+eq('turn/end error：requestId 不透传', failedTurn.data.error.requestId, undefined)
+eq('turn/end error：providerRetryAfterMs 不透传', failedTurn.data.error.providerRetryAfterMs, undefined)
+
+const sparseFail = projectEvent({ type: 'turn/end', seq: 8.96, time: 89.6, data: { turn: 3, reason: { kind: 'error', error: { message: '只给了正文' } } } })
+eq('turn/end error：缺 code 时为 ""', sparseFail.data.error.code, '')
+eq('turn/end error：缺 status 时为 null', sparseFail.data.error.status, null)
+eq('turn/end error：连 error 对象都没有时不凭空造字段', projectEvent({ type: 'turn/end', seq: 8.97, time: 89.7, data: { turn: 4, reason: { kind: 'error' } } }).data.error, undefined)
+eq('turn/end completed：不带 error', projectEvent({ type: 'turn/end', seq: 8.98, time: 89.8, data: { turn: 5, reason: { kind: 'completed' } } }).data.error, undefined)
+eq('turn/end reason 缺失：降级 unknown', projectEvent({ type: 'turn/end', seq: 8.99, time: 89.9, data: { turn: 6 } }).data.reason, 'unknown')
+
 eq('非法输入返回 null', projectEvent(null), null)
 
 // 截断

@@ -268,6 +268,41 @@ if (P) {
   eq('未知原因降级', P.turnEndText('whatever').text, '本轮结束：whatever');
   eq('未知原因醒目', P.turnEndText('whatever').warn, true);
 
+  // ---- 轮次失败：把 DSH 给的错误正文显示出来 ----
+  // 用户报的「电脑上显示 API 密钥无效、手机上没有」就出在这里：
+  // 原先只映射 reason.kind，正文一个字都不显示。
+  const fail = { error: { message: 'API 密钥无效', code: 'INVALID_API_KEY', status: 401 } };
+  eq('error 带正文时拼上去', P.turnEndText('error', fail).text, '本轮出错：API 密钥无效');
+  eq('error 的 code 与 HTTP 状态组成 meta', P.turnEndText('error', fail).meta, 'INVALID_API_KEY · HTTP 401');
+  eq('error 标记 failed', P.turnEndText('error', fail).failed, true);
+  eq('error 仍然 warn', P.turnEndText('error', fail).warn, true);
+  eq('只有 code 时 meta 仍给出', P.turnEndText('error', { error: { code: 'E' } }).meta, 'E');
+  eq('只有 status 时 meta 仍给出', P.turnEndText('error', { error: { status: 503 } }).meta, 'HTTP 503');
+  eq('缺 code/status 时 meta 为空串', P.turnEndText('error', { error: { message: 'x' } }).meta, '');
+  eq('正文首尾空白被去掉', P.turnEndText('error', { error: { message: '  密钥无效  ' } }).text, '本轮出错：密钥无效');
+
+  // fail-safe：字段缺失时退回朴素文案，不能整行不显示
+  eq('没给 detail 时退回朴素文案', P.turnEndText('error').text, '本轮出错');
+  eq('detail 里没有 error 字段时退回', P.turnEndText('error', {}).text, '本轮出错');
+  eq('error 是空对象时退回', P.turnEndText('error', { error: {} }).text, '本轮出错');
+  eq('error 不是对象时退回', P.turnEndText('error', { error: 'boom' }).text, '本轮出错');
+  eq('message 不是字符串时退回', P.turnEndText('error', { error: { message: 42 } }).text, '本轮出错');
+  eq('message 只有空白时退回', P.turnEndText('error', { error: { message: '   ' } }).text, '本轮出错');
+
+  // 只要 reason 就是 error 就算失败 —— 哪怕没有正文（那一轮确实白跑了）
+  eq('error 无正文时仍算 failed', P.turnEndText('error').failed, true);
+  eq('completed 不算 failed', P.turnEndText('completed', fail).failed, false);
+  eq('aborted 不算 failed（用户自己停的）', P.turnEndText('aborted').failed, false);
+  eq('completed 不受 detail 污染', P.turnEndText('completed', fail).text, '本轮完成');
+  eq('completed 不带 meta', P.turnEndText('completed', fail).meta, '');
+
+  // 容忍直接传原始的 TurnEndReason 对象 —— 否则 String({kind:'error'}) 会渲染成
+  // 「本轮结束：[object Object]」，比不显示还难查。
+  eq('reason 是对象时取它的 kind', P.turnEndText({ kind: 'error' }, fail).text, '本轮出错：API 密钥无效');
+  eq('reason 是对象时 completed 照常', P.turnEndText({ kind: 'completed' }).text, '本轮完成');
+  eq('reason 是对象但没有 kind 时降级', P.turnEndText({}).text, '本轮结束');
+  eq('reason 是对象时不出现 [object Object]', P.turnEndText({ kind: 'error' }).text.indexOf('[object Object]'), -1);
+
   console.log('\n  -- P2 发送：文本校验 / 字数 / requestId / payload --');
   eq('normalizePromptText 去首尾空白', P.normalizePromptText('  a b\n '), 'a b');
   eq('normalizePromptText(null)', P.normalizePromptText(null), '');

@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light dark">
+<!-- Android Chrome 的地址栏跟着系统主题走，不然浅色页面配一条深色栏很割裂 -->
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -54,7 +57,6 @@
         <span class="dot" id="chat-dot"></span>
         <span class="topbar-title" id="chat-title">会话</span>
       </div>
-      <div class="topbar-sub" id="chat-sub"></div>
     </div>
     <button type="button" class="btn-stop" id="btn-stop" title="停止当前这一轮" hidden>停止</button>
     <button type="button" class="ghost-btn" id="btn-raw" aria-pressed="false" title="显示最近收到的原始 JSON 信封">原始</button>
@@ -96,14 +98,21 @@
     </div>
   </div>
 
-  <div class="composer" id="composer" hidden>
-    <div class="composer-row">
-      <textarea id="composer-input" rows="1" placeholder="发消息…" autocomplete="off" spellcheck="false"></textarea>
-      <button type="button" class="btn btn-send" id="composer-send" disabled>发送</button>
-    </div>
-    <div class="composer-foot">
-      <span class="composer-note">Enter 换行 · 桌面端 Ctrl/⌘ + Enter 发送</span>
-      <span class="composer-count" id="composer-count" hidden></span>
+  <!-- 底部区域：状态/芯片条 + 输入区。合成一块，只画一条上边框。 -->
+  <div class="chat-foot">
+    <!-- 状态与模式/模型芯片。原来在顶栏，挪到输入框上方 —— 手机单手操作时顶栏是
+         拇指最难够的区域，输入框上方才是舒适区（DeepSeek 网页端也在这一带）。 -->
+    <div class="chat-sub" id="chat-sub"></div>
+
+    <div class="composer" id="composer" hidden>
+      <div class="composer-row">
+        <textarea id="composer-input" rows="1" placeholder="发消息…" autocomplete="off" spellcheck="false"></textarea>
+        <button type="button" class="btn btn-send" id="composer-send" disabled aria-label="发送" title="发送">↑</button>
+      </div>
+      <div class="composer-foot">
+        <span class="composer-note">Enter 换行 · 桌面端 Ctrl/⌘ + Enter 发送</span>
+        <span class="composer-count" id="composer-count" hidden></span>
+      </div>
     </div>
   </div>
 </section>

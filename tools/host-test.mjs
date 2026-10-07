@@ -144,6 +144,23 @@ const fakeRegistry = {
   list() { return [{ id: 'ws-a', path: 'D:\\proj\\a', title: '项目 A' }] },
 }
 
+/**
+ * webServer 替身：只实现 register()。
+ *
+ * 桌面设置面板的数据路由挂在它上面。注册不上**不会报错**，只会安静地少一个
+ * 面板 —— 所以必须断言"真的注册了、路径对、只给回环、不泄密"。
+ */
+const routes = []
+const fakeWebServer = {
+  register(route) {
+    routes.push(route)
+    return () => {
+      const i = routes.indexOf(route)
+      if (i >= 0) routes.splice(i, 1)
+    }
+  },
+}
+
 /* ------------------------------ HTTP 客户端 ------------------------------ */
 
 let PORT = 0
@@ -202,7 +219,7 @@ console.log = (...args) => {
 }
 
 let applyErr = null
-const services = { sessionController: fakeController, agentPresets: fakePresets, agents: fakeAgents, workspaceRegistry: fakeRegistry }
+const services = { sessionController: fakeController, agentPresets: fakePresets, agents: fakeAgents, workspaceRegistry: fakeRegistry, webServer: fakeWebServer }
 const { root, handlers, disposers, calls } = createFakeRoot(services)
 
 let mod = null
@@ -233,6 +250,65 @@ eq('注册时带 prepend（不带就会被 Remote 转发器吃掉）', onCall &&
 const answerers = handlers.get('user-questions/request') || []
 eq('waterfall 上有一个处理器', answerers.length, 1)
 check('注册时没有把 next 当成参数传错', typeof answerers[0] === 'function')
+
+// —— 桌面设置面板的数据路由（lib/client.js 面板的唯一数据来源）——
+console.log('\n———— 桌面设置面板：主机侧路由 ————')
+const wsCall = calls.find((c) => c.event === 'inject' && c.keys.includes('webServer'))
+check('注入了 webServer', !!wsCall, JSON.stringify(calls))
+eq('只注册了一条路由（不多占路径）', routes.length, 1)
+const panelRoute = routes[0]
+check('路由是 exact 类型', !!panelRoute && panelRoute.kind === 'exact', panelRoute && panelRoute.kind)
+eq('路径就是 /dsh-mirror/info.json', mod.PANEL_ROUTE, '/dsh-mirror/info.json')
+eq('路由路径与导出的常量一致', panelRoute && panelRoute.path, mod.PANEL_ROUTE)
+check('日志写明面板已接线', logs.some((l) => l.includes('桌面设置面板已接线')), logs.join(' | '))
+
+/** 直接调用路由处理器：造一个最小的 req/res，绕开真实 HTTP。 */
+function callPanelRoute(remoteAddress) {
+  const req = { socket: { remoteAddress }, headers: {} }
+  const res = {
+    statusCode: 0,
+    headers: {},
+    setHeader(k, v) { this.headers[k] = v },
+    end(body) { this.body = body },
+  }
+  panelRoute.handler(req, res)
+  return res
+}
+
+const loopRes = callPanelRoute('127.0.0.1')
+eq('回环请求回 200', loopRes.statusCode, 200)
+eq('回环请求的 content-type 是 JSON', loopRes.headers['content-type'], 'application/json; charset=utf-8')
+eq('回环请求不许被缓存', loopRes.headers['cache-control'], 'no-store')
+
+const panel = JSON.parse(loopRes.body)
+eq('payload 带 ok 标记', panel.ok, true)
+eq('端口来自配置', panel.port, PORT)
+eq('协议是 https', panel.scheme, 'https')
+eq('回环设置页地址正确', panel.setupUrl, `https://127.0.0.1:${PORT}/setup`)
+eq('回环主页地址正确', panel.loopbackUrl, `https://127.0.0.1:${PORT}/`)
+eq('诊断页地址正确', panel.diagnosticsUrl, `https://127.0.0.1:${PORT}/pair.json`)
+eq('带上账号', panel.username, 'u')
+eq('口令状态为已配置', panel.configured, true)
+eq('sessionTtlDays 透传', panel.sessionTtlDays, 1)
+eq('enablePrompt 透传', panel.enablePrompt, true)
+check('证书指纹非空（面板要显示它）', typeof panel.tls.fingerprint === 'string' && panel.tls.fingerprint.length > 0, JSON.stringify(panel.tls))
+eq('tls.enabled 为 true', panel.tls.enabled, true)
+check('局域网候选是个数组', Array.isArray(panel.candidates))
+check('每个候选都有 name/address/https url',
+  panel.candidates.every((c) => c.name && c.address && String(c.url).startsWith('https://')),
+  JSON.stringify(panel.candidates))
+
+// 少给永远比给多了再后悔便宜：这几样一个都不许出现在这条路由上。
+for (const secret of ['passwordHash', 'password', 'certDir', 'stats', 'throttle']) {
+  eq(`payload 不含 ${secret}`, Object.prototype.hasOwnProperty.call(panel, secret), false)
+}
+check('payload 整体不含 scrypt 字样', !loopRes.body.includes('scrypt'), loopRes.body)
+check('payload 整体不含 cert.pem / key.pem 路径', !loopRes.body.includes('cert.pem') && !loopRes.body.includes('key.pem'), loopRes.body)
+
+eq('非回环请求被拒（403）', callPanelRoute('10.0.0.9').statusCode, 403)
+eq('非回环请求不吐正文', callPanelRoute('192.168.1.20').body, 'loopback only')
+eq('IPv6 回环也算回环', callPanelRoute('::1').statusCode, 200)
+eq('IPv4-mapped 回环也算回环', callPanelRoute('::ffff:127.0.0.1').statusCode, 200)
 
 // —— 登录，然后走真实 HTTP 路由 ——
 const login = await request('POST', '/login', {
@@ -329,6 +405,23 @@ const anon = await getJson('/api/sessions')
 eq('未登录 → 401', anon.status, 401)
 const disabled = await postJson('/api/answer', { questionId: 'x', answers: [] })
 eq('未登录作答 → 401', disabled.status, 401)
+
+// —— 拿不到 webServer 时必须软失败：一个便利面板不该把宿主拖垮 ——
+console.log('\n———— 没有 webServer 时的软失败 ————')
+const logsBefore = logs.length
+const second = createFakeRoot({ sessionController: fakeController })
+let secondErr = null
+try { mod.apply(second.root) } catch (err) { secondErr = err }
+check('没有 webServer 时 apply() 也不抛错', !secondErr, secondErr && secondErr.stack)
+check('日志说明面板读不到主机信息',
+  logs.slice(logsBefore).some((l) => l.includes('没有 webServer')), logs.slice(logsBefore).join(' | '))
+eq('没有 webServer 时不会多注册任何路由', routes.length, 1)
+// 等第二次 listen 的成败落定再收尾：否则它可能在主服务释放端口之后才绑上，
+// 让下面那条"端口不再接受连接"变成偶发失败。
+await waitFor(() => logs.slice(logsBefore).some((l) => l.includes('监听 0.0.0.0:')), 4000)
+for (const d of second.disposers) {
+  try { await d() } catch { /* 忽略 */ }
+}
 
 // —— 收尾 ——
 console.log = realLog
