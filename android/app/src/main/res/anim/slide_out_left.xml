@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 旧界面往左退一点点、放大并压暗，形成"纵深退开"的视差感。
+
+     这里两个量是**配平过的**，不能随便调：
+       scale 1.08  → 左右各向外扩 4% 宽度
+       translate -3% → 整体左移 3%
+       右边缘 = 100% + 4% - 3% = 101%，仍在屏幕外 → 全程铺满，不露壁纸。
+     若只左移不放大（比如 -28%），右边缘会退到屏幕内，把背后的系统桌面
+     露出来一条 —— 那正是这里必须放大来补的原因。
+     左边缘 = 0% - 4% - 3% = -7%，同理不会露。
+
+     压暗到 0.72 而不是更狠：再暗下去在新界面滑入的 300ms 里会看到明显的
+     "闪黑"，反而不如克制的暗。 -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+     android:interpolator="@android:interpolator/fast_out_slow_in">
+    <translate
+        android:fromXDelta="0"
+        android:toXDelta="-3%"
+        android:duration="300" />
+    <scale
+        android:fromXScale="1.0"
+        android:toXScale="1.08"
+        android:fromYScale="1.0"
+        android:toYScale="1.08"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:duration="300" />
+    <alpha
+        android:fromAlpha="1.0"
+        android:toAlpha="0.72"
+        android:duration="300" />
+</set>

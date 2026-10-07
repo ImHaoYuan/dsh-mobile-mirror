@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色。取值与 lib/web/app.css 的深色主题一致。 -->
+    <color name="window_bg">#0F1115</color>
+    <color name="icon_bg">#2C5CE6</color>
+</resources>

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name 刻意不在这里定义：由 build.gradle.kts 用 resValue 注入，
+         这样验证变体能在桌面图标上带 C / D / E 后缀，一眼认出装的是哪个包。 -->
+
+    <string name="setup_title">连接设置</string>
+    <string name="setup_intro">输入电脑上插件显示的地址。</string>
+    <string name="setup_field_hint">192.168.1.5:19388</string>
+    <string name="setup_connect">连接</string>
+    <string name="setup_testing">正在测试连接…</string>
+    <string name="setup_err_empty">请填写地址</string>
+    <string name="setup_err_format">地址格式不对，应形如 192.168.1.5:19388</string>
+    <string name="setup_err_unreachable">连不上。请确认手机与电脑在同一 Wi-Fi，且地址正确</string>
+    <string name="setup_err_cert">证书与已记录的指纹不符</string>
+    <string name="setup_err_http">电脑上有响应，但不是本插件的服务</string>
+
+    <string name="cert_title">首次连接：确认证书指纹</string>
+    <string name="cert_message">此确认只需一次，之后不再询问。\n\n请与电脑上插件显示的指纹逐段比对，一致才继续：</string>
+    <string name="cert_trust">指纹一致，记住并继续</string>
+    <string name="cert_cancel">取消</string>
+
+    <string name="notif_channel_service">后台连接</string>
+    <string name="notif_channel_service_desc">保持与电脑的连接，便于随时收发</string>
+    <string name="notif_service_title">DSH 镜像</string>
+    <string name="notif_service_text">正在保持连接</string>
+
+    <!-- 第 2 步：真实上岛。岛右边显示的文字，按状态切换。 -->
+    <string name="island_state_waiting">等你回答</string>
+    <string name="island_state_running">运行中</string>
+    <string name="island_state_done">已完成</string>
+    <string name="island_state_expired">登录失效</string>
+
+    <!-- 通知栏正文，同样跟状态走 -->
+    <string name="island_notif_waiting">有会话在等你回答</string>
+    <string name="island_notif_running">有会话正在运行</string>
+    <string name="island_notif_done">会话已完成</string>
+    <string name="island_notif_expired">登录态失效，打开 App 重新登录即可恢复</string>
+
+    <!-- 超级岛验证版。验证结束后，本组文案与 island_test 渠道应一并删除。 -->
+    <string name="notif_channel_island_test">超级岛测试</string>
+    <string name="notif_channel_island_test_desc">验证用：岛外观实验的测试通知走这个渠道（默认优先级）</string>
+    <string name="island_shortcut_short">超级岛诊断</string>
+    <string name="island_shortcut_long">超级岛诊断（验证版）</string>
+    <string name="island_diag_title">超级岛诊断</string>
+    <string name="island_diag_intro">超级岛不可用时会「静默失败」，所以这里把四个门槛的实际读数、登录态、以及后台监控的实时状态都摊开。\n\n三个入口：① 长按桌面上的 App 图标 →「超级岛诊断」；② 通知上的「超级岛诊断」；③ 长按屏幕最顶端那条细线。</string>
+    <string name="island_btn_refresh">刷新诊断</string>
+    <string name="island_btn_copy">复制诊断结果</string>
+    <string name="island_btn_clear">清除测试通知</string>
+    <string name="island_btn_settings">打开系统通知设置</string>
+    <string name="island_lab_header">岛外观实验（第 2 步的脚手架，保留备用）</string>
+    <string name="island_lab_hint">逐个点。每次发之前会先清掉上一条 —— 同时存在两条「想上岛」的通知时系统行为未定义。\n\n注意：这些按钮发的测试通知和服务真正驱动的岛是两条不同的通知。</string>
+    <string name="island_t1">① 基线 · 满环 + 文字「运行中」</string>
+    <string name="island_t2">② 试转圈 · 去掉 v2 的 progressInfo</string>
+    <string name="island_t3">③ 试转圈 · 去掉 progressTextInfo</string>
+    <string name="island_t4">④ 试转圈 · 两个进度字段都去掉</string>
+    <string name="island_t5">⑤ 试转圈 · progress = -1</string>
+    <string name="island_t6">⑥ 左图带字（试「DSH」）</string>
+    <string name="island_preview_header">第 2 步生产配方预览</string>
+    <string name="island_preview_hint">这三条用的就是第 2 步真正要挂的岛参数，只是内容写死成示例。\n\n⑦ 走的是「服务渠道」（低优先级）—— 第 2 步真正的岛就挂在那条常驻通知上。这个组合从没验证过，它要是不出岛，我就得把服务渠道提优先级。</string>
+    <string name="island_t7">⑦ 预览 · 运行中（蓝 · 服务渠道）</string>
+    <string name="island_t8">⑧ 预览 · 已完成（绿环）</string>
+    <string name="island_t9">⑨ 预览 · 等你回答（橙环）</string>
+    <string name="island_diag_outro">上方「后台监控」一节是第 2 步的实时状态：\n\n· 登录态 —— 会话 Cookie 有没有抄到。空的话，先在网页里登录一次\n· 当前岛状态 —— 等你回答 / 运行中 / 已完成 / 空闲\n\n岛不出现时先看这两行：登录态为空 → 不是岛的问题；状态一直是「空闲」→ 电脑上确实没有会话在跑。\n\n下面的六个按钮是 0.1.3 的岛外观实验，第 2 步的配方就是从它们（① 与 ⑥）来的，留着备用。⑦⑧⑨ 是生产配方预览。</string>
+</resources>

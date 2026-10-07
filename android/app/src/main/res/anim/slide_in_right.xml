@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 新界面从右侧滑入，同时从 0.94 放大到 1、淡入。
+     与网页里列表→聊天页的转场方向保持一致，这样从设置页进主界面时
+     感觉是同一套动效语言，而不是两套。
+
+     起始位移是 100%，此时窗口整体在屏幕外，所以缩小不会露出背后的东西；
+     随着位移趋近 0，缩放也趋近 1 —— 两个量同向收敛，读起来就是"推近"。
+
+     pivot 必须显式写 50%/50%：<scale> 默认以左上角为轴，那样会变成斜着飞进来。 -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+     android:interpolator="@android:interpolator/fast_out_slow_in">
+    <translate
+        android:fromXDelta="100%"
+        android:toXDelta="0"
+        android:duration="300" />
+    <scale
+        android:fromXScale="0.94"
+        android:toXScale="1.0"
+        android:fromYScale="0.94"
+        android:toYScale="1.0"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:duration="300" />
+    <alpha
+        android:fromAlpha="0.65"
+        android:toAlpha="1.0"
+        android:duration="300" />
+</set>

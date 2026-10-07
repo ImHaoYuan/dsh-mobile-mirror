@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 浅色（默认）。深色见 values-night/colors.xml。
+         取值与 lib/web/app.css 的浅色主题保持一致。 -->
+    <color name="window_bg">#F6F7F9</color>
+    <color name="icon_bg">#2C5CE6</color>
+</resources>

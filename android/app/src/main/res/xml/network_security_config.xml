@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 全局禁止明文流量。
+         我们只连自签 HTTPS；证书校验不走系统信任链，而是由 CertPinner 按指纹固定（TOFU），
+         见 docs/apk-plan.md §6.3 与 §8。 -->
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
