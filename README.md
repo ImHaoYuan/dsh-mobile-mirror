@@ -1,9 +1,10 @@
 # dsh-mobile-mirror
 
-在局域网里用手机镜像 DSH 的会话：看会话列表、看历史、看**实时逐字输出**。
+在局域网里用手机镜像 DSH 的会话：看会话列表、看历史、看**实时逐字输出**，
+以及**发消息**和**停止当前轮**。
 **桌面端行为完全不变** —— 不注入 UI、不遮挡、不改布局、不碰现有 webServer。
 
-当前进度：**P1 完成**（会话列表 + 历史快照 + 实时逐字输出）。发消息与停止当前轮在 P2。
+当前进度：**P2 完成**。剩余：二维码配对与桌面内配对页（P3）。
 
 ## 为什么是独立端口
 
@@ -93,7 +94,7 @@ plugin_manager install_bundle  target = link:D:/VibeCoding/Plugin/dsh-mobile-mir
 | `tls` | `true` | 关掉会退回明文 HTTP（不推荐） |
 | `certDir` | `null` | 证书目录，默认 `$DSH_HOME/mobile-mirror-cert` |
 | `allowedHosts` | `[]` | 额外的 Host 白名单（一般不需要） |
-| `enablePrompt` | `true` | 是否允许手机发消息（P2 生效） |
+| `enablePrompt` | `true` | **写操作总开关**。设 `false` 即只读模式：发消息与停止轮次都返回 403 |
 
 ## 路由与认证边界
 
@@ -109,6 +110,8 @@ plugin_manager install_bundle  target = link:D:/VibeCoding/Plugin/dsh-mobile-mir
 | `GET /api/sessions` | 需登录 | 会话列表，按最近活动降序 |
 | `GET /api/follow?id=&max=` | 需登录 | **SSE**：实时跟随一个会话 |
 | `GET /api/page?id=&before=&max=` | 需登录 | 往上翻更早的历史 |
+| `POST /api/prompt` | 需登录 + JSON | 发送一条文本消息 |
+| `POST /api/cancel` | 需登录 + JSON | 停止当前轮 |
 
 回环判定看 **socket 的真实来源地址**，不看 Host 头，所以伪造 Host 绕不过去。
 鉴权在"会话服务是否就绪"之前 —— 未登录者拿到的是 401，不会因为 503 而得知服务状态。
@@ -167,6 +170,48 @@ DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界
 `title` → `sessionTitle` → `name` → `label` → 模糊匹配含 `title` 的键；
 取不到就返回 `null`，由前端降级显示 `cwd` 末段 + 相对时间。
 
+### `POST /api/prompt` —— 发消息
+
+```jsonc
+// 请求（Content-Type: application/json）
+{ "sessionId": "sess-1", "requestId": "a1b2c3d4-…", "text": "你好", "timeZone": "Asia/Shanghai" }
+
+// 响应
+200 { "accepted": true, "duplicate": false }
+```
+
+`duplicate: true` 表示这次是幂等重放，消息**没有**重复发出。
+
+| 状态 | `error` | 含义 |
+|---|---|---|
+| 400 | `missing-session-id` / `bad-request-id` / `empty-text` / `text-too-long` / `bad-text` / `bad-body` | 参数问题 |
+| 403 | `prompt-disabled` | 配置里 `enablePrompt=false` |
+| 415 | `unsupported-media-type` | 没带 `application/json` |
+| 429 | `too-fast` | 同一会话 300ms 内又发了一条 |
+| 502 | `prompt-failed` | 上游报错，`message` 是原始信息 |
+| 503 | `session-controller-unavailable` | 会话服务未就绪 |
+
+**为什么有 `requestId` 与幂等台账。** 手机弱网下"发出去了但没收到响应"很常见，
+用户会重发。`SessionPromptRequest` 带 `requestId`，说明上游设计上支持幂等——
+但"上游确实按 requestId 去重"这件事没有实测验证过。所以服务端自己再记一层
+（最近 200 个 id / 10 分钟），不把正确性全押在未验证的假设上。
+
+**幂等优先于节流。** 重复的 `requestId` 在节流判断**之前**就返回 `200 {duplicate:true}`。
+否则弱网重试（几百毫秒内）会拿到 `429 发送太快了`——那是最需要"已受理"的时刻。
+
+**只支持纯文本。** `PromptContentPart` 还有 `image`（要 base64 走 `admitPromptContent`
+准入管道）和 `file`（要先上传拿 `receiptId`），都不在这一版范围内。
+
+**`mode` 固定 `queue`。** 另一个取值 `steer`（插进正在跑的轮次）语义未经验证，不做。
+
+### `POST /api/cancel` —— 停止当前轮
+
+```jsonc
+{ "sessionId": "sess-1" }   // → 200 { "accepted": true }
+```
+
+同样受 `enablePrompt` 总开关约束（`false` 时 403），错误码同上，502 时为 `cancel-failed`。
+
 ## 安全边界
 
 - **Host 校验**：只接受回环、私有网段 IPv4（10 / 172.16–31 / 192.168 / 169.254）
@@ -178,6 +223,10 @@ DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界
 - **会话**：HttpOnly + SameSite=Strict + Secure 的随机 Cookie；改密码会注销所有旧会话。
 - **SSE 背压**：客户端读得慢时 `await drain`，不会把事件无限堆在内存里；
   连接关闭时通过 `AbortController` 中止上游 `follow()`。
+- **写操作的 CSRF 三道防线**：`SameSite=Strict` 的 Cookie、`Origin` 必须与 `Host` 同源、
+  且强制 `Content-Type: application/json`（表单类简单请求打不进来，跨站必须走预检）。
+- **写操作的输入约束**：正文去空白后非空且 ≤8000 字符；`requestId` 必须匹配
+  `^[A-Za-z0-9_-]{1,128}$`；每会话 300ms 最小间隔；请求体上限 64KB。
 - **只在局域网**：不做任何内网穿透。手机在外网时用不了 —— 这是刻意的。
 
 ## 自测
@@ -185,7 +234,7 @@ DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界
 ```bash
 node tools/cert-test.mjs     # 证书层：27 项
 node tools/smoke.mjs         # HTTPS + 认证集成：32 项
-node tools/mirror-test.mjs   # P1 数据层 + 三条镜像路由：76 项
+node tools/mirror-test.mjs   # 数据层 + 五条路由：156 项
 ```
 
 三套都不需要启动 DSH，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
@@ -195,8 +244,9 @@ node tools/mirror-test.mjs   # P1 数据层 + 三条镜像路由：76 项
   OpenSSL 眼里结构正确、签名有效、对该地址有效。另外验证了负向情况
   （不信任该 CA 时必须失败、域名不匹配时必须失败），确保它不是"碰巧能用"。
 - `mirror-test.mjs` 用**伪造的 sessionController** 驱动真实的 HTTPS 服务，
-  于是不用启动 DSH 就能端到端验证 SSE 管道：SSE 响应头、快照投影、
-  事件投影、逐字帧拼接、空 delta 丢弃、鉴权顺序、缺参 400、伪造 Host 403。
+  于是不用启动 DSH 就能端到端验证整条管道：SSE 响应头、快照与事件投影、
+  逐字帧拼接、鉴权顺序、缺参 400、伪造 Host 403、静态资源分发与目录遍历 404，
+  以及 P2 的写操作——校验、幂等重放优先于节流、节流 429、`enablePrompt=false` 全拒。
 
 ## 开发注意事项
 
@@ -210,5 +260,8 @@ DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / 
 
 - **P0（已完成）**：独立端口监听、HTTPS 自签证书、账号密码登录、设置页。
 - **P1（已完成）**：会话列表、历史快照与翻页、实时逐字输出（SSE）、手机端界面。
-- **P2**：手机发消息（`sessionController.prompt`）、停止当前轮（`cancel`）。
+- **P2（已完成）**：手机发消息（`sessionController.prompt`，幂等 + 节流）、
+  停止当前轮（`cancel`，需二次确认）、`enablePrompt` 只读总开关。
 - **P3**：二维码配对、桌面内配对页、多网卡地址选择。
+- **之后可做**：手机贴图（要走 `admitPromptContent` 准入管道）、
+  会话重命名（`rename`）、消息队列管理（`updateQueue`）、附件下载端点。

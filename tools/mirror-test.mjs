@@ -1,10 +1,11 @@
 /**
- * P1 测试：会话数据层 + 三条镜像路由。
+ * P1 + P2 测试：会话数据层 + 五条镜像路由。
  *
  * 关键点：用一个**伪造的 sessionController** 驱动真实的 HTTP 服务，
  * 于是不需要启动 DSH、不需要重启宿主，就能端到端验证
- * `/api/sessions`、`/api/follow`（SSE）、`/api/page` 的完整管道
- * —— 包括登录鉴权、SSE 头、事件投影、逐字帧、背压与收尾。
+ * `/api/sessions`、`/api/follow`（SSE）、`/api/page`、`/api/prompt`、`/api/cancel`
+ * 的完整管道 —— 包括登录鉴权、SSE 头、事件投影、逐字帧、背压、
+ * 写操作的校验/幂等/节流/CSRF 闸门。
  */
 
 import https from 'node:https'
@@ -15,6 +16,7 @@ import path from 'node:path'
 import {
   projectEvent, projectStreamFrame, projectSnapshot, encodeFollowFrame,
   normalizeSummary, titleOf, projectBlocks, listSessions, pageBack, openFollow,
+  validatePrompt, createPromptLedger, createRateGate, sendPrompt, cancelTurn, MAX_PROMPT_CHARS,
 } from '../lib/mirror.js'
 import { createMirrorServer } from '../lib/server.js'
 
@@ -145,6 +147,34 @@ eq('信封：snapshot', encodeFollowFrame({ type: 'snapshot', header: {}, record
 eq('信封：冗余帧返回 null', encodeFollowFrame({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: '' } } }), null)
 eq('信封：未知帧返回 null', encodeFollowFrame({ type: 'weird' }), null)
 
+// —— P2 纯函数 ——
+eq('校验：缺 sessionId', validatePrompt({ requestId: 'a', text: 'x' }).error, 'missing-session-id')
+eq('校验：requestId 含空格', validatePrompt({ sessionId: 's', requestId: 'a b', text: 'x' }).error, 'bad-request-id')
+eq('校验：requestId 为空', validatePrompt({ sessionId: 's', requestId: '', text: 'x' }).error, 'bad-request-id')
+eq('校验：requestId 超长', validatePrompt({ sessionId: 's', requestId: 'a'.repeat(129), text: 'x' }).error, 'bad-request-id')
+eq('校验：text 不是字符串', validatePrompt({ sessionId: 's', requestId: 'a', text: 123 }).error, 'bad-text')
+eq('校验：text 全是空白', validatePrompt({ sessionId: 's', requestId: 'a', text: '   \n ' }).error, 'empty-text')
+eq('校验：text 超长', validatePrompt({ sessionId: 's', requestId: 'a', text: 'x'.repeat(MAX_PROMPT_CHARS + 1) }).error, 'text-too-long')
+const okPrompt = validatePrompt({ sessionId: ' s ', requestId: 'a-1_B', text: '  你好  ', timeZone: 'Asia/Shanghai' })
+eq('校验：通过并 trim 正文', okPrompt.value.text, '你好')
+eq('校验：sessionId 也 trim', okPrompt.value.sessionId, 's')
+eq('校验：时区透传', okPrompt.value.timeZone, 'Asia/Shanghai')
+eq('校验：时区超长则丢弃', validatePrompt({ sessionId: 's', requestId: 'a', text: 'x', timeZone: 'z'.repeat(65) }).value.timeZone, undefined)
+
+const ledger = createPromptLedger({ limit: 3, ttlMs: 1000 })
+eq('台账：初始没有', ledger.has('r1'), false)
+ledger.remember('r1')
+eq('台账：记下后命中', ledger.has('r1'), true)
+eq('台账：没记过的不命中', ledger.has('r2'), false)
+for (const key of ['r2', 'r3', 'r4']) ledger.remember(key)
+check('台账：超过上限淘汰最老的', !ledger.has('r1') && ledger.has('r4'), `size=${ledger.size}`)
+
+const gate = createRateGate({ minIntervalMs: 300 })
+eq('闸门：首次放行', gate.allow('s', 1000), true)
+eq('闸门：间隔内拦下', gate.allow('s', 1100), false)
+eq('闸门：间隔后放行', gate.allow('s', 1400), true)
+eq('闸门：不同键互不影响', gate.allow('other', 1400), true)
+
 // ==================== 二、伪造 sessionController ====================
 const SESSION_ID = 'sess-1'
 
@@ -159,8 +189,20 @@ const RAW_EVENTS = [
 ]
 
 let followRequest = null
+let promptCalls = []
+let cancelCalls = []
 function fakeController() {
+  promptCalls = []
+  cancelCalls = []
   return {
+    async prompt(request) {
+      promptCalls.push(request)
+      return { accepted: true }
+    },
+    cancel(request) {
+      cancelCalls.push(request)
+      return { accepted: true }
+    },
     async list() {
       return {
         items: [
@@ -195,25 +237,35 @@ console.log('\n———— 路由 ————')
 const config = {
   port: PORT, username: '', passwordHash: null, password: null,
   sessionTtlDays: 30, tls: true, certDir: path.join(TMP, 'cert'),
-  allowedHosts: [], enablePrompt: false,
+  // 主服务开写操作；只读模式（false）在下面单独起一个服务验证。
+  allowedHosts: [], enablePrompt: true,
 }
 const deps = { controller: null }
 const mirror = createMirrorServer(config, { log: () => {}, configFile: path.join(TMP, 'config.json'), deps })
 await mirror.listen()
 const certPem = mirror.certPem
 
-function req(pathname, { method = 'GET', headers = {}, body, raw = false, skipNameCheck = false } = {}) {
+function req(pathname, { method = 'GET', headers = {}, body, json, rawText, raw = false, skipNameCheck = false, contentType } = {}) {
   return new Promise((resolve, reject) => {
-    const payload = body ? new URLSearchParams(body).toString() : null
+    const isJson = json !== undefined
+    const payload = rawText !== undefined
+      ? rawText
+      : (isJson ? JSON.stringify(json) : (body ? new URLSearchParams(body).toString() : null))
+    const type = contentType !== undefined
+      ? contentType
+      : (isJson || rawText !== undefined ? 'application/json; charset=utf-8' : 'application/x-www-form-urlencoded')
     const r = https.request({
       host: '127.0.0.1', port: PORT, path: pathname, method,
       ca: certPem, rejectUnauthorized: true,
+      // agent:false —— 不复用连接池。否则同一端口上换了服务端实例时，
+      // 客户端会拿池里那个已经死掉的 socket 去发请求，得到 ECONNRESET。
+      agent: false,
       // 故意伪造 Host 的用例：TLS 客户端默认会拿 Host 去比对证书 SAN，
       // 那会把请求提前打死在客户端。此时只跳过名称比对，证书链仍然验证。
       ...(skipNameCheck ? { checkServerIdentity: () => undefined } : {}),
       headers: {
         Host: `127.0.0.1:${PORT}`,
-        ...(payload ? { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(payload) } : {}),
+        ...(payload !== null && type ? { 'Content-Type': type, 'Content-Length': Buffer.byteLength(payload) } : {}),
         ...headers,
       },
     }, (res) => {
@@ -334,7 +386,112 @@ check('编码目录遍历被挡', traversal.status === 404, String(traversal.sta
 const unknown = await req('/secret.txt', { headers: { Cookie: cookie } })
 check('白名单外路径 → 404', unknown.status === 404, String(unknown.status))
 
+// ==================== 三·五、P2 写操作 ====================
+console.log('\n———— 写操作 ————')
+
+const anonPrompt = await req('/api/prompt', { method: 'POST', json: { sessionId: SESSION_ID, requestId: 'anon-1', text: 'x' } })
+eq('未登录发消息 → 401', anonPrompt.status, 401)
+const anonCancel = await req('/api/cancel', { method: 'POST', json: { sessionId: SESSION_ID } })
+eq('未登录停止 → 401', anonCancel.status, 401)
+
+// CSRF：写操作强制 JSON，表单类简单请求打不进来
+const wrongType = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie }, body: { sessionId: SESSION_ID },
+  contentType: 'application/x-www-form-urlencoded',
+})
+eq('表单内容类型 → 415', wrongType.status, 415)
+eq('415 说明原因', wrongType.body.error, 'unsupported-media-type')
+
+const badJson = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie }, rawText: '{ 这不是 json', contentType: 'application/json',
+})
+eq('非法 JSON → 400', badJson.status, 400)
+eq('非法 JSON 错误码', badJson.body.error, 'bad-body')
+
+// 参数校验：各用独立 sessionId，避免互相触发节流
+const empty = await req('/api/prompt', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: 'v1', requestId: 'v1', text: '   ' } })
+eq('空消息 → 400', empty.status, 400)
+eq('空消息错误码', empty.body.error, 'empty-text')
+const tooLong = await req('/api/prompt', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: 'v2', requestId: 'v2', text: 'x'.repeat(MAX_PROMPT_CHARS + 1) } })
+eq('超长消息 → 400', tooLong.status, 400)
+eq('超长错误码', tooLong.body.error, 'text-too-long')
+const badId = await req('/api/prompt', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: 'v3', requestId: 'a b', text: 'x' } })
+eq('非法 requestId → 400', badId.status, 400)
+eq('非法 requestId 错误码', badId.body.error, 'bad-request-id')
+const noSession = await req('/api/prompt', { method: 'POST', headers: { Cookie: cookie }, json: { requestId: 'v4', text: 'x' } })
+eq('缺 sessionId → 400', noSession.status, 400)
+eq('缺 sessionId 错误码', noSession.body.error, 'missing-session-id')
+
+// 正常发送
+const sent = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: SESSION_ID, requestId: 'req-1', text: '  你好 DSH  ', timeZone: 'Asia/Shanghai' },
+})
+eq('发送成功 → 200', sent.status, 200)
+eq('返回 accepted', sent.body.accepted, true)
+eq('首次不是 duplicate', sent.body.duplicate, false)
+eq('controller.prompt 被调用一次', promptCalls.length, 1)
+eq('请求体：mode 固定 queue', promptCalls[0].mode, 'queue')
+eq('请求体：sessionId', promptCalls[0].sessionId, SESSION_ID)
+eq('请求体：requestId 透传', promptCalls[0].requestId, 'req-1')
+eq('请求体：content 形状', JSON.stringify(promptCalls[0].content), JSON.stringify([{ type: 'text', text: '你好 DSH' }]))
+eq('请求体：时区透传', promptCalls[0].clientTimeZone, 'Asia/Shanghai')
+
+// 幂等：同一 requestId 立刻重发。此刻仍在 300ms 节流窗口内，
+// 必须走幂等返回 200，而不是被节流成 429 —— 否则弱网重试会看到"发送太快了"。
+const again = await req('/api/prompt', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID, requestId: 'req-1', text: '你好 DSH' } })
+eq('重复 requestId → 200（而不是 429）', again.status, 200)
+eq('重复 requestId 标记 duplicate', again.body.duplicate, true)
+eq('重复 requestId 没有再次调用 controller', promptCalls.length, 1)
+
+// 节流：换个新 requestId 立刻再发
+const tooFast = await req('/api/prompt', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID, requestId: 'req-2', text: '再来一条' } })
+eq('300ms 内换新 id → 429', tooFast.status, 429)
+eq('429 错误码', tooFast.body.error, 'too-fast')
+
+await new Promise((resolve) => setTimeout(resolve, 320))
+const sent2 = await req('/api/prompt', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID, requestId: 'req-3', text: '第二条' } })
+eq('等过窗口后可再发 → 200', sent2.status, 200)
+eq('第二次确实调用了 controller', promptCalls.length, 2)
+
+// 停止当前轮
+const cancelled = await req('/api/cancel', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID } })
+eq('停止 → 200', cancelled.status, 200)
+eq('停止返回 accepted', cancelled.body.accepted, true)
+eq('controller.cancel 收到 sessionId', cancelCalls[0].sessionId, SESSION_ID)
+const cancelNoId = await req('/api/cancel', { method: 'POST', headers: { Cookie: cookie }, json: {} })
+eq('停止缺 sessionId → 400', cancelNoId.status, 400)
+eq('停止缺参错误码', cancelNoId.body.error, 'missing-session-id')
+
+// 写操作的 Host 闸门同样生效
+const badHostPrompt = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie, Host: 'evil.example.com' },
+  json: { sessionId: SESSION_ID, requestId: 'req-9', text: 'x' }, skipNameCheck: true,
+})
+check('伪造 Host 发消息被挡', badHostPrompt.status === 403, String(badHostPrompt.status))
+
 await mirror.close()
+
+// ==================== 三·六、只读模式（enablePrompt=false） ====================
+console.log('\n———— 只读模式 ————')
+// 复用同一个端口（上一个服务已关）与同一个账号：config 已被 /setup 改过。
+const readOnly = createMirrorServer(
+  { ...config, enablePrompt: false },
+  { log: () => {}, configFile: path.join(TMP, 'config-readonly.json'), deps: { controller: fakeController() } },
+)
+await readOnly.listen()
+const roLogin = await req('/login', { method: 'POST', body: { username: 'u', password: 'pass-123', remember: 'on' } })
+const roCookie = String(roLogin.headers['set-cookie']).split(';')[0]
+check('只读模式仍可登录', roLogin.status === 303 && roCookie.startsWith('dsh_mm_session='))
+
+const roPrompt = await req('/api/prompt', { method: 'POST', headers: { Cookie: roCookie }, json: { sessionId: 's', requestId: 'ro-1', text: 'x' } })
+eq('enablePrompt=false 发消息 → 403', roPrompt.status, 403)
+eq('403 错误码', roPrompt.body.error, 'prompt-disabled')
+const roCancel = await req('/api/cancel', { method: 'POST', headers: { Cookie: roCookie }, json: { sessionId: 's' } })
+eq('enablePrompt=false 停止 → 403', roCancel.status, 403)
+eq('只读模式下列表仍可用', (await req('/api/sessions', { headers: { Cookie: roCookie } })).status, 200)
+eq('只读模式下 controller.prompt 一次都没被调用', promptCalls.length, 0)
+await readOnly.close()
 
 // ==================== 四、脱离 HTTP 直测数据层入口 ====================
 console.log('\n———— 数据层入口 ————')
