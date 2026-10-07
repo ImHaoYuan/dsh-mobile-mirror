@@ -175,6 +175,44 @@ eq('闸门：间隔内拦下', gate.allow('s', 1100), false)
 eq('闸门：间隔后放行', gate.allow('s', 1400), true)
 eq('闸门：不同键互不影响', gate.allow('other', 1400), true)
 
+// —— prompt 的 signal 兜底 ——
+// 真机上踩过的坑：DSH 门面 prompt(request, signal) 第一行是 signal.throwIfAborted()，
+// 且没有 undefined 保护。不传 signal 会得到一个 TypeError，
+// 报错文案是 "Cannot read properties of undefined (reading 'throwIfAborted')"，
+// 完全看不出根因，白花了一轮排查。
+const sigController = {
+  got: [],
+  async prompt(request, signal) {
+    signal.throwIfAborted()   // 模仿 DSH 门面，故意不加保护
+    this.got.push(signal)
+    return { accepted: true }
+  },
+}
+const noSignalResult = await sendPrompt(sigController, { sessionId: 's', requestId: 'sig-1', text: 'x' })
+eq('sendPrompt：调用方不传 signal 也能成功', noSignalResult.ok, true)
+check('sendPrompt：内部补的是真实 AbortSignal',
+  !!sigController.got[0] &&
+  typeof sigController.got[0].throwIfAborted === 'function' &&
+  sigController.got[0].aborted === false,
+  sigController.got[0] ? `aborted=${sigController.got[0].aborted}` : 'signal 为空')
+
+const providedAbort = new AbortController()
+const fwdController = {
+  got: null,
+  async prompt(request, signal) { signal.throwIfAborted(); this.got = signal; return { accepted: true } },
+}
+await sendPrompt(fwdController, { sessionId: 's', requestId: 'sig-2', text: 'x' }, { signal: providedAbort.signal })
+check('sendPrompt：调用方给了 signal 就原样透传', fwdController.got === providedAbort.signal)
+
+const preAborted = new AbortController()
+preAborted.abort()
+let abortThrew = null
+try {
+  await sendPrompt(sigController, { sessionId: 's', requestId: 'sig-3', text: 'x' }, { signal: preAborted.signal })
+} catch (err) { abortThrew = err }
+check('sendPrompt：已 abort 的 signal 会抛（证明门面的检查真的在跑）',
+  abortThrew !== null && /abort/i.test(String(abortThrew && abortThrew.name) + String(abortThrew && abortThrew.message)))
+
 // ==================== 二、伪造 sessionController ====================
 const SESSION_ID = 'sess-1'
 
@@ -190,13 +228,22 @@ const RAW_EVENTS = [
 
 let followRequest = null
 let promptCalls = []
+let promptSignals = []
 let cancelCalls = []
 function fakeController() {
   promptCalls = []
+  promptSignals = []
   cancelCalls = []
   return {
-    async prompt(request) {
+    // 精确模仿 DSH 门面（app.asar 第 339488 行）：
+    //   prompt(request, signal) { signal.throwIfAborted(); return this.commands.prompt(request); }
+    // 门面第一行就调 signal.throwIfAborted()，而且**没有 undefined 保护**。
+    // 所以这里故意也不加保护：调用方忘传 signal 时必须在这里炸出来，
+    // 而不是等到真机上只看到一句"上游报错"。
+    async prompt(request, signal) {
+      signal.throwIfAborted()
       promptCalls.push(request)
+      promptSignals.push(signal)
       return { accepted: true }
     },
     cancel(request) {
@@ -436,6 +483,11 @@ eq('请求体：sessionId', promptCalls[0].sessionId, SESSION_ID)
 eq('请求体：requestId 透传', promptCalls[0].requestId, 'req-1')
 eq('请求体：content 形状', JSON.stringify(promptCalls[0].content), JSON.stringify([{ type: 'text', text: '你好 DSH' }]))
 eq('请求体：时区透传', promptCalls[0].clientTimeZone, 'Asia/Shanghai')
+check('路由：传给 controller.prompt 的是真实 AbortSignal',
+  !!promptSignals[0] &&
+  typeof promptSignals[0].throwIfAborted === 'function' &&
+  promptSignals[0].aborted === false,
+  promptSignals[0] ? `aborted=${promptSignals[0].aborted}` : 'signal 为空')
 
 // 幂等：同一 requestId 立刻重发。此刻仍在 300ms 节流窗口内，
 // 必须走幂等返回 200，而不是被节流成 429 —— 否则弱网重试会看到"发送太快了"。
@@ -492,6 +544,46 @@ eq('enablePrompt=false 停止 → 403', roCancel.status, 403)
 eq('只读模式下列表仍可用', (await req('/api/sessions', { headers: { Cookie: roCookie } })).status, 200)
 eq('只读模式下 controller.prompt 一次都没被调用', promptCalls.length, 0)
 await readOnly.close()
+
+// ==================== 三·七、上游报错的透传 ====================
+console.log('\n———— 上游报错透传 ————')
+// 502 要把上游的 code 带出来。只透传 message 的话，"业务拒绝"（RemoteError 带 code）
+// 和"DSH 代码缺陷"（普通 TypeError 没有 code）在手机上长得一模一样。
+const failingDeps = {
+  controller: {
+    ...fakeController(),
+    async prompt(request) {
+      if (request.content[0].text === 'nocode') {
+        // 模仿真机上那个 bug：普通 TypeError，没有 code
+        throw new TypeError("Cannot read properties of undefined (reading 'throwIfAborted')")
+      }
+      const err = new Error('boom from upstream')
+      err.code = 'session/not-found'
+      throw err
+    },
+  },
+}
+const failing = createMirrorServer(
+  { ...config, enablePrompt: true },
+  { log: () => {}, configFile: path.join(TMP, 'config-failing.json'), deps: failingDeps },
+)
+await failing.listen()
+const failLogin = await req('/login', { method: 'POST', body: { username: 'u', password: 'pass-123', remember: 'on' } })
+const failCookie = String(failLogin.headers['set-cookie']).split(';')[0]
+
+const coded = await req('/api/prompt', { method: 'POST', headers: { Cookie: failCookie }, json: { sessionId: 's1', requestId: 'fail-1', text: 'x' } })
+eq('上游抛错 → 502', coded.status, 502)
+eq('502 的 error 是本插件自己的错误码', coded.body.error, 'prompt-failed')
+eq('502 透传上游 code', coded.body.code, 'session/not-found')
+eq('502 透传上游 message', coded.body.message, 'boom from upstream')
+
+const noCode = await req('/api/prompt', { method: 'POST', headers: { Cookie: failCookie }, json: { sessionId: 's2', requestId: 'fail-2', text: 'nocode' } })
+eq('无 code 的 TypeError 也回 502', noCode.status, 502)
+check('上游没有 code 时不凭空造字段', noCode.body.code === undefined, JSON.stringify(noCode.body))
+check('无 code 时 message 仍原样带出',
+  /throwIfAborted/.test(String(noCode.body.message)), String(noCode.body.message))
+
+await failing.close()
 
 // ==================== 四、脱离 HTTP 直测数据层入口 ====================
 console.log('\n———— 数据层入口 ————')
