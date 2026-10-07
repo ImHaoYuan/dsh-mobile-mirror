@@ -66,8 +66,6 @@ final class IslandMonitor {
         String right = "";
         int progress = 100;
         String color = IslandMonitor.BLUE;
-        /** 诊断页用的一句话。 */
-        String note = "（还没开始轮询）";
 
         /**
          * 转成 {@link IslandSupport.Opts}；返回 {@code null} 表示<b>不该上岛</b>。
@@ -107,11 +105,6 @@ final class IslandMonitor {
                 default:      return ctx.getString(R.string.notif_service_text);
             }
         }
-
-        /** 岛上的文字，给诊断页看。 */
-        String describe() {
-            return state + (left.isEmpty() ? "" : " · " + left) + " · " + right;
-        }
     }
 
     /** 状态变化时的回调。在<b>主线程</b>触发。 */
@@ -140,26 +133,6 @@ final class IslandMonitor {
      * 90 秒足够容忍几次抖动和 Doze 下的延迟。
      */
     private static final long STALE_MS = 90000L;
-
-    /**
-     * 最近一次状态的文字描述，供 {@link IslandTestActivity} 读取。
-     *
-     * <p>服务里的状态 Activity 拿不到，用静态字段最省事 —— 它只用于诊断展示，
-     * 没有并发正确性的要求。
-     */
-    static volatile String lastSummary = "（还没开始轮询）";
-
-    /**
-     * 最近一次会话列表的统计，给诊断页看。
-     *
-     * <p><b>为什么要单独统计子智能体</b>：用户报告"手机镜像看不到子智能体"，但逆向
-     * DSH 的 {@code sessionController.list()} 后，源码上<b>没有任何过滤子会话的逻辑</b>
-     * （只对"冷会话"要求有 {@code cwd}），而实测两个子智能体会话的 {@code cwd} 都是有值的。
-     * 也就是说 —— <b>按源码它们应该会出现</b>。这个计数就是为了在真机上把真相钉死：
-     * 如果这里显示"其中子智能体 2 个"，那问题在网页端渲染；如果显示 0，
-     * 那问题在 DSH 返回的数据里，得换 {@code listChildren} 那条路。
-     */
-    static volatile String lastSessionsInfo = "（还没读到会话列表）";
 
     private final Context ctx;
     private final ServerPrefs prefs;
@@ -197,8 +170,8 @@ final class IslandMonitor {
     void start() {
         if (started) return;
         started = true;
-        // 先算一次初始状态：没登录时轮询会直接返回，不先算的话诊断页会一直停在
-        // 「还没开始轮询」，看不出到底是没登录还是轮询坏了。
+        // 先算一次初始状态：没登录时轮询会直接返回，不先算的话通知正文要等到
+        // 第一个 tick 才有内容，看不出到底是没登录还是轮询坏了。
         recompute();
         ui.post(questionsTick);
         ui.post(sessionsTick);
@@ -291,8 +264,7 @@ final class IslandMonitor {
             final MirrorApi.Reply r = MirrorApi.get(ctx, "/api/sessions", cookie);
             final List<String> running = new ArrayList<>();
             final Map<String, String> found = new HashMap<>();
-            int total = 0;
-            int subs = 0;
+
             if (r.ok()) {
                 try {
                     JSONArray items = new JSONObject(r.body).optJSONArray("items");
@@ -302,8 +274,6 @@ final class IslandMonitor {
                             if (it == null) continue;
                             String id = it.optString("id", "");
                             if (id.isEmpty()) continue;
-                            total++;
-                            if (isSubagent(it)) subs++;
                             String title = it.optString("title", "");
                             if (!title.isEmpty()) found.put(id, title);
                             if (it.optBoolean("running", false)) running.add(id);
@@ -312,8 +282,7 @@ final class IslandMonitor {
                 } catch (Throwable ignored) {
                 }
             }
-            final int fTotal = total;
-            final int fSubs = subs;
+
             ui.post(() -> {
                 sessionsInFlight.set(false);
                 applyAuth(r);
@@ -321,28 +290,10 @@ final class IslandMonitor {
                     titles.putAll(found);
                     runningIds = running;
                     detectFinished();
-                    lastSessionsInfo = fTotal + " 个会话"
-                            + (fSubs > 0
-                               ? "，其中子智能体 " + fSubs + " 个"
-                               : "，子智能体 0 个（DSH 没返回带 origin=subagent 的项）");
-                } else {
-                    lastSessionsInfo = "读取失败（code=" + r.code + "）";
                 }
                 recompute();
             });
         });
-    }
-
-    /**
-     * 判断一条会话是不是子智能体。
-     *
-     * <p>两个判据都认：DSH 的摘要在子会话上会带 {@code origin:"subagent"}（实测确认），
-     * 以及 {@code parentSessionId}（{@code mirror.js} 的 {@code normalizeSummary()}
-     * 会把它原样透传出来）。任一条命中就算 —— 宁可多标，不可漏标。
-     */
-    private static boolean isSubagent(JSONObject it) {
-        if (!it.isNull("origin") && "subagent".equals(it.optString("origin", ""))) return true;
-        return !it.isNull("parentSessionId") && !it.optString("parentSessionId", "").isEmpty();
     }
 
     /**
@@ -394,48 +345,34 @@ final class IslandMonitor {
             s.state = State.EXPIRED;
             s.right = ctx.getString(R.string.island_state_expired);
             s.color = RED;
-            s.note = "登录态失效（401）。打开 App 重新登录即可恢复。";
         } else if (lastOkAt == 0 || now - lastOkAt > STALE_MS) {
             // 数据不可信（没登录 / 连不上）—— 一律收岛，绝不让岛显示陈旧状态
             s.state = State.IDLE;
-            if (prefs.cookie().isEmpty()) {
-                s.note = "未登录（还没在网页里登录过）—— 不上岛";
-            } else if (lastOkAt == 0) {
-                s.note = "还没成功轮询过 —— 连不上电脑？";
-            } else {
-                s.note = "连不上电脑（已 " + ((now - lastOkAt) / 1000) + " 秒没有成功轮询）—— 岛收起";
-            }
         } else if (!waitingIds.isEmpty()) {
             s.state = State.WAITING;
             s.title = titleOf(waitingIds.get(0));
             s.left = shortTitle(titleOf(waitingIds.get(0)));
             s.right = ctx.getString(R.string.island_state_waiting);
             s.color = ORANGE;
-            s.note = "有 " + waitingIds.size() + " 个会话在等你回答";
         } else if (!runningIds.isEmpty()) {
             s.state = State.RUNNING;
             s.title = titleOf(runningIds.get(0));
             s.left = shortTitle(titleOf(runningIds.get(0)));
             s.right = ctx.getString(R.string.island_state_running);
             s.color = BLUE;
-            s.note = "有 " + runningIds.size() + " 个会话在运行";
         } else if (System.currentTimeMillis() < doneUntil) {
             s.state = State.DONE;
             s.title = doneTitle;
             s.left = shortTitle(doneTitle);
             s.right = ctx.getString(R.string.island_state_done);
             s.color = GREEN;
-            s.note = "会话已完成，绿环保持 " + (DONE_HOLD_MS / 1000) + " 秒";
         } else {
             s.state = State.IDLE;
-            s.note = "空闲 —— 岛收起";
         }
 
         // 标题也进签名：同一个状态换了会话（比如另一个会话开始跑）也要重发，
         // 否则岛上会一直挂着上一个会话的名字。
         String sig = s.state + "|" + s.title + "|" + s.left + "|" + s.right + "|" + s.progress + "|" + s.color;
-        lastSummary = s.describe() + "\n      " + s.note
-                + (s.title.isEmpty() ? "" : "\n      标题：" + s.title);
 
         // 状态签名没变就不重发通知。3 秒一次的重发会让通知栏抖，还费电。
         if (sig.equals(lastSignature)) return;

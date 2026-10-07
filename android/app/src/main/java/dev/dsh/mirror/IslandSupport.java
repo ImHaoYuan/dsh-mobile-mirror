@@ -3,22 +3,18 @@ package dev.dsh.mirror;
 import android.app.Notification;
 import android.content.Context;
 import android.graphics.drawable.Icon;
-import android.net.Uri;
-import android.os.Build;
+
 import android.os.Bundle;
-import android.provider.Settings;
 
 import org.json.JSONException;
 import org.json.JSONObject;
-
-import java.lang.reflect.Method;
-import java.util.Locale;
 
 /**
  * 小米超级岛（焦点通知）支持。
  *
  * <p>键名与 JSON 结构全部来自真实参考实现，不是推测：
- * {@code reference/ABK/app/src/main/java/com/abk/kernel/utils/NotificationUtils.kt}（418 行）。
+ * 第三方开源项目 ABK（https://github.com/xingguangcuican6666/ABK）的
+ * {@code app/src/main/java/com/abk/kernel/utils/NotificationUtils.kt}（418 行）。
  * 详见 {@code docs/apk-plan.md} §A3。
  *
  * <p><b>核心约束：超级岛是「通知」的渲染目标，不是界面渲染方式。</b>
@@ -39,96 +35,8 @@ final class IslandSupport {
     /** {@code pics} 里的键名；JSON 的 {@code pic} / {@code picDark} 引用它。 */
     private static final String PIC_KEY = "miui.focus.pic_icon";
 
-    /** 系统属性：设备是否支持岛。 */
-    private static final String PROP_ISLAND = "persist.sys.feature.island";
-    /** 系统设置：焦点通知协议版本。参考实现要求恰好等于 3（只支持 OS3）。 */
-    private static final String SETTING_FOCUS_PROTOCOL = "notification_focus_protocol";
-    /** 焦点通知权限的 ContentProvider。 */
-    private static final String FOCUS_AUTHORITY = "content://miui.statusbar.notification.public";
-
     /** 参考实现里进度条"未达到"部分的颜色，逐字照抄。 */
     private static final String COLOR_PROGRESS_UNREACHED = "#1A000000";
-
-    // ------------------------------------------------------------------
-    // 四个门槛
-    // ------------------------------------------------------------------
-
-    /** 门槛 ①：厂商或品牌含 xiaomi / redmi / poco。 */
-    static boolean isXiaomiDevice() {
-        return brandHit(Build.MANUFACTURER) || brandHit(Build.BRAND);
-    }
-
-    private static boolean brandHit(String raw) {
-        if (raw == null) return false;
-        String s = raw.toLowerCase(Locale.US);
-        return s.contains("xiaomi") || s.contains("redmi") || s.contains("poco");
-    }
-
-    /**
-     * 门槛 ②：反射读 {@code SystemProperties.getBoolean("persist.sys.feature.island")}。
-     *
-     * <p>用反射是因为 {@code android.os.SystemProperties} 不是公开 API。
-     * 任何失败（类不存在、方法签名变了、抛异常）一律返回 false —— 失败安全。
-     */
-    static boolean hasIslandSystemProperty() {
-        Object v = readSystemProperty();
-        return v instanceof Boolean && (Boolean) v;
-    }
-
-    /** 返回 Boolean（读到了）或 String（读不到的原因），供诊断显示。 */
-    static Object readSystemProperty() {
-        try {
-            Class<?> cls = Class.forName("android.os.SystemProperties");
-            Method getBoolean = cls.getMethod("getBoolean", String.class, boolean.class);
-            return getBoolean.invoke(null, PROP_ISLAND, false);
-        } catch (Throwable t) {
-            return t.getClass().getSimpleName() + ": " + t.getMessage();
-        }
-    }
-
-    /** 门槛 ③：{@code notification_focus_protocol} 的值。读不到返回 -1。 */
-    static int focusProtocol(Context ctx) {
-        try {
-            return Settings.System.getInt(
-                    ctx.getContentResolver(), SETTING_FOCUS_PROTOCOL, 0);
-        } catch (Throwable t) {
-            return -1;
-        }
-    }
-
-    /**
-     * 门槛 ④：运行时按包名裁定「能否上岛」。
-     *
-     * <p>这不是向小米申请的白名单，是系统按包名裁定的权限。用户需在
-     * HyperOS 设置里为本 App 打开「焦点通知」。
-     *
-     * @return Boolean.TRUE / Boolean.FALSE（查到了），或 String（查询本身失败）
-     */
-    static Object queryFocusPermission(Context ctx) {
-        try {
-            Bundle args = new Bundle();
-            args.putString("package", ctx.getPackageName());
-            Bundle r = ctx.getContentResolver().call(
-                    Uri.parse(FOCUS_AUTHORITY), "canShowFocus", null, args);
-            if (r == null) return "provider 返回 null";
-            return r.getBoolean("canShowFocus", false);
-        } catch (Throwable t) {
-            return t.getClass().getSimpleName() + ": " + t.getMessage();
-        }
-    }
-
-    static boolean hasFocusPermission(Context ctx) {
-        Object v = queryFocusPermission(ctx);
-        return v instanceof Boolean && (Boolean) v;
-    }
-
-    /** 四个门槛全过。注意：这只是「应该能上岛」，实际能否渲染仍需真机看。 */
-    static boolean canUse(Context ctx) {
-        return isXiaomiDevice()
-                && hasIslandSystemProperty()
-                && focusProtocol(ctx) == 3
-                && hasFocusPermission(ctx);
-    }
 
     // ------------------------------------------------------------------
     // JSON
@@ -140,8 +48,7 @@ final class IslandSupport {
      * <p>存在的理由：超级岛的字段语义**没有公开文档**，只能靠真机试。
      * 把差异参数化，就能用一趟装机测多个假设，而不是一个假设装一次。
      *
-     * <p>默认值就是"已知能出岛"的那一套（0.1.2 的变体 C / E 验证过），
-     * 调用方只改要测的那一个变量。
+     * <p>默认值就是"已知能出岛"的那一套（真机验证过），调用方只改要改的那一个字段。
      */
     static final class Opts {
         String title = "DSH 镜像";
@@ -173,8 +80,7 @@ final class IslandSupport {
      * 0.1.2 补齐全字段后 C 和 E 都出岛了。
      * <b>那些字段不是装饰，是岛渲染的必需输入。</b>
      *
-     * <p>字段名与层级逐条对照
-     * {@code reference/ABK/.../NotificationUtils.kt:306-382}，并用脚本核对过：
+     * <p>字段名与层级逐条对照参考实现的 {@code NotificationUtils.kt:306-382}，并用脚本核对过：
      * <b>35 个字段名、36 条树形路径，双向零差异</b>。
      *
      * @return JSON 字符串；构造失败返回 null（调用方应放弃上岛，但通知照发）
@@ -306,7 +212,7 @@ final class IslandSupport {
      * <p><b>这里刻意不检查四个门槛</b>，参考实现是 {@code if (!canUse) return}。两个理由：
      *
      * <ol>
-     *   <li>验证阶段需要区分"门槛不过"和"JSON 不对" —— 提前 return 会让后者失去信息。</li>
+     *   <li>区分"门槛不过"和"JSON 不对"要靠人看日志 —— 提前 return 会让后者失去信息。</li>
      *   <li>更要紧的是：四个门槛是从第三方实现反推的**启发式**。只要其中任何一条是
      *       误判（比如小米改了属性名），加门槛就会把**本来能用**的岛静默关掉；
      *       不加门槛则最坏只是多挂两个被系统忽略的 extras。收益不对称。</li>
@@ -321,9 +227,8 @@ final class IslandSupport {
     /**
      * 同 {@link #attach(Context, Notification, String)}，但可指定岛图标资源。
      *
-     * <p>验证变体 C 需要换成 {@code R.mipmap.ic_launcher} —— 参考实现用的就是这个
-     * （{@code NotificationUtils.kt:262}）。我们第一版用的是自己的 vector drawable，
-     * 这一条也在嫌疑名单上。
+     * <p>实际调用方传的是 {@code R.mipmap.ic_launcher} —— 参考实现用的就是这个
+     * （{@code NotificationUtils.kt:262}），且真机验证过它能完整显示。
      */
     static boolean attach(Context ctx, Notification n, String json, int islandIconRes) {
         if (ctx == null || n == null || n.extras == null) return false;
@@ -341,97 +246,4 @@ final class IslandSupport {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 诊断报告
-    // ------------------------------------------------------------------
-
-    /** 一次诊断的完整快照。字段都是原始的，报告里不做判断，方便直接粘回来。 */
-    static final class Report {
-        boolean xiaomi;
-        String manufacturer = "";
-        String brand = "";
-        Object prop;
-        int protocol;
-        Object focus;
-        boolean notifGranted;
-        String channelUsed = "";
-
-        boolean passProp() { return prop instanceof Boolean && (Boolean) prop; }
-        boolean passProtocol() { return protocol == 3; }
-        boolean passFocus() { return focus instanceof Boolean && (Boolean) focus; }
-
-        boolean canUse() {
-            return xiaomi && passProp() && passProtocol() && passFocus();
-        }
-
-        String toText() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("DSH 镜像 · 超级岛诊断\n");
-            sb.append("Android ").append(Build.VERSION.RELEASE)
-              .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
-            sb.append("──────────────────\n");
-            sb.append(mark(xiaomi)).append(" ① 厂商/品牌\n");
-            sb.append("      MANUFACTURER=").append(manufacturer)
-              .append("  BRAND=").append(brand).append('\n');
-            sb.append(mark(passProp())).append(" ② 系统属性 ").append(PROP_ISLAND).append('\n');
-            sb.append("      读到：").append(prop).append('\n');
-            sb.append(mark(passProtocol())).append(" ③ 焦点协议 ").append(SETTING_FOCUS_PROTOCOL).append('\n');
-            sb.append("      读到：").append(protocol < 0 ? "读不到" : String.valueOf(protocol))
-              .append("   （需要 = 3，即 OS3 协议）\n");
-            sb.append(mark(passFocus())).append(" ④ 焦点通知权限 canShowFocus\n");
-            sb.append("      读到：").append(focus).append('\n');
-            sb.append("──────────────────\n");
-            sb.append(mark(notifGranted)).append(" 通知权限 POST_NOTIFICATIONS\n");
-            sb.append("      测试用渠道：").append(channelUsed).append('\n');
-            sb.append("──────────────────\n");
-            sb.append("四门槛结论：").append(canUse() ? "全过（应该能上岛）" : "有未通过项").append('\n');
-            sb.append(hint());
-            return sb.toString();
-        }
-
-        private String hint() {
-            if (!xiaomi) return "→ 非小米/红米/POCO 设备，岛不可用。\n";
-            if (!passProp()) return "→ 系统属性未开启：这台设备的系统不支持岛。\n";
-            if (!passProtocol()) {
-                return "→ 协议不是 3：本实现只支持 OS3 协议。"
-                        + "若是 HyperOS 1/2，需要另找旧协议格式。\n";
-            }
-            if (!passFocus()) {
-                return "→ 缺「焦点通知」权限：去 系统设置 → 通知 → 本应用 → 打开「焦点通知」。\n";
-            }
-            if (!notifGranted) return "→ 四门槛全过，但通知权限没给，通知发不出来。\n";
-            return "→ 四门槛全过。若岛仍不出现，问题在 JSON 结构（见下方说明）。\n";
-        }
-
-        private static String mark(boolean ok) { return ok ? "[✓]" : "[✗]"; }
-    }
-
-    /** 采集一次诊断快照。 */
-    static Report diagnose(Context ctx) {
-        Report r = new Report();
-        r.manufacturer = String.valueOf(Build.MANUFACTURER);
-        r.brand = String.valueOf(Build.BRAND);
-        r.xiaomi = isXiaomiDevice();
-        r.prop = readSystemProperty();
-        r.protocol = focusProtocol(ctx);
-        r.focus = queryFocusPermission(ctx);
-        r.notifGranted = notificationsEnabled(ctx);
-        return r;
-    }
-
-    /**
-     * 通知总开关是否打开。
-     *
-     * <p>用平台的 {@code NotificationManager.areNotificationsEnabled()}（API 24+），
-     * 不用 AndroidX 的 {@code NotificationManagerCompat} —— 本工程零依赖。
-     */
-    static boolean notificationsEnabled(Context ctx) {
-        try {
-            android.app.NotificationManager nm =
-                    ctx.getSystemService(android.app.NotificationManager.class);
-            return nm != null && nm.areNotificationsEnabled();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
 }

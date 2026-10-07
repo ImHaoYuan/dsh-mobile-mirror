@@ -18,23 +18,4 @@
         android:indeterminate="true"
         android:visibility="gone" />
 
-    <!--
-      验证版入口的触摸目标。必须满足两点，否则收不到触摸：
-        ① 始终 VISIBLE —— GONE 和 INVISIBLE 的 View 都不接收触摸事件
-           （之前把长按挂在 loading 上就是踩了这个，页面加载完它就 GONE 了）；
-        ② 位于最上层 —— FrameLayout 里后声明的在上层。
-
-      高度只有 4dp，正好落在页面顶栏的 padding-top（6px）之内，不会挡住任何可点元素。
-      用一个独立空 View 而不是把 loading 改成常显：indeterminate 的 ProgressBar
-      即使不可见也会一直跑动画，白白耗电。
-
-      验证结束后删除。
-    -->
-    <View
-        android:id="@+id/diag_hotspot"
-        android:layout_width="match_parent"
-        android:layout_height="4dp"
-        android:layout_gravity="top"
-        android:background="@android:color/transparent" />
-
 </FrameLayout>

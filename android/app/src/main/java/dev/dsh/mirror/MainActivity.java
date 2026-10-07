@@ -27,14 +27,6 @@ public class MainActivity extends Activity {
 
     private static final long BACK_EXIT_WINDOW_MS = 2000L;
 
-    /**
-     * 「超级岛诊断」快捷方式的动作。
-     *
-     * <p>必须与 {@code res/xml/shortcuts.xml} 里的 {@code android:action} 一致 ——
-     * 这两处字符串对不上时不会报错，只是长按图标点进去没反应。
-     */
-    static final String ACTION_ISLAND_DIAG = "dev.dsh.mirror.action.ISLAND_DIAG";
-
     private WebView web;
     private View loading;
     private ServerPrefs prefs;
@@ -56,21 +48,6 @@ public class MainActivity extends Activity {
         web = findViewById(R.id.web);
         loading = findViewById(R.id.loading);
 
-        // 超级岛验证版入口之三：长按屏幕最顶端那条 4dp 透明细线。
-        // 挂在独立的 diag_hotspot 上，不是 loading —— loading 在页面加载完会被设成
-        // GONE，而 GONE 的 View 收不到触摸事件（这就是最初那个入口失效的原因）。
-        View hotspot = findViewById(R.id.diag_hotspot);
-        if (hotspot != null) {
-            hotspot.setOnLongClickListener(v -> {
-                startActivity(new Intent(MainActivity.this, IslandTestActivity.class));
-                return true;
-            });
-        }
-
-        // 超级岛验证版入口之一：长按桌面图标 →「超级岛诊断」。
-        // 快捷方式的目标是 MainActivity（保持 IslandTestActivity 不导出），在这里转发。
-        handleDiagnosticIntent(getIntent());
-
         configureWebView();
 
         if (isDebuggable()) {
@@ -84,27 +61,6 @@ public class MainActivity extends Activity {
 
     private boolean isDebuggable() {
         return (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-    }
-
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        setIntent(intent);
-        handleDiagnosticIntent(intent);
-    }
-
-    /**
-     * 处理「超级岛诊断」快捷方式（长按桌面图标可见）。
-     *
-     * <p>快捷方式刻意指向 MainActivity 而不是 IslandTestActivity：这样后者可以保持
-     * {@code exported="false"}，App 对外暴露的 Activity 仍然只有 MainActivity 一个。
-     *
-     * <p>处理完把 action 清掉 —— MainActivity 因故重建时不会再弹一次。
-     */
-    private void handleDiagnosticIntent(Intent intent) {
-        if (intent == null || !ACTION_ISLAND_DIAG.equals(intent.getAction())) return;
-        intent.setAction(null);
-        startActivity(new Intent(this, IslandTestActivity.class));
     }
 
     private void configureWebView() {

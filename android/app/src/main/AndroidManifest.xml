@@ -26,11 +26,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-
-            <!-- 验证版的「超级岛诊断」快捷方式（长按桌面图标可见）。验证结束后删除。 -->
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/shortcuts" />
         </activity>
 
         <activity
@@ -38,12 +33,6 @@
             android:exported="false"
             android:label="@string/setup_title"
             android:windowSoftInputMode="adjustResize" />
-
-        <!-- 超级岛验证版。验证结束后可整块删除。 -->
-        <activity
-            android:name=".IslandTestActivity"
-            android:exported="false"
-            android:label="@string/island_diag_title" />
 
         <service
             android:name=".MirrorService"

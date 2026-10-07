@@ -8,7 +8,6 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -30,14 +29,6 @@ public class MirrorService extends Service {
 
     static final String CHANNEL_SERVICE = "service";
     static final int NOTIF_ID_SERVICE = 1;
-
-    /**
-     * 超级岛测试用渠道（默认优先级）。
-     *
-     * <p>存在的唯一理由是验证版要回答「岛对渠道优先级有没有要求」——
-     * 与 {@link #CHANNEL_SERVICE}（低优先级）对照。**验证结束后应删除。**
-     */
-    static final String CHANNEL_ISLAND_TEST = "island_test";
 
     private IslandMonitor monitor;
     /** 最近一次状态。服务通知的内容和岛都由它决定。 */
@@ -95,10 +86,9 @@ public class MirrorService extends Service {
     }
 
     /**
-     * 建好全部通知渠道。
+     * 建好通知渠道。
      *
-     * <p>必须由服务和验证版共用：API 26+ 往**不存在的渠道**发通知会被系统直接丢掉，
-     * 而验证版可能先于服务被打开。
+     * <p>API 26+ 往**不存在的渠道**发通知会被系统直接丢掉，所以启动时先建好。
      */
     static void ensureChannels(Context ctx) {
         NotificationManager nm = ctx.getSystemService(NotificationManager.class);
@@ -111,14 +101,6 @@ public class MirrorService extends Service {
         svc.setDescription(ctx.getString(R.string.notif_channel_service_desc));
         svc.setShowBadge(false);
         nm.createNotificationChannel(svc);
-
-        NotificationChannel test = new NotificationChannel(
-                CHANNEL_ISLAND_TEST,
-                ctx.getString(R.string.notif_channel_island_test),
-                NotificationManager.IMPORTANCE_DEFAULT);   // 对照组：比服务渠道高一级
-        test.setDescription(ctx.getString(R.string.notif_channel_island_test_desc));
-        test.setShowBadge(false);
-        nm.createNotificationChannel(test);
     }
 
     private Notification buildNotification() {
@@ -130,12 +112,6 @@ public class MirrorService extends Service {
                 this, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        // 验证版入口。挂在这条常驻通知上，因为服务随 MainActivity 一起启动，入口一直在。
-        Intent diag = new Intent(this, IslandTestActivity.class);
-        PendingIntent diagPi = PendingIntent.getActivity(
-                this, 1, diag,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
         Notification n = new Notification.Builder(this, CHANNEL_SERVICE)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(getString(R.string.notif_service_title))
@@ -144,10 +120,6 @@ public class MirrorService extends Service {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)   // 状态变化时静默更新，不响不震（用户定的"只让岛变化"）
                 .setShowWhen(false)
-                .addAction(new Notification.Action.Builder(
-                        Icon.createWithResource(this, R.drawable.ic_notification),
-                        getString(R.string.island_diag_title),
-                        diagPi).build())
                 .build();
 
         // 必须在 build() 之后挂 extras —— 参考实现就是这么做的。
@@ -155,7 +127,7 @@ public class MirrorService extends Service {
         IslandSupport.Opts o = s.toOpts(this);
         if (o != null) {
             String json = IslandSupport.buildParamJsonEx(o);
-            // 岛图标用全彩的 launcher 图标（用户定的）—— 0.1.2 变体 C 验证过它能完整显示
+            // 岛图标用全彩的 launcher 图标 —— 真机验证过它能完整显示
             IslandSupport.attach(this, n, json, R.mipmap.ic_launcher);
         }
         return n;
