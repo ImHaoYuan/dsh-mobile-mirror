@@ -54,6 +54,7 @@
       </div>
       <div class="topbar-sub" id="chat-sub"></div>
     </div>
+    <button type="button" class="btn-stop" id="btn-stop" title="停止当前这一轮" hidden>停止</button>
     <button type="button" class="ghost-btn" id="btn-raw" aria-pressed="false" title="显示最近收到的原始 JSON 信封">原始</button>
     <a class="topbar-link" href="/logout">退出</a>
   </header>
@@ -82,10 +83,13 @@
 
   <div class="composer" id="composer" hidden>
     <div class="composer-row">
-      <textarea id="composer-input" rows="1" placeholder="P2 开放，暂不可用" disabled></textarea>
+      <textarea id="composer-input" rows="1" placeholder="发消息…" autocomplete="off" spellcheck="false"></textarea>
       <button type="button" class="btn btn-send" id="composer-send" disabled>发送</button>
     </div>
-    <div class="composer-note">P2 开放：手机发消息、停止当前轮</div>
+    <div class="composer-foot">
+      <span class="composer-note">Enter 换行 · 桌面端 Ctrl/⌘ + Enter 发送</span>
+      <span class="composer-count" id="composer-count" hidden></span>
+    </div>
   </div>
 </section>
 
