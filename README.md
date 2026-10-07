@@ -1,9 +1,9 @@
 # dsh-mobile-mirror
 
-在局域网里用手机镜像 DSH 的会话：看对话、看实时输出、回复消息、停止当前轮。
+在局域网里用手机镜像 DSH 的会话：看会话列表、看历史、看**实时逐字输出**。
 **桌面端行为完全不变** —— 不注入 UI、不遮挡、不改布局、不碰现有 webServer。
 
-当前进度：**P0 完成**（独立端口 + HTTPS + 账号密码登录）。会话镜像在 P1。
+当前进度：**P1 完成**（会话列表 + 历史快照 + 实时逐字输出）。发消息与停止当前轮在 P2。
 
 ## 为什么是独立端口
 
@@ -105,9 +105,67 @@ plugin_manager install_bundle  target = link:D:/VibeCoding/Plugin/dsh-mobile-mir
 | `GET/POST /setup` | **仅本机（回环）** | 设置账号密码 |
 | `GET /pair.json` | **仅本机（回环）** | 诊断信息 |
 | `GET /logout` | 需登录 | 退出 |
-| `GET /` | 需登录 | 手机主页 |
+| `GET /` | 需登录 | 手机主页（会话列表 + 对话） |
+| `GET /api/sessions` | 需登录 | 会话列表，按最近活动降序 |
+| `GET /api/follow?id=&max=` | 需登录 | **SSE**：实时跟随一个会话 |
+| `GET /api/page?id=&before=&max=` | 需登录 | 往上翻更早的历史 |
 
 回环判定看 **socket 的真实来源地址**，不看 Host 头，所以伪造 Host 绕不过去。
+鉴权在"会话服务是否就绪"之前 —— 未登录者拿到的是 401，不会因为 503 而得知服务状态。
+
+## 镜像协议
+
+### `GET /api/sessions`
+
+```json
+{ "items": [
+  { "id": "session-abc", "title": "标题或 null", "running": true, "blank": false,
+    "agentAvailable": true, "updatedAt": 1791350663634, "cwd": "D:\\x",
+    "origin": null, "parentSessionId": null }
+] }
+```
+
+会话服务未就绪时返回 `503 {"error":"session-controller-unavailable"}`。
+
+### `GET /api/follow?id=<sessionId>&max=<n>` → SSE
+
+`Content-Type: text/event-stream`，每条消息是 `data: <JSON>\n\n`，
+另有 `:` 开头的心跳注释行（20 秒一次，防手机浏览器与 AP 掐掉静默连接）。
+
+信封三种：
+
+```jsonc
+{ "e": "snapshot", "d": { header, cursor, hasMore, records, projections, assistantStream } }
+{ "e": "event",    "d": { type, seq, time, data } }
+{ "e": "stream",   "d": { k, ... } }          // 逐字帧，键名压短以省带宽
+```
+
+**为什么重连时靠"重建"而不是"续传"**：`SessionFollowRequest` 里**没有游标参数**
+（只有 `address` / `maxMessages` / `turnWindow` / `assistantStream`），
+所以服务端无法从"上次断在哪"继续。设计改为：每次连接都下发一份完整快照，
+前端按 `seq` 去重后重建视图。效果一样（切后台回来能补齐、不丢不重），机制不同。
+
+### 事件投影：为什么不能原样透传
+
+DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界面卡死：
+
+| 原始事件 | 处理 |
+|---|---|
+| `request/header` | 带**完整工具 schema 列表**（几十上百 KB）→ 只留 `model`/`provider`/`toolCount` |
+| `system/message` | 带**整个系统提示** → 只留一行"已省略"标记 |
+| `developer/message` | 同上 |
+| `assistant/message` | 额外带一份 `stream` 原始记录（逐字内容已单独推送）→ 丢弃该字段 |
+| `assistant/attempt` | 与 `assistant/message` 重复 → **整条丢弃** |
+| 未知类型 | 只下发 `type` + `seq`，不透传 `data`（调试视图能看到"这里有个没处理的事件"） |
+
+文本块截断到 4000 字符、工具参数 2000 字符，截断处留可见标记。
+
+### 标题从哪来
+
+`SessionSummary` 里**没有 title 字段**，标题只可能出现在 `projections.values`
+这个开放记录里（键名没有稳定约定）。所以做防御性读取：
+`title` → `sessionTitle` → `name` → `label` → 模糊匹配含 `title` 的键；
+取不到就返回 `null`，由前端降级显示 `cwd` 末段 + 相对时间。
 
 ## 安全边界
 
@@ -118,21 +176,27 @@ plugin_manager install_bundle  target = link:D:/VibeCoding/Plugin/dsh-mobile-mir
 - **节流**：同来源连续失败指数退避（1s→30s），10 次后锁 5 分钟；
   节流在哈希之前生效，被锁的请求连 scrypt 都不跑，避免被刷成对 DSH 的拒绝服务。
 - **会话**：HttpOnly + SameSite=Strict + Secure 的随机 Cookie；改密码会注销所有旧会话。
+- **SSE 背压**：客户端读得慢时 `await drain`，不会把事件无限堆在内存里；
+  连接关闭时通过 `AbortController` 中止上游 `follow()`。
 - **只在局域网**：不做任何内网穿透。手机在外网时用不了 —— 这是刻意的。
 
 ## 自测
 
 ```bash
-node tools/cert-test.mjs    # 证书层：27 项
-node tools/smoke.mjs        # 集成：HTTPS + 认证 32 项
+node tools/cert-test.mjs     # 证书层：27 项
+node tools/smoke.mjs         # HTTPS + 认证集成：32 项
+node tools/mirror-test.mjs   # P1 数据层 + 三条镜像路由：76 项
 ```
 
-都不需要启动 DSH，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
+三套都不需要启动 DSH，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
 
-`cert-test.mjs` 的关键一项是**真实 TLS 握手**：拿生成的证书起一个 HTTPS 服务，
-用 `rejectUnauthorized: true` + 指定 CA 连上去。能过就说明这张手写的证书在
-OpenSSL 眼里结构正确、签名有效、对该地址有效。另外还验证了负向情况
-（不信任该 CA 时必须失败、域名不匹配时必须失败），确保它不是"碰巧能用"。
+- `cert-test.mjs` 的关键一项是**真实 TLS 握手**：拿生成的证书起一个 HTTPS 服务，
+  用 `rejectUnauthorized: true` + 指定 CA 连上去。能过就说明这张手写的证书在
+  OpenSSL 眼里结构正确、签名有效、对该地址有效。另外验证了负向情况
+  （不信任该 CA 时必须失败、域名不匹配时必须失败），确保它不是"碰巧能用"。
+- `mirror-test.mjs` 用**伪造的 sessionController** 驱动真实的 HTTPS 服务，
+  于是不用启动 DSH 就能端到端验证 SSE 管道：SSE 响应头、快照投影、
+  事件投影、逐字帧拼接、空 delta 丢弃、鉴权顺序、缺参 400、伪造 Host 403。
 
 ## 开发注意事项
 
@@ -140,11 +204,11 @@ OpenSSL 眼里结构正确、签名有效、对该地址有效。另外还验证
 DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / `getLinked`，
 没有模块失效接口 —— 所以"禁用→启用"拿到的仍是旧代码。这是平台限制，不是插件问题。
 
-**改 `lib/web/*.html` 即时生效**，不需要重启：页面是每次请求现读磁盘的。
+**改 `lib/web/*.html` / `.js` / `.css` 即时生效**，不需要重启：页面是每次请求现读磁盘的。
 
 ## 路线图
 
 - **P0（已完成）**：独立端口监听、HTTPS 自签证书、账号密码登录、设置页。
-- **P1**：会话列表、历史快照、实时逐字输出（`sessionController.follow`）。
-- **P2**：手机发消息（`prompt`）、停止当前轮（`cancel`）。
+- **P1（已完成）**：会话列表、历史快照与翻页、实时逐字输出（SSE）、手机端界面。
+- **P2**：手机发消息（`sessionController.prompt`）、停止当前轮（`cancel`）。
 - **P3**：二维码配对、桌面内配对页、多网卡地址选择。
