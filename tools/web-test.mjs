@@ -70,12 +70,24 @@ function codeOnly(source) {
   }).join('\n')
 }
 
-const html = fs.readFileSync(INDEX, 'utf8')
-const css = fs.readFileSync(APP_CSS, 'utf8')
-const src = fs.readFileSync(APP_JS, 'utf8')
-const mirrorSrc = fs.readFileSync(path.join(LIB, 'mirror.js'), 'utf8')
-const serverSrc = fs.readFileSync(path.join(LIB, 'server.js'), 'utf8')
-const indexSrc = fs.readFileSync(path.join(LIB, 'index.js'), 'utf8')
+/**
+ * 读文本文件，并把换行统一成 LF。
+ *
+ * 为什么必须这么做：Windows 上 clone 出来的工作区是 CRLF（core.autocrlf=true，
+ * 或 .gitattributes 里 text=auto 的原生换行），而下面有一批断言把 "\n" 直接写进了
+ * 源码片段里（例如 "appendChild(frag);\n    staggerList();"）。那些断言验的是
+ * **代码内容**，不该因为换行符在别人机器上失败 —— 失败信息还会看着像"代码坏了"。
+ */
+function readLf(file) {
+  return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+}
+
+const html = readLf(INDEX)
+const css = readLf(APP_CSS)
+const src = readLf(APP_JS)
+const mirrorSrc = readLf(path.join(LIB, 'mirror.js'))
+const serverSrc = readLf(path.join(LIB, 'server.js'))
+const indexSrc = readLf(path.join(LIB, 'index.js'))
 
 /* ==================== ① index.html / app.css ==================== */
 console.log('\n———— 界面骨架 ————')
@@ -132,13 +144,13 @@ has('返回按钮 id 是 btn-back（APK 返回键会点击它）', html, 'id="bt
 
 // 字体：三个页面都要引 font.css，否则登录页/设置页没有 JetBrains Mono
 const FONT_CSS = path.join(WEB, 'font.css')
-const fontCss = fs.readFileSync(FONT_CSS, 'utf8')
+const fontCss = readLf(FONT_CSS)
 has('font.css 声明 JetBrains Mono', fontCss, "font-family: 'JetBrains Mono'")
 has('font.css 有 400 字重', fontCss, 'font-weight: 400')
 has('font.css 有 700 字重', fontCss, 'font-weight: 700')
 has('font.css 用 swap 避免阻塞首屏', fontCss, 'font-display: swap')
 for (const page of ['index.html', 'login.html', 'setup.html']) {
-  const pageSrc = fs.readFileSync(path.join(WEB, page), 'utf8')
+  const pageSrc = readLf(path.join(WEB, page))
   has(`${page} 引用 /font.css`, pageSrc, 'href="/font.css"')
 }
 check('字体文件真的在仓库里（两个 TTF，各 >100KB）',
@@ -148,7 +160,7 @@ check('字体文件真的在仓库里（两个 TTF，各 >100KB）',
   fs.statSync(path.join(WEB, 'fonts', 'JetBrainsMono-Bold.ttf')).size > 100000)
 check('附带了 OFL 许可证全文（OFL 要求随字体分发）',
   fs.existsSync(path.join(WEB, 'fonts', 'OFL.txt')) &&
-  fs.readFileSync(path.join(WEB, 'fonts', 'OFL.txt'), 'utf8').includes('SIL OPEN FONT LICENSE Version 1.1'))
+  readLf(path.join(WEB, 'fonts', 'OFL.txt')).includes('SIL OPEN FONT LICENSE Version 1.1'))
 
 // 代码字体只作用于"真的是代码"的地方，正文与思考过程不动。
 // 这里只断言"用了哪个字体变量"，不锁字号 —— 见 rule() 的说明。
@@ -172,7 +184,7 @@ has('表格容器可横向滚动', css, 'overflow-x:auto')
 has('表格斑马纹', css, 'tbody tr:nth-child(even)')
 
 // 「记住我」已经彻底移除
-const loginSrc = fs.readFileSync(path.join(WEB, 'login.html'), 'utf8')
+const loginSrc = readLf(path.join(WEB, 'login.html'))
 hasNot('登录页没有 remember 复选框', loginSrc, 'name="remember"')
 hasNot('登录页没有"记住我"文案', loginSrc, '记住我')
 hasNot('登录页没有 .remember 样式', loginSrc, '.remember')
@@ -478,7 +490,7 @@ has('地址栏颜色跟系统走（浅）', html, 'media="(prefers-color-scheme:
 has('app.css 声明 color-scheme', css, 'color-scheme: light dark')
 has('app.css 有浅色分支', css, '@media (prefers-color-scheme: light)')
 for (const page of ['login.html', 'setup.html']) {
-  const pageSrc = fs.readFileSync(path.join(WEB, page), 'utf8')
+  const pageSrc = readLf(path.join(WEB, page))
   has(`${page} 也跟系统走`, pageSrc, '@media (prefers-color-scheme: light)')
   has(`${page} 声明支持两套配色`, pageSrc, 'name="color-scheme" content="light dark"')
 }
@@ -699,7 +711,7 @@ check('过渡也没有涉及布局属性',
 console.log('\n———— ⑩ 桌面设置面板 ————')
 
 const CLIENT_JS = path.join(LIB, 'client.js')
-const clientSrc = fs.readFileSync(CLIENT_JS, 'utf8')
+const clientSrc = readLf(CLIENT_JS)
 const clientCode = codeOnly(clientSrc)
 
 // ① bundle 包裹格式：DSH 的客户端模块系统只认这一个入口形状，
