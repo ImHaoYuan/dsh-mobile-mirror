@@ -1,6 +1,6 @@
 {
   "name": "dsh-mobile-mirror",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "在局域网内用手机镜像 DSH 会话：看对话、看实时输出、回复消息、停止当前轮。桌面端行为不变。",
   "keywords": [
@@ -17,6 +17,9 @@
     ".": {
       "default": "./lib/index.js"
     },
+    "./client": {
+      "default": "./lib/client.js"
+    },
     "./package.json": "./package.json",
     "./cordis.patch.yml": "./cordis.patch.yml"
   },
@@ -26,12 +29,18 @@
     "README.md"
   ],
   "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "test": "node tools/cert-test.mjs && node tools/smoke.mjs && node tools/mirror-test.mjs && node tools/host-test.mjs && node tools/web-test.mjs && node tools/web-pure-test.cjs && node tools/web-dom-test.cjs"
+    "test": "node tools/cert-test.mjs && node tools/smoke.mjs && node tools/mirror-test.mjs && node tools/host-test.mjs && node tools/web-test.mjs && node tools/client-test.mjs && node tools/web-pure-test.cjs && node tools/web-dom-test.cjs"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   }
 }
