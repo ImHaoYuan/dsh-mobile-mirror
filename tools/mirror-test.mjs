@@ -17,8 +17,15 @@ import {
   projectEvent, projectStreamFrame, projectSnapshot, encodeFollowFrame,
   normalizeSummary, titleOf, projectBlocks, listSessions, pageBack, openFollow,
   validatePrompt, createPromptLedger, createRateGate, sendPrompt, cancelTurn, MAX_PROMPT_CHARS,
+  // P3：工作区分组 / 模型 / 模式 / 提问
+  presetOf, presetLabel, workspaceOf, groupSessions, PRESET_NAMES,
+  normalizeModelCatalog, createCatalogCache, loadModelCatalog, loadPresetRoster,
+  validateModelSwitch, switchModel, validatePresetSwitch, switchPreset,
+  validateAnswers, createQuestionHub, createQuestionAnswerer, MAX_ANSWER_CHARS,
+  // P4：新建会话
+  normalizeWorkspaces, listRegisteredWorkspaces, validateSessionCreate, createSession,
 } from '../lib/mirror.js'
-import { createMirrorServer } from '../lib/server.js'
+import { createMirrorServer, WEB_ROOT } from '../lib/server.js'
 
 const PORT = 19397
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-p1-'))
@@ -230,10 +237,16 @@ let followRequest = null
 let promptCalls = []
 let promptSignals = []
 let cancelCalls = []
+let catalogCalls = 0
+let selectModelCalls = []
+let sessionCreateCalls = []
 function fakeController() {
   promptCalls = []
   promptSignals = []
   cancelCalls = []
+  catalogCalls = 0
+  selectModelCalls = []
+  sessionCreateCalls = []
   return {
     // 精确模仿 DSH 门面（app.asar 第 339488 行）：
     //   prompt(request, signal) { signal.throwIfAborted(); return this.commands.prompt(request); }
@@ -253,10 +266,61 @@ function fakeController() {
     async list() {
       return {
         items: [
-          { sessionId: 'sess-2', running: false, updatedAt: 200, cwd: 'D:\\b', projections: { values: { title: '第二个' } } },
-          { sessionId: SESSION_ID, running: true, updatedAt: 100, cwd: 'D:\\a', projections: { values: { title: '第一个' } } },
+          {
+            sessionId: 'sess-2', running: false, updatedAt: 200, cwd: 'D:\\b', blank: false,
+            projections: {
+              values: {
+                title: '第二个',
+                // 创造模式：投影和 header 故意不一致的用例在纯函数一节里
+                agentPreset: 'cordis',
+                modelSelection: {
+                  lastUsed: { provider: 'doulor', model: 'wb-ds41f' },
+                  next: { provider: 'doulor', model: 'wb-ds41f' },
+                },
+              },
+            },
+          },
+          {
+            sessionId: SESSION_ID, running: true, updatedAt: 100, cwd: 'D:\\a', blank: true,
+            projections: { values: { title: '第一个', agentPreset: 'ptc' } },
+          },
         ],
       }
+    },
+    async modelCatalog() {
+      catalogCalls += 1
+      return {
+        default: { provider: 'doulor', model: 'wb-ds41f', reasoningEffort: 'medium' },
+        routableProviders: ['doulor', 'olomc'],
+        groups: [
+          {
+            id: 'doulor', name: 'Doulor',
+            models: [{
+              id: 'wb-ds41f', name: 'WB-DS41F', description: '主力模型',
+              reasoning: { efforts: [{ id: 'low', name: '低' }, { id: 'medium', name: '中' }], defaultEffort: 'medium' },
+            }],
+          },
+          { id: 'olomc', name: 'Voyager Gateway', models: [{ id: 'nim/nvidia/glm-5.3', name: 'GLM-5.3' }] },
+          // 空组：上游会过滤，这里确认本插件也过滤
+          { id: 'empty', name: '空组', models: [] },
+        ],
+        failures: [{ id: 'broken', name: '坏提供方', message: '连接超时' }],
+      }
+    },
+    async selectModel(request) {
+      selectModelCalls.push(request)
+      if (request.model === 'nope') {
+        throw Object.assign(new Error('模型不可用'), { code: 'session/model-unavailable' })
+      }
+      return { selected: { provider: request.provider, model: request.model, reasoningEffort: request.reasoningEffort } }
+    },
+    // P4：新建会话。门面签名是 create(request) —— **没有 signal**（app.asar 319530）。
+    async create(request) {
+      sessionCreateCalls.push(request)
+      if (request.cwd === 'D:\\boom') {
+        throw Object.assign(new Error('目录不可用'), { code: 'session/unavailable' })
+      }
+      return { sessionId: 'session-new-1', agentPreset: request.agentPreset || 'standard' }
     },
     async page(request) {
       return { records: [{ type: 'event', event: { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '更早' }] } } }], hasMore: false, _echo: request }
@@ -287,7 +351,48 @@ const config = {
   // 主服务开写操作；只读模式（false）在下面单独起一个服务验证。
   allowedHosts: [], enablePrompt: true,
 }
-const deps = { controller: null }
+let presetSelectCalls = []
+/** 伪造 agentPresets 服务（形状对齐 app.asar 288737 的 select(agent, agentPreset)）。 */
+const fakePresets = {
+  async list() {
+    return [
+      { id: 'standard' },
+      { id: 'ptc' },
+      { id: 'minimal' },
+      { id: 'cordis' },
+      { id: 'custom-one', name: '我的模式', description: '自己写的' },
+    ]
+  },
+  async select(agent, preset) {
+    presetSelectCalls.push({ agentId: agent && agent.id, preset })
+    if (preset === 'ghost') throw Object.assign(new Error('没有这个模式'), { code: 'agent-preset/not-found' })
+    if (preset === 'started') throw Object.assign(new Error('This session has already started'), { code: 'agent-preset/locked' })
+    return preset
+  },
+}
+/** 伪造 agents 服务：select 的第一个参数必须是 Agent 对象，所以这里得能取到。 */
+const fakeAgents = {
+  get(id) {
+    if (id === 'no-agent-session') return null
+    return { id, ctx: {}, session: {} }
+  },
+}
+
+/**
+ * 伪造 workspaceRegistry（list() 是**同步**的，形状对齐 app.asar 1090460）。
+ * 故意包含一个和已有会话重复的目录（D:\a）：合并后应该只剩一条，且以登记表那条为准。
+ */
+const fakeRegistry = {
+  list() {
+    return [
+      { id: 'ws-1', path: 'D:\\proj\\alpha', title: 'alpha 项目' },
+      { id: 'ws-2', path: 'D:\\proj\\empty', title: '' },
+      { id: 'ws-3', path: 'D:\\a', title: '会话里也有的目录' },
+    ]
+  },
+}
+
+const deps = { controller: null, presets: fakePresets, agents: fakeAgents, registry: fakeRegistry }
 const mirror = createMirrorServer(config, { log: () => {}, configFile: path.join(TMP, 'config.json'), deps })
 await mirror.listen()
 const certPem = mirror.certPem
@@ -325,6 +430,68 @@ function req(pathname, { method = 'GET', headers = {}, body, json, rawText, raw 
     })
     r.on('error', reject)
     if (payload) r.write(payload)
+    r.end()
+  })
+}
+
+/**
+ * 取原始字节。字体是二进制，req() 会把它按 utf8 转成字符串 ——
+ * 那样即使服务端读坏了文件，测试也看不出来（乱码在两边都乱），
+ * 所以必须拿到 Buffer 才能验"字节没被改过"。
+ */
+function reqRaw(pathname, { headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const r = https.request({
+      host: '127.0.0.1', port: PORT, path: pathname, method: 'GET',
+      ca: certPem, rejectUnauthorized: true, agent: false,
+      headers: { Host: `127.0.0.1:${PORT}`, ...headers },
+    }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, buf: Buffer.concat(chunks) }))
+    })
+    r.on('error', reject)
+    r.end()
+  })
+}
+
+/**
+ * 打开一条 SSE，收到 frames 条 data 帧（或超时）后主动断开。
+ * req() 会一直读到 end，而 SSE 是长连接，所以必须单独写一个。
+ */
+function sseCollect(pathname, { headers = {}, frames = 1, timeoutMs = 4000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const got = []
+    let settled = false
+    const r = https.request({
+      host: '127.0.0.1', port: PORT, path: pathname, method: 'GET',
+      ca: certPem, rejectUnauthorized: true, agent: false,
+      headers: { Host: `127.0.0.1:${PORT}`, Accept: 'text/event-stream', ...headers },
+    }, (res) => {
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        try { r.destroy() } catch { /* 忽略 */ }
+        resolve({ status: res.statusCode, headers: res.headers, frames: got })
+      }
+      let buf = ''
+      res.on('data', (chunk) => {
+        buf += chunk.toString('utf8')
+        let at
+        while ((at = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, at)
+          buf = buf.slice(at + 2)
+          const line = block.split('\n').find((l) => l.startsWith('data: '))
+          if (!line) continue
+          try { got.push(JSON.parse(line.slice(6))) } catch { /* 忽略心跳 */ }
+          if (got.length >= frames) { finish(); return }
+        }
+      })
+      res.on('end', finish)
+      const timer = setTimeout(finish, timeoutMs)
+    })
+    r.on('error', (err) => { if (!settled) { settled = true; reject(err) } })
     r.end()
   })
 }
@@ -522,6 +689,583 @@ const badHostPrompt = await req('/api/prompt', {
 })
 check('伪造 Host 发消息被挡', badHostPrompt.status === 403, String(badHostPrompt.status))
 
+// ==================== 三·五·五、P3：分组 / 模型 / 模式 / 提问 ====================
+console.log('\n———— P3 纯函数：工作区分组 ————')
+
+eq('工作区：取末段做名字', workspaceOf('D:\\VibeCoding\\Plugin\\dsh-mobile-mirror').name, 'dsh-mobile-mirror')
+eq('工作区：key 归一化为小写', workspaceOf('D:\\VibeCoding\\Plugin').key, 'd:\\vibecoding\\plugin')
+eq('工作区：去掉尾部斜杠', workspaceOf('D:\\a\\b\\').key, 'd:\\a\\b')
+eq('工作区：空 cwd 归到"无工作区"', workspaceOf('').name, '无工作区')
+eq('工作区：空 cwd 的 key 是空串', workspaceOf(null).key, '')
+eq('工作区：空 cwd 没有 path', workspaceOf(undefined).path, null)
+
+const groupedItems = [
+  { id: 'g1', cwd: 'D:\\proj\\alpha', updatedAt: 10 },
+  { id: 'g2', cwd: 'D:\\proj\\beta', updatedAt: 30 },
+  { id: 'g3', cwd: 'D:\\proj\\alpha', updatedAt: 40 },
+  { id: 'g4', cwd: '', updatedAt: 999 },
+  { id: 'g5', cwd: 'd:\\PROJ\\ALPHA', updatedAt: 5 },
+]
+const gs = groupSessions(groupedItems)
+eq('分组数量（大小写不敏感，5 条并成 3 组）', gs.length, 3)
+eq('组按最近更新时间降序', gs.map((g) => g.name).join(','), 'alpha,beta,无工作区')
+eq('"无工作区"排最后（哪怕它最新）', gs[2].key, '')
+eq('组内按时间降序', gs[0].items.map((i) => i.id).join(','), 'g3,g1,g5')
+eq('组头 updatedAt 取组内最大', gs[0].updatedAt, 40)
+eq('组头带完整路径', gs[0].path, 'D:\\proj\\alpha')
+eq('没有 running 时不置位', gs[0].running, false)
+eq('组内有 running 时组头置位', groupSessions([{ id: 'x', cwd: 'D:\\p', running: true }])[0].running, true)
+eq('空列表返回空数组', groupSessions([]).length, 0)
+eq('非数组也不炸', groupSessions(null).length, 0)
+
+console.log('\n———— P3 纯函数：模式显示（投影优先于 header） ————')
+
+// 这是本次修掉的那个显示 bug 的回归护栏：
+// header.agentPreset 是**创建时**的模式且被深冻结，会话在空白期换模式只落在投影里。
+// DSH 源码注释原文："Reconstruction reads the `agentPreset` Session projection,
+// never the header alone."
+eq('模式：读投影而不是 header', presetOf({
+  projections: { values: { agentPreset: 'cordis' } },
+  agentPreset: 'standard',
+}), 'cordis')
+// 投影缺失时**故意**不回退到 header：header 是创建事实，会话在空白期换过模式的话
+// 它就是过期的。宁可什么都不显示，也不能显示错的（那正是本次修掉的 bug）。
+eq('模式：投影缺失时不回退到 header（header 可能是过期值）', presetOf({ projections: { values: {} }, agentPreset: 'ptc' }), null)
+eq('模式：都没有就是 null', presetOf({}), null)
+eq('模式：非字符串当没有', presetOf({ projections: { values: { agentPreset: 42 } } }), null)
+eq('模式：归一化摘要带上投影里的模式', normalizeSummary({
+  sessionId: 's', projections: { values: { agentPreset: 'cordis' } }, agentPreset: 'standard',
+}).preset, 'cordis')
+eq('模式中文名：standard', presetLabel('standard'), '标准模式')
+eq('模式中文名：ptc', presetLabel('ptc'), 'PTC 模式')
+eq('模式中文名：minimal', presetLabel('minimal'), '极简模式')
+eq('模式中文名：cordis', presetLabel('cordis'), '创造模式')
+eq('模式中文名：roster 自带的优先', presetLabel('cordis', [{ id: 'cordis', name: '我的创造' }]), '我的创造')
+eq('模式中文名：未知 id 原样返回', presetLabel('weird'), 'weird')
+eq('模式中文名：空 id 返回 null', presetLabel(''), null)
+eq('内置模式表就 4 个', Object.keys(PRESET_NAMES).length, 4)
+
+// 事件投影：换模式 / 换模型必须下发，否则手机在长连接期间跟不上变化
+eq('事件投影：agent-preset/selected',
+  JSON.stringify(projectEvent({ type: 'agent-preset/selected', seq: 9, time: 1, data: { agentPreset: 'cordis' } }).data),
+  JSON.stringify({ agentPreset: 'cordis' }))
+eq('事件投影：model/selection',
+  JSON.stringify(projectEvent({ type: 'model/selection', seq: 9, time: 1, data: { provider: 'doulor', model: 'wb-ds41f', reasoningEffort: 'low' } }).data),
+  JSON.stringify({ provider: 'doulor', model: 'wb-ds41f', reasoningEffort: 'low' }))
+eq('事件投影：model/selection 缺档位时为 null',
+  projectEvent({ type: 'model/selection', seq: 9, time: 1, data: { provider: 'p', model: 'm' } }).data.reasoningEffort, null)
+
+// 快照也必须以投影为准
+const snapProj = projectSnapshot({
+  type: 'snapshot',
+  header: { id: 's', cwd: 'D:\\a', agentPreset: 'standard' },
+  projections: { values: { agentPreset: 'cordis', title: 'T' } },
+  records: [],
+})
+eq('快照：模式以投影为准', snapProj.header.agentPreset, 'cordis')
+eq('快照：projections 原样带出', snapProj.projections.agentPreset, 'cordis')
+
+console.log('\n———— P3 纯函数：模型目录 ————')
+
+const rawCatalog = {
+  default: { provider: 'doulor', model: 'wb-ds41f', reasoningEffort: 'medium' },
+  routableProviders: ['doulor', 'olomc'],
+  groups: [
+    { id: 'doulor', name: 'Doulor', models: [{ id: 'wb-ds41f', name: 'WB-DS41F', reasoning: { efforts: [{ id: 'low' }, { id: 'medium', name: '中' }], defaultEffort: 'medium' } }] },
+    { id: 'empty', name: '空组', models: [] },
+    { id: 'broken', models: [{ id: 'x' }] },
+  ],
+  failures: [{ id: 'bad', name: '坏', message: '超时' }],
+}
+const norm = normalizeModelCatalog(rawCatalog)
+eq('目录：空组被过滤', norm.groups.length, 2)
+eq('目录：没有 name 的组用 id 当名字', norm.groups[1].name, 'broken')
+eq('目录：没有 name 的模型用 id 当名字', norm.groups[1].models[0].name, 'x')
+eq('目录：档位被保留', norm.groups[0].models[0].efforts.length, 2)
+eq('目录：档位没有 name 时用 id', norm.groups[0].models[0].efforts[0].name, 'low')
+eq('目录：defaultEffort 保留', norm.groups[0].models[0].defaultEffort, 'medium')
+eq('目录：失败提供方保留', norm.failures[0].message, '超时')
+eq('目录：默认选择保留', norm.default.model, 'wb-ds41f')
+eq('目录：垃圾输入不炸', normalizeModelCatalog(null).groups.length, 0)
+eq('目录：groups 不是数组也不炸', normalizeModelCatalog({ groups: 'x' }).groups.length, 0)
+
+const cache = createCatalogCache({ ttlMs: 1000 })
+let cacheLoads = 0
+const loader = async () => { cacheLoads += 1; return { v: cacheLoads } }
+const c1 = await cache.get(loader)
+const c2 = await cache.get(loader)
+eq('缓存：第二次命中缓存', cacheLoads, 1)
+eq('缓存：两次拿到同一个值', c1.v === c2.v, true)
+const parallel = await Promise.all([cache.get(loader), cache.get(loader), cache.get(loader)])
+eq('缓存：并发只打一次上游', cacheLoads, 1)
+eq('缓存：并发结果一致', parallel.every((x) => x.v === 1), true)
+cache.invalidate()
+await cache.get(loader)
+eq('缓存：失效后重新拉', cacheLoads, 2)
+eq('缓存：cached 暴露当前值', cache.cached.v, 2)
+
+const badSwitch = validateModelSwitch({})
+eq('切模型校验：缺 sessionId', badSwitch.error, 'missing-session-id')
+eq('切模型校验：缺 provider', validateModelSwitch({ sessionId: 's' }).error, 'missing-provider')
+eq('切模型校验：缺 model', validateModelSwitch({ sessionId: 's', provider: 'p' }).error, 'missing-model')
+eq('切模型校验：合法输入归一化',
+  JSON.stringify(validateModelSwitch({ sessionId: ' s ', provider: ' p ', model: ' m ', reasoningEffort: ' low ' }).value),
+  JSON.stringify({ sessionId: 's', provider: 'p', model: 'm', reasoningEffort: 'low' }))
+eq('切模型校验：空档位等于没给',
+  validateModelSwitch({ sessionId: 's', provider: 'p', model: 'm', reasoningEffort: '  ' }).value.reasoningEffort, undefined)
+
+const switchedPure = await switchModel({
+  async selectModel(request) { return { selected: { provider: request.provider, model: request.model } } },
+}, { sessionId: 's', provider: 'p', model: 'm' })
+eq('切模型：成功', switchedPure.ok, true)
+eq('切模型：返回选中项', switchedPure.selected.model, 'm')
+eq('切模型：没给档位时不硬塞', switchedPure.selected.reasoningEffort, null)
+
+const presetsPure = await loadPresetRoster(fakePresets)
+eq('模式清单：条数', presetsPure.length, 5)
+eq('模式清单：内置模式补上中文名', presetsPure.find((p) => p.id === 'cordis').label, '创造模式')
+eq('模式清单：自建模式用自己的名字', presetsPure.find((p) => p.id === 'custom-one').label, '我的模式')
+eq('模式清单：服务缺失时返回空数组', (await loadPresetRoster(null)).length, 0)
+
+const presetAgent = { id: 'sess-1', ctx: {}, session: {} }
+const presetPure = await switchPreset(fakePresets, { get: () => presetAgent }, { sessionId: 'sess-1', preset: 'ptc' })
+eq('切模式：成功', presetPure.ok, true)
+eq('切模式：返回模式 id', presetPure.selected, 'ptc')
+eq('切模式：把 Agent 对象交给了上游', presetSelectCalls[presetSelectCalls.length - 1].agentId, 'sess-1')
+eq('切模式：缺 preset → 400', (await switchPreset(fakePresets, { get: () => presetAgent }, { sessionId: 's' })).status, 400)
+eq('切模式：没有活体 agent → 409', (await switchPreset(fakePresets, { get: () => null }, { sessionId: 's', preset: 'ptc' })).status, 409)
+eq('切模式：模式服务缺失 → 503', (await switchPreset(null, { get: () => presetAgent }, { sessionId: 's', preset: 'ptc' })).status, 503)
+eq('切模式：agents 服务缺失 → 503', (await switchPreset(fakePresets, null, { sessionId: 's', preset: 'ptc' })).status, 503)
+
+console.log('\n———— P3 纯函数：答案校验与提问中心 ————')
+
+const questions = [
+  { id: 'q1', question: '选一个', options: [{ label: 'A' }, { label: 'B' }] },
+  { id: 'q2', question: '多说点', multiSelect: true, options: [{ label: 'X' }] },
+]
+eq('答案校验：不是数组', validateAnswers({ answers: 'x' }, questions).error, 'bad-answers')
+eq('答案校验：没有题目', validateAnswers({ answers: [] }, []).error, 'no-questions')
+eq('答案校验：少答一题', validateAnswers({ answers: [{ id: 'q1', selected: ['A'] }] }, questions).error, 'bad-answers')
+eq('答案校验：id 不匹配', validateAnswers({ answers: [{ id: 'zz', selected: ['A'] }, { id: 'q2', selected: ['X'] }] }, questions).error, 'bad-answers')
+eq('答案校验：同一题给两次', validateAnswers({ answers: [{ id: 'q1', selected: ['A'] }, { id: 'q1', selected: ['B'] }] }, questions).error, 'bad-answers')
+eq('答案校验：既没选也没写', validateAnswers({ answers: [{ id: 'q1', selected: [] }, { id: 'q2', selected: ['X'] }] }, questions).error, 'empty-answer')
+eq('答案校验：自定义答案太长',
+  validateAnswers({ answers: [{ id: 'q1', selected: [], custom: 'x'.repeat(MAX_ANSWER_CHARS + 1) }, { id: 'q2', selected: ['X'] }] }, questions).error,
+  'answer-too-long')
+eq('答案校验：全空选项 + 自定义 = 合法（桌面端也有这种答案）',
+  JSON.stringify(validateAnswers({ answers: [{ id: 'q1', selected: [], custom: '我自己写的' }, { id: 'q2', selected: ['X'] }] }, questions).value),
+  JSON.stringify({ answers: [{ id: 'q1', selected: [], custom: '我自己写的' }, { id: 'q2', selected: ['X'] }] }))
+eq('答案校验：多选可以多值',
+  validateAnswers({ answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X', 'Y'] }] }, questions).value.answers[1].selected.length, 2)
+
+const hub = createQuestionHub({ maxPending: 3 })
+const hubFrames = []
+const unsub = hub.subscribe((f) => hubFrames.push(f))
+const entryA = hub.register('sess-1', questions, null, 'call-A')
+eq('提问中心：登记后有 1 条待答', hub.size, 1)
+eq('提问中心：登记会通知订阅者', hubFrames[0].e, 'question')
+eq('提问中心：帧里带会话 id', hubFrames[0].d.sessionId, 'sess-1')
+eq('提问中心：帧里带 callId', hubFrames[0].d.callId, 'call-A')
+eq('提问中心：按会话过滤', hub.list('sess-2').length, 0)
+eq('提问中心：不过滤时能拿到', hub.list().length, 1)
+
+const answeredA = hub.answer({ questionId: entryA.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+eq('提问中心：作答成功', answeredA.ok, true)
+eq('提问中心：作答后待答清空', hub.size, 0)
+eq('提问中心：宿主拿到答案', (await entryA.promise).answers.length, 2)
+eq('提问中心：作答会通知订阅者', hubFrames[hubFrames.length - 1].e, 'question-settled')
+eq('提问中心：重复作答 → 404', hub.answer({ questionId: entryA.id, answers: [] }).status, 404)
+eq('提问中心：不存在的 id → 404', hub.answer({ questionId: 'zzz', answers: [] }).status, 404)
+eq('提问中心：缺 questionId → 400', hub.answer({}).status, 400)
+
+const entryB = hub.register('sess-1', questions, null, null)
+eq('提问中心：答案不合法 → 400', hub.answer({ questionId: entryB.id, answers: [{ id: 'q1', selected: ['A'] }] }).status, 400)
+eq('提问中心：校验失败后仍然待答', hub.size, 1)
+eq('提问中心：别处结算 → resolve 成 null', hub.settle(entryB.id), true)
+eq('提问中心：结算后 promise 得到 null', await entryB.promise, null)
+eq('提问中心：结算后不再待答', hub.size, 0)
+
+// 超额淘汰最老的；被淘汰的那条要干净退场（resolve null），不能变成未处理拒绝
+const entryC = hub.register('s', questions, null, null)
+const entryD = hub.register('s', questions, null, null)
+const entryE = hub.register('s', questions, null, null)
+const entryF = hub.register('s', questions, null, null)
+eq('提问中心：超过上限后只留 maxPending 条', hub.size, 3)
+eq('提问中心：最老的那条被淘汰成 null', await entryC.promise, null)
+eq('提问中心：较新的还在', hub.list().length, 3)
+hub.settle(entryD.id); hub.settle(entryE.id); hub.settle(entryF.id)
+const framesBeforeUnsub = hubFrames.length
+unsub()
+const entryH = hub.register('s', questions, null, null)
+eq('提问中心：退订后不再收到帧', hubFrames.length, framesBeforeUnsub)
+hub.settle(entryH.id)
+eq('提问中心：退订后结算也不再收到帧', hubFrames.length, framesBeforeUnsub)
+
+// 中止信号：应该让这条路径 reject（整条 waterfall 随之失败）
+const abortCtrl = new AbortController()
+const hubAbort = createQuestionHub({})
+const entryG = hubAbort.register('s', questions, abortCtrl.signal, null)
+let abortErr = null
+entryG.promise.catch((err) => { abortErr = err })
+abortCtrl.abort()
+await new Promise((r) => setTimeout(r, 10))
+check('提问中心：中止会拒绝这条路径', abortErr !== null && abortErr.name === 'AbortError', String(abortErr && abortErr.name))
+eq('提问中心：中止后不再待答', hubAbort.size, 0)
+
+console.log('\n———— P3 纯函数：answerer 竞速 ————')
+
+// 手机先答
+const hub1 = createQuestionHub({})
+const answerer1 = createQuestionAnswerer(hub1, { log: () => {} })
+let desktopCalled = 0
+const desktopAnswer = { answers: [{ id: 'q1', selected: ['B'] }, { id: 'q2', selected: ['X'] }] }
+const pending1 = answerer1({ agent: { id: 'sess-1' }, questions }, () => { desktopCalled += 1; return new Promise(() => {}) })
+await new Promise((r) => setTimeout(r, 5))
+eq('answerer：先同步调用了 next()（桌面卡片要立刻出现）', desktopCalled, 1)
+const live1 = hub1.list('sess-1')[0]
+hub1.answer({ questionId: live1.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+eq('answerer：手机先答就用手机的答案', JSON.stringify((await pending1).answers[0]), JSON.stringify({ id: 'q1', selected: ['A'] }))
+
+// 桌面先答 → 手机侧要被告知收起卡片，并沿用桌面的答案
+const hub2 = createQuestionHub({})
+const answerer2 = createQuestionAnswerer(hub2, { log: () => {} })
+const settledFrames = []
+hub2.subscribe((f) => settledFrames.push(f))
+const pending2 = answerer2({ agent: { id: 'sess-1' }, questions }, () => Promise.resolve(desktopAnswer))
+eq('answerer：桌面先答就用桌面的答案', await pending2, desktopAnswer)
+eq('answerer：桌面先答后手机侧收到 question-settled',
+  settledFrames.some((f) => f.e === 'question-settled' && f.d.outcome === 'elsewhere'), true)
+eq('answerer：桌面先答后不再待答', hub2.size, 0)
+
+// 桌面这条路炸了（GUI 没开），只要手机还挂着就继续等手机
+const hub3 = createQuestionHub({})
+const answerer3 = createQuestionAnswerer(hub3, { log: () => {} })
+const pending3 = answerer3({ agent: { id: 'sess-1' }, questions }, () => Promise.reject(new Error('no answerer')))
+await new Promise((r) => setTimeout(r, 5))
+const live3 = hub3.list('sess-1')[0]
+hub3.answer({ questionId: live3.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+eq('answerer：桌面报错但手机还能答', (await pending3).answers.length, 2)
+
+// 桌面这条路炸了、手机也不答 → 把桌面的错误原样抛出（保持原有语义）
+const hub4 = createQuestionHub({})
+const answerer4 = createQuestionAnswerer(hub4, { log: () => {} })
+const pending4 = answerer4({ agent: { id: 'sess-1' }, questions }, () => Promise.reject(new Error('no answerer')))
+await new Promise((r) => setTimeout(r, 5))
+hub4.settle(hub4.list('sess-1')[0].id)
+let err4 = null
+try { await pending4 } catch (err) { err4 = err }
+check('answerer：桌面报错且手机不答 → 抛桌面的错误', err4 !== null && /no answerer/.test(err4.message), String(err4 && err4.message))
+
+// 没有 agent 的请求不归这里管
+const hub5 = createQuestionHub({})
+const answerer5 = createQuestionAnswerer(hub5, { log: () => {} })
+let passedThrough = 0
+await answerer5({ questions }, () => { passedThrough += 1; return Promise.resolve(desktopAnswer) })
+eq('answerer：没有 agent 的请求直接放行', passedThrough, 1)
+eq('answerer：放行的请求不进待答表', hub5.size, 0)
+
+// next() 同步抛（Remote 转发器在作用域不匹配时会 throw）也不能带崩
+const hub6 = createQuestionHub({})
+const answerer6 = createQuestionAnswerer(hub6, { log: () => {} })
+const pending6 = answerer6({ agent: { id: 'sess-1' }, questions }, () => { throw new TypeError('forwarded scoped event must carry its Agent directly') })
+await new Promise((r) => setTimeout(r, 5))
+eq('answerer：next() 同步抛时手机这条路仍然可用', hub6.list('sess-1').length, 1)
+hub6.answer({ questionId: hub6.list('sess-1')[0].id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+eq('answerer：同步抛之后仍能拿到手机答案', (await pending6).answers.length, 2)
+
+console.log('\n———— P3 路由：分组 / 模型 / 模式 / 提问 ————')
+
+const groupedRes = await req('/api/sessions', { headers: { Cookie: cookie } })
+eq('/api/sessions 仍然返回 items（向后兼容）', groupedRes.body.items.length, 2)
+eq('/api/sessions 新增 groups', Array.isArray(groupedRes.body.groups), true)
+eq('分组数量', groupedRes.body.groups.length, 2)
+// 组按 updatedAt 降序：sess-2（D:\b，updatedAt 200）在 sess-1（D:\a，100）前面
+eq('分组名（按组内最近更新时间降序）', groupedRes.body.groups.map((g) => g.name).join(','), 'b,a')
+eq('分组带完整路径', groupedRes.body.groups.every((g) => typeof g.path === 'string'), true)
+eq('组头带 running 标记', groupedRes.body.groups.some((g) => g.running === true), true)
+eq('摘要里带上模式（投影值）', groupedRes.body.items.find((i) => i.id === 'sess-2').preset, 'cordis')
+
+const modelsRes = await req('/api/models', { headers: { Cookie: cookie } })
+eq('/api/models → 200', modelsRes.status, 200)
+eq('/api/models 过滤空组', modelsRes.body.catalog.groups.length, 2)
+eq('/api/models 带默认选择', modelsRes.body.catalog.default.model, 'wb-ds41f')
+eq('/api/models 带档位', modelsRes.body.catalog.groups[0].models[0].efforts.length, 2)
+eq('/api/models 带失败的提供方', modelsRes.body.catalog.failures[0].message, '连接超时')
+await req('/api/models', { headers: { Cookie: cookie } })
+eq('/api/models 走了 60 秒缓存（只打一次上游）', catalogCalls, 1)
+const anonModels = await req('/api/models')
+eq('未登录取模型目录 → 401', anonModels.status, 401)
+
+const switchRes = await req('/api/model', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: SESSION_ID, provider: 'olomc', model: 'nim/nvidia/glm-5.3', reasoningEffort: 'low' },
+})
+eq('/api/model → 200', switchRes.status, 200)
+eq('/api/model 返回选中项', switchRes.body.selected.model, 'nim/nvidia/glm-5.3')
+eq('/api/model 透传档位', switchRes.body.selected.reasoningEffort, 'low')
+eq('/api/model 调到了上游', selectModelCalls.length, 1)
+eq('/api/model 把 sessionId 传对了', selectModelCalls[0].sessionId, SESSION_ID)
+
+const anonModel = await req('/api/model', { method: 'POST', json: { sessionId: SESSION_ID, provider: 'p', model: 'm' } })
+eq('未登录切模型 → 401', anonModel.status, 401)
+const formModel = await req('/api/model', {
+  method: 'POST', headers: { Cookie: cookie }, body: { sessionId: SESSION_ID },
+  contentType: 'application/x-www-form-urlencoded',
+})
+eq('切模型用表单类型 → 415', formModel.status, 415)
+eq('415 错误码', formModel.body.error, 'unsupported-media-type')
+const rawModel = await req('/api/model', {
+  method: 'POST', headers: { Cookie: cookie }, rawText: '{不是 json', contentType: 'application/json',
+})
+eq('切模型非法 JSON → 400', rawModel.status, 400)
+eq('非法 JSON 错误码', rawModel.body.error, 'bad-body')
+const noProvider = await req('/api/model', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID } })
+eq('缺 provider → 400', noProvider.status, 400)
+eq('缺 provider 错误码', noProvider.body.error, 'missing-provider')
+const upstreamModel = await req('/api/model', {
+  method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID, provider: 'doulor', model: 'nope' },
+})
+eq('上游拒绝切模型 → 502', upstreamModel.status, 502)
+eq('502 透传上游 code', upstreamModel.body.code, 'session/model-unavailable')
+
+const presetsRes = await req('/api/presets', { headers: { Cookie: cookie } })
+eq('/api/presets → 200', presetsRes.status, 200)
+eq('/api/presets 条数', presetsRes.body.presets.length, 5)
+eq('/api/presets 内置模式带中文名', presetsRes.body.presets.find((p) => p.id === 'cordis').label, '创造模式')
+eq('/api/presets 自建模式用自己的名字', presetsRes.body.presets.find((p) => p.id === 'custom-one').label, '我的模式')
+const anonPresets = await req('/api/presets')
+eq('未登录取模式清单 → 401', anonPresets.status, 401)
+
+const presetRes = await req('/api/preset', {
+  method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID, preset: 'cordis' },
+})
+eq('/api/preset → 200', presetRes.status, 200)
+eq('/api/preset 返回模式 id', presetRes.body.selected, 'cordis')
+eq('/api/preset 返回中文名', presetRes.body.label, '创造模式')
+eq('/api/preset 把 Agent 对象交给上游', presetSelectCalls[presetSelectCalls.length - 1].agentId, SESSION_ID)
+
+const presetLocked = await req('/api/preset', {
+  method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID, preset: 'started' },
+})
+eq('已开始的会话切模式 → 409', presetLocked.status, 409)
+eq('409 错误码是 preset-locked', presetLocked.body.error, 'preset-locked')
+check('409 文案点明这是 DSH 的规则', /DSH/.test(String(presetLocked.body.message)), presetLocked.body.message)
+const presetGhost = await req('/api/preset', {
+  method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID, preset: 'ghost' },
+})
+eq('不存在的模式 → 404', presetGhost.status, 404)
+eq('404 错误码', presetGhost.body.error, 'preset-not-found')
+const presetNoAgent = await req('/api/preset', {
+  method: 'POST', headers: { Cookie: cookie }, json: { sessionId: 'no-agent-session', preset: 'ptc' },
+})
+eq('会话没有活体 agent → 409', presetNoAgent.status, 409)
+eq('409 错误码是 agent-not-live', presetNoAgent.body.error, 'agent-not-live')
+const presetNoId = await req('/api/preset', { method: 'POST', headers: { Cookie: cookie }, json: { sessionId: SESSION_ID } })
+eq('缺 preset → 400', presetNoId.status, 400)
+eq('缺 preset 错误码', presetNoId.body.error, 'missing-preset')
+
+// —— 待答问题：列表 / 作答 / SSE ——
+const noQuestions = await req('/api/questions', { headers: { Cookie: cookie } })
+eq('没有待答问题时返回空数组', noQuestions.body.items.length, 0)
+
+// 先开流，再登记问题，验证"推"这条路
+const streamP = sseCollect('/api/questions/stream', { headers: { Cookie: cookie }, frames: 1 })
+await new Promise((r) => setTimeout(r, 120))
+const liveQuestion = mirror.questionHub.register(SESSION_ID, questions, null, 'call-live')
+const streamRes = await streamP
+eq('/api/questions/stream → 200', streamRes.status, 200)
+check('问题流 Content-Type 是 SSE', String(streamRes.headers['content-type']).startsWith('text/event-stream'), String(streamRes.headers['content-type']))
+eq('问题流推来的是 question 帧', streamRes.frames[0].e, 'question')
+eq('问题流帧里带会话 id', streamRes.frames[0].d.sessionId, SESSION_ID)
+eq('问题流帧里带题目', streamRes.frames[0].d.questions.length, 2)
+
+// 列表页据此打"待回答"角标
+const flagged = await req('/api/sessions', { headers: { Cookie: cookie } })
+eq('有待答问题的会话被标记', flagged.body.items.find((i) => i.id === SESSION_ID).pendingQuestion, true)
+eq('没有待答问题的会话不标记', flagged.body.items.find((i) => i.id === 'sess-2').pendingQuestion, false)
+
+const listedQuestions = await req('/api/questions?id=' + SESSION_ID, { headers: { Cookie: cookie } })
+eq('按会话查待答问题', listedQuestions.body.items.length, 1)
+eq('查别的会话为空', (await req('/api/questions?id=sess-2', { headers: { Cookie: cookie } })).body.items.length, 0)
+
+const answerRes = await req('/api/answer', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { questionId: liveQuestion.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: [], custom: '我写的' }] },
+})
+eq('回答问题 → 200', answerRes.status, 200)
+eq('回答问题返回 accepted', answerRes.body.accepted, true)
+const liveAnswer = await liveQuestion.promise
+eq('宿主收到了手机答案', liveAnswer.answers.length, 2)
+eq('自定义答案原样带出', liveAnswer.answers[1].custom, '我写的')
+
+const anonAnswer = await req('/api/answer', { method: 'POST', json: { questionId: 'x', answers: [] } })
+eq('未登录回答问题 → 401', anonAnswer.status, 401)
+const formAnswer = await req('/api/answer', {
+  method: 'POST', headers: { Cookie: cookie }, body: { questionId: 'x' },
+  contentType: 'application/x-www-form-urlencoded',
+})
+eq('回答问题用表单类型 → 415', formAnswer.status, 415)
+const goneAnswer = await req('/api/answer', {
+  method: 'POST', headers: { Cookie: cookie }, json: { questionId: 'never-existed', answers: [] },
+})
+eq('回答已经结束的问题 → 404', goneAnswer.status, 404)
+eq('404 错误码', goneAnswer.body.error, 'question-not-found')
+const noQid = await req('/api/answer', { method: 'POST', headers: { Cookie: cookie }, json: { answers: [] } })
+eq('缺 questionId → 400', noQid.status, 400)
+eq('缺 questionId 错误码', noQid.body.error, 'missing-question-id')
+const badAnswers = await req('/api/answer', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { questionId: 'whatever', answers: [{ id: 'q1', selected: ['A'] }] },
+})
+eq('答案不合法时先报"问题不存在"（已结算）', badAnswers.status, 404)
+
+// 收尾：确认重复作答会被挡住
+const dupAnswer = await req('/api/answer', {
+  method: 'POST', headers: { Cookie: cookie }, json: { questionId: liveQuestion.id, answers: [] },
+})
+eq('重复回答同一个问题 → 404', dupAnswer.status, 404)
+
+// ==================== 三·五·六、P4：新建会话 + 内嵌字体 ====================
+console.log('\n———— P4：新建会话 / 内嵌字体 ————')
+
+// —— 纯函数：合并登记表与已有会话 ——
+const merged = normalizeWorkspaces(
+  [{ id: 'w1', path: 'D:\\x', title: '登记名' }, { id: 'w2', path: 'D:\\y' }],
+  [{ cwd: 'D:\\x' }, { cwd: 'D:\\z' }, { cwd: '' }],
+)
+eq('合并后按 path 去重', merged.length, 3)
+eq('登记过的排前面', merged.map((w) => w.path).join(','), 'D:\\x,D:\\y,D:\\z')
+eq('重复目录以登记表为准', merged[0].name, '登记名')
+eq('无标题的登记项回退目录名', merged[1].name, 'y')
+eq('会话独有目录也进清单', merged[2].path, 'D:\\z')
+eq('空 cwd 被丢掉', merged.filter((w) => !w.path).length, 0)
+eq('会话数统计正确', merged[0].sessionCount, 1)
+
+eq('没有 registry 服务时退化成只用会话目录',
+  normalizeWorkspaces(null, [{ cwd: 'D:\\only' }]).map((w) => w.path).join(','), 'D:\\only')
+eq('registry.list() 抛错时退化成只用会话目录',
+  normalizeWorkspaces({ list() { throw new Error('坏了') } }, [{ cwd: 'D:\\only' }]).length, 1)
+eq('listRegisteredWorkspaces 对 null 返回空数组', listRegisteredWorkspaces(null).length, 0)
+
+// —— 纯函数：校验 ——
+eq('缺位置 → missing-location', validateSessionCreate({}).error, 'missing-location')
+eq('相对路径被拒', validateSessionCreate({ cwd: 'a\\b' }).error, 'path-not-absolute')
+eq('POSIX 绝对路径放行', validateSessionCreate({ cwd: '/a/b' }).value.cwd, '/a/b')
+eq('Windows 绝对路径放行', validateSessionCreate({ cwd: 'D:\\a' }).value.cwd, 'D:\\a')
+eq('UNC 路径放行', validateSessionCreate({ cwd: '\\\\srv\\share' }).value.cwd, '\\\\srv\\share')
+eq('只有 workspaceId 也合法', validateSessionCreate({ workspaceId: 'w1' }).value.workspaceId, 'w1')
+eq('preset 映射成 agentPreset 由调用方负责', validateSessionCreate({ cwd: 'D:\\a', preset: 'p' }).value.preset, 'p')
+
+const noService = await createSession(null, { cwd: 'D:\\a' })
+eq('会话服务缺失 → 503', noService.status, 503)
+eq('会话服务缺失错误码', noService.error, 'session-service-unavailable')
+
+// —— 路由：文件夹清单 ——
+const ws = await req('/api/workspaces', { headers: { Cookie: cookie } })
+eq('工作区清单 → 200', ws.status, 200)
+const wsRows = ws.body.workspaces
+eq('登记表 3 条 + 会话独有 1 条，去重后 4 条', wsRows.length, 4)
+eq('登记过的排前面，会话独有的排后面',
+  wsRows.map((w) => w.path).join(','), 'D:\\proj\\alpha,D:\\proj\\empty,D:\\a,D:\\b')
+eq('重复目录以登记表为准', wsRows[2].title, '会话里也有的目录')
+eq('重复目录不重复出现', wsRows.filter((w) => w.path === 'D:\\a').length, 1)
+eq('登记的 id 带出来', wsRows[0].id, 'ws-1')
+eq('会话独有目录没有 id', wsRows[3].id, '')
+eq('会话数按 cwd 统计', wsRows[2].sessionCount, 1)
+eq('没建过会话的登记目录 sessionCount 为 0', wsRows[1].sessionCount, 0)
+
+const anonWs = await req('/api/workspaces')
+eq('未登录读工作区清单 → 401', anonWs.status, 401)
+
+// —— 路由：新建会话 ——
+const created = await req('/api/session', {
+  method: 'POST', headers: { Cookie: cookie }, json: { cwd: 'D:\\proj\\alpha' },
+})
+eq('新建会话 → 200', created.status, 200)
+eq('返回新会话 id', created.body.sessionId, 'session-new-1')
+eq('cwd 原样传给宿主', sessionCreateCalls[0].cwd, 'D:\\proj\\alpha')
+eq('不传 preset 时不带 agentPreset', sessionCreateCalls[0].agentPreset, undefined)
+
+const byWorkspace = await req('/api/session', {
+  method: 'POST', headers: { Cookie: cookie }, json: { workspaceId: 'ws-2' },
+})
+eq('用 workspaceId 也能建', byWorkspace.status, 200)
+eq('workspaceId 传给宿主', sessionCreateCalls[1].workspaceId, 'ws-2')
+eq('带 workspaceId 时不传 cwd', sessionCreateCalls[1].cwd, undefined)
+
+const withPreset = await req('/api/session', {
+  method: 'POST', headers: { Cookie: cookie }, json: { cwd: 'D:\\a', preset: 'cordis' },
+})
+eq('可以顺带指定模式', withPreset.status, 200)
+eq('preset 映射成 agentPreset', sessionCreateCalls[2].agentPreset, 'cordis')
+eq('宿主返回的模式带出来', withPreset.body.preset, 'cordis')
+
+const noLoc = await req('/api/session', { method: 'POST', headers: { Cookie: cookie }, json: {} })
+eq('既没 cwd 也没 workspaceId → 400', noLoc.status, 400)
+eq('缺位置错误码', noLoc.body.error, 'missing-location')
+
+const relPath = await req('/api/session', {
+  method: 'POST', headers: { Cookie: cookie }, json: { cwd: 'relative\\dir' },
+})
+eq('相对路径 → 400', relPath.status, 400)
+eq('相对路径错误码', relPath.body.error, 'path-not-absolute')
+eq('被拒的请求没有打到宿主', sessionCreateCalls.length, 3)
+
+const longPath = await req('/api/session', {
+  method: 'POST', headers: { Cookie: cookie }, json: { cwd: 'D:\\' + 'x'.repeat(5000) },
+})
+eq('超长路径 → 400', longPath.status, 400)
+eq('超长路径错误码', longPath.body.error, 'path-too-long')
+
+const anonCreate = await req('/api/session', { method: 'POST', json: { cwd: 'D:\\a' } })
+eq('未登录新建会话 → 401', anonCreate.status, 401)
+
+const formCreate = await req('/api/session', {
+  method: 'POST', headers: { Cookie: cookie }, body: { cwd: 'D:\\a' },
+  contentType: 'application/x-www-form-urlencoded',
+})
+eq('新建会话用表单类型 → 415（CSRF 闸门）', formCreate.status, 415)
+
+const boom = await req('/api/session', {
+  method: 'POST', headers: { Cookie: cookie }, json: { cwd: 'D:\\boom' },
+})
+eq('宿主抛错 → 502', boom.status, 502)
+eq('上游错误码透传', boom.body.code, 'session/unavailable')
+
+// —— 路由：内嵌字体 ——
+const fontCss = await req('/font.css', { raw: true })
+eq('GET /font.css → 200', fontCss.status, 200)
+check('font.css 声明 JetBrains Mono', fontCss.text.includes("font-family: 'JetBrains Mono'"))
+check('font.css 引用 Regular', fontCss.text.includes('/font/JetBrainsMono-Regular.ttf'))
+check('font.css 引用 Bold', fontCss.text.includes('/font/JetBrainsMono-Bold.ttf'))
+check('font-display: swap（先用回退字体渲染）', fontCss.text.includes('font-display: swap'))
+
+const ttf = await reqRaw('/font/JetBrainsMono-Regular.ttf')
+eq('GET 字体 → 200', ttf.status, 200)
+eq('字体 MIME 是 font/ttf', ttf.headers['content-type'], 'font/ttf')
+check('字体开了长缓存', String(ttf.headers['cache-control']).includes('max-age=31536000'),
+  String(ttf.headers['cache-control']))
+const onDisk = fs.readFileSync(path.join(WEB_ROOT, 'fonts', 'JetBrainsMono-Regular.ttf'))
+eq('字体字节数一致（没被 utf8 读坏）', ttf.buf.length, onDisk.length)
+check('字体字节完全一致', ttf.buf.equals(onDisk), `${ttf.buf.length} vs ${onDisk.length}`)
+eq('TrueType 魔数正确', ttf.buf.subarray(0, 4).toString('hex'), '00010000')
+
+const anonFont = await reqRaw('/font/JetBrainsMono-Regular.ttf')
+eq('字体不需要登录（登录页也要用它）', anonFont.status, 200)
+const anonCss = await req('/font.css', { raw: true })
+eq('font.css 也不需要登录', anonCss.status, 200)
+check('font.css 是 CSS 类型', String(anonCss.headers['content-type']).includes('text/css'),
+  String(anonCss.headers['content-type']))
+
+// 只有白名单里那两个字体文件是公开的。不在白名单里的路径会掉回"需要登录"，
+// 所以未登录的访客连"哪些路径存在"都问不出来 —— 这是有意的，不是遗漏。
+const missingFont = await req('/font/Nope.ttf')
+eq('白名单外的字体路径 → 401（不泄露路径是否存在）', missingFont.status, 401)
+const traversalFont = await req('/font/../../mobile-mirror.json')
+check('路径穿越拿不到配置',
+  traversalFont.status !== 200 && !traversalFont.text.includes('passwordHash'),
+  `${traversalFont.status} ${traversalFont.text.slice(0, 40)}`)
+
 await mirror.close()
 
 // ==================== 三·六、只读模式（enablePrompt=false） ====================
@@ -542,7 +1286,30 @@ eq('403 错误码', roPrompt.body.error, 'prompt-disabled')
 const roCancel = await req('/api/cancel', { method: 'POST', headers: { Cookie: roCookie }, json: { sessionId: 's' } })
 eq('enablePrompt=false 停止 → 403', roCancel.status, 403)
 eq('只读模式下列表仍可用', (await req('/api/sessions', { headers: { Cookie: roCookie } })).status, 200)
+// P3：切模型 / 切模式 / 回答问题同样是写操作，enablePrompt=false 时必须一起关掉
+const roModel = await req('/api/model', {
+  method: 'POST', headers: { Cookie: roCookie }, json: { sessionId: 's', provider: 'p', model: 'm' },
+})
+eq('enablePrompt=false 切模型 → 403', roModel.status, 403)
+eq('切模型的 403 错误码', roModel.body.error, 'prompt-disabled')
+const roPreset = await req('/api/preset', {
+  method: 'POST', headers: { Cookie: roCookie }, json: { sessionId: 's', preset: 'ptc' },
+})
+eq('enablePrompt=false 切模式 → 403', roPreset.status, 403)
+const roAnswer = await req('/api/answer', {
+  method: 'POST', headers: { Cookie: roCookie }, json: { questionId: 'q', answers: [] },
+})
+eq('enablePrompt=false 回答问题 → 403', roAnswer.status, 403)
+const roCreate = await req('/api/session', {
+  method: 'POST', headers: { Cookie: roCookie }, json: { cwd: 'D:\\a' },
+})
+eq('enablePrompt=false 新建会话 → 403', roCreate.status, 403)
+eq('新建会话的 403 错误码', roCreate.body.error, 'prompt-disabled')
 eq('只读模式下 controller.prompt 一次都没被调用', promptCalls.length, 0)
+eq('只读模式下 controller.selectModel 一次都没被调用', selectModelCalls.length, 0)
+eq('只读模式下 controller.create 一次都没被调用', sessionCreateCalls.length, 0)
+eq('只读模式下工作区清单仍可读',
+  (await req('/api/workspaces', { headers: { Cookie: roCookie } })).status, 200)
 await readOnly.close()
 
 // ==================== 三·七、上游报错的透传 ====================

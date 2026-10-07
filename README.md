@@ -1,10 +1,10 @@
 # dsh-mobile-mirror
 
-在局域网里用手机镜像 DSH 的会话：看会话列表、看历史、看**实时逐字输出**，
-以及**发消息**和**停止当前轮**。
+在局域网里用手机镜像 DSH 的会话：看会话列表（按工作区分组）、看历史、看**实时逐字输出**，
+以及**发消息**、**停止当前轮**、**新建会话**、**切换会话的模型与模式**、**在手机上回答 DSH 的提问**。
 **桌面端行为完全不变** —— 不注入 UI、不遮挡、不改布局、不碰现有 webServer。
 
-当前进度：**P2 完成**。剩余：二维码配对与桌面内配对页（P3）。
+当前进度：**P4 完成**。剩余：二维码配对与桌面内配对页（P5）。
 
 ## 为什么是独立端口
 
@@ -90,11 +90,11 @@ plugin_manager install_bundle  target = link:D:/VibeCoding/Plugin/dsh-mobile-mir
 | `username` | `dsh` | 登录账号 |
 | `passwordHash` | `null` | scrypt 加盐哈希，由 `/setup` 写入 |
 | `password` | — | 只用于手写明文，加载后转哈希并删除 |
-| `sessionTtlDays` | `30` | 登录有效期 |
+| `sessionTtlDays` | `30` | 登录会话在**服务端**的有效期。Cookie 不带 `Max-Age`，关掉浏览器就失效，所以这个值只约束"标签页一直开着"的情形 |
 | `tls` | `true` | 关掉会退回明文 HTTP（不推荐） |
 | `certDir` | `null` | 证书目录，默认 `$DSH_HOME/mobile-mirror-cert` |
 | `allowedHosts` | `[]` | 额外的 Host 白名单（一般不需要） |
-| `enablePrompt` | `true` | **写操作总开关**。设 `false` 即只读模式：发消息与停止轮次都返回 403 |
+| `enablePrompt` | `true` | **写操作总开关**。设 `false` 即只读模式：发消息、停止轮次、切换模型、切换模式、回答问题全部返回 403 |
 
 ## 路由与认证边界
 
@@ -102,16 +102,26 @@ plugin_manager install_bundle  target = link:D:/VibeCoding/Plugin/dsh-mobile-mir
 |---|---|---|
 | `GET /health` | 无 | 存活探测（无任何数据） |
 | `GET /cert` | 无 | 下载证书（公钥信息，登录前就得能拿到） |
+| `GET /font.css` · `GET /font/*.ttf` | 无 | 内嵌字体。**故意公开**：登录页自己也要用，而登录页不需要登录 |
 | `GET /login` · `POST /login` | 无，但**有节流** | 登录页与登录 |
 | `GET/POST /setup` | **仅本机（回环）** | 设置账号密码 |
 | `GET /pair.json` | **仅本机（回环）** | 诊断信息 |
 | `GET /logout` | 需登录 | 退出 |
 | `GET /` | 需登录 | 手机主页（会话列表 + 对话） |
-| `GET /api/sessions` | 需登录 | 会话列表，按最近活动降序 |
+| `GET /api/sessions` | 需登录 | 会话列表，按最近活动降序，附工作区分组 |
+| `GET /api/workspaces` | 需登录 | 可选的文件夹清单（已登记工作区 + 已有会话的目录，合并去重） |
+| `POST /api/session` | 需登录 + JSON | **新建会话** |
 | `GET /api/follow?id=&max=` | 需登录 | **SSE**：实时跟随一个会话 |
 | `GET /api/page?id=&before=&max=` | 需登录 | 往上翻更早的历史 |
 | `POST /api/prompt` | 需登录 + JSON | 发送一条文本消息 |
 | `POST /api/cancel` | 需登录 + JSON | 停止当前轮 |
+| `GET /api/models` | 需登录 | 可用模型目录（含推理档位），60 秒缓存 |
+| `POST /api/model` | 需登录 + JSON | 切换会话的模型（下次请求生效） |
+| `GET /api/presets` | 需登录 | 模式清单（标准 / PTC / 极简 / 创造 + 自建），60 秒缓存 |
+| `POST /api/preset` | 需登录 + JSON | 切换会话的模式（仅未开跑的会话可换） |
+| `GET /api/questions?id=` | 需登录 | 待回答的提问（给列表页角标用） |
+| `POST /api/answer` | 需登录 + JSON | 回答一个提问 |
+| `GET /api/questions/stream` | 需登录 | **SSE**：任何会话出现提问都推给手机 |
 
 回环判定看 **socket 的真实来源地址**，不看 Host 头，所以伪造 Host 绕不过去。
 鉴权在"会话服务是否就绪"之前 —— 未登录者拿到的是 401，不会因为 503 而得知服务状态。
@@ -120,14 +130,23 @@ plugin_manager install_bundle  target = link:D:/VibeCoding/Plugin/dsh-mobile-mir
 
 ### `GET /api/sessions`
 
-```json
-{ "items": [
-  { "id": "session-abc", "title": "标题或 null", "running": true, "blank": false,
-    "agentAvailable": true, "updatedAt": 1791350663634, "cwd": "D:\\x",
-    "origin": null, "parentSessionId": null }
-] }
+```jsonc
+{
+  "items": [
+    { "id": "session-abc", "title": "标题或 null", "running": true, "blank": false,
+      "agentAvailable": true, "updatedAt": 1791350663634, "cwd": "D:\\x",
+      "origin": null, "parentSessionId": null,
+      "preset": "cordis",          // 当前模式 id，来自 Session 投影
+      "pendingQuestion": false }   // 这个会话正在等手机回答
+  ],
+  "groups": [                      // 按 cwd 分组，组内最近活动降序，"无工作区"永远排最后
+    { "key": "d:\\x", "name": "x", "path": "D:\\x", "updatedAt": 1791350663634,
+      "running": true, "items": [ /* 同一批对象 */ ] }
+  ]
+}
 ```
 
+`items` 保留扁平形态是为了向后兼容（旧页面只读它）；新页面用 `groups` 渲染可折叠的分组。
 会话服务未就绪时返回 `503 {"error":"session-controller-unavailable"}`。
 
 ### `GET /api/follow?id=<sessionId>&max=<n>` → SSE
@@ -212,6 +231,152 @@ DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界
 
 同样受 `enablePrompt` 总开关约束（`false` 时 403），错误码同上，502 时为 `cancel-failed`。
 
+### `GET /api/models` · `POST /api/model` —— 模型
+
+```jsonc
+// GET /api/models → 200
+{ "catalog": {
+  "default": { "provider": "doulor", "model": "wb-…", "reasoningEffort": "medium" },
+  "routableProviders": ["doulor", "olomc"],
+  "groups": [{ "id": "doulor", "name": "Doulor", "models": [
+    { "id": "wb-…", "name": "WB-DS41F", "description": "…",
+      "efforts": [{ "id": "low", "name": "低" }, { "id": "high", "name": "高" }],
+      "defaultEffort": "medium" }
+  ] }],
+  "failures": [{ "id": "bad", "name": "坏提供方", "message": "连接超时" }]
+} }
+
+// POST /api/model（Content-Type: application/json）
+{ "sessionId": "sess-1", "provider": "doulor", "model": "wb-…", "reasoningEffort": "high" }
+// → 200 { "selected": { "provider": "…", "model": "…", "reasoningEffort": "high" } }
+```
+
+- 目录是**只读**的：只能切换电脑上已经存在的模型，没有新增/删除。
+- `selectModel` 是**会话本地**的，**下一次请求才生效**（不打断正在跑的轮次）。
+- `reasoningEffort` 可以省略 —— 省略时按目录里的 `defaultEffort`。
+- 有提供方读不出模型时进 `failures`，页面把它列在面板底部（不静默吞掉）。
+- 上游抛错 → `502 {"error":"model-failed","code":<上游 code>}`。
+
+### `GET /api/presets` · `POST /api/preset` —— 模式
+
+四个内置模式的 id 与中文名（来自 DSH 的 preset 注册表）：
+`standard` 标准模式 · `ptc` PTC 模式 · `minimal` 极简模式 · `cordis` 创造模式。
+自建模式用注册时给的名字。`broken: true` 的模式在面板里置灰。
+
+```jsonc
+{ "sessionId": "sess-1", "preset": "cordis" }
+// → 200 { "selected": "cordis", "label": "创造模式" }
+```
+
+| 状态 | `error` | 含义 |
+|---|---|---|
+| 400 | `missing-session-id` / `missing-preset` | 参数问题 |
+| 403 | `prompt-disabled` | 只读模式 |
+| 404 | `preset-not-found` | 没有这个模式 |
+| 409 | `preset-locked` | **这个会话已经跑过至少一轮，模式锁死** |
+| 409 | `preset-invalid` | 模式当前不可用（如 `broken`） |
+| 409 | `agent-not-live` | 会话没有活着的 Agent（进程重启过） |
+| 502 | `preset-failed` | 上游报错 |
+| 503 | `presets-unavailable` | 模式服务未就绪 |
+
+`preset-locked` 不是 bug 而是 DSH 的规则：`AgentPresetRegistry.select` 里
+`boundary.openTurnStartSeq !== null || boundary.lastTurn > 0` 就抛 `agent-preset/locked`。
+手机页面据此把模式芯片置灰并提示"已开始的会话不能改模式"。
+
+### 为什么"当前模式"读投影而不是 header
+
+`header.agentPreset` 是**创建时**的模式，而且被深冻结 —— DSH 源码注释原文：
+"The creation header names the preset a session STARTED with, and it is deep-frozen
+because that is a creation fact."。会话**在还是空白的时候可以换模式**，那次变更只落在
+`agent-preset/selected` 事件里、进而进 Session 投影。
+
+所以两边都按投影读：`projectSnapshot` / `projectEvent` / `normalizeSummary` 取
+`projections.values.agentPreset`，header 只作兜底。曾经读 header，结果是**创造模式的会话
+在手机上显示成 "standard"** —— 这类 bug 不抛异常、只安静地显示错值，所以 `tools/web-test.mjs`
+里专门有一组源码断言把它钉住。
+
+模型同理：投影键叫 `modelSelection`（不是 `model`），而"下次请求会用哪个模型"的定义就是
+`view.next = state.pending ?? state.lastUsed`，所以直接读 `modelSelection.next` 即可，
+不需要在客户端复刻优先级逻辑。
+
+### `GET /api/workspaces` · `POST /api/session` —— 新建会话
+
+```jsonc
+// GET /api/workspaces → 200
+{ "workspaces": [
+  { "id": "ws-1", "path": "D:\\proj\\alpha", "name": "alpha 项目", "title": "alpha 项目", "sessionCount": 3 },
+  { "id": "",     "path": "D:\\proj\\loose", "name": "loose",      "title": "",           "sessionCount": 1 }
+] }
+
+// POST /api/session —— 三选一的定位方式
+{ "workspaceId": "ws-1" }              // 已登记的工作区，宿主自己解析路径
+{ "cwd": "D:\\proj\\brand-new" }        // 任意绝对路径（清单里没有的也行）
+{ "cwd": "D:\\a", "preset": "cordis" }  // 可选：顺手指定模式
+// → 200 { "sessionId": "session-…", "preset": "cordis" }
+```
+
+| 状态 | `error` | 含义 |
+|---|---|---|
+| 400 | `missing-location` | `cwd` 和 `workspaceId` 都没给 |
+| 400 | `path-not-absolute` | `cwd` 不是绝对路径 |
+| 400 | `path-too-long` | 路径超过 4096 字符 |
+| 403 | `prompt-disabled` | 只读模式 |
+| 415 | `unsupported-media-type` | 没带 `application/json` |
+| 502 | `session-create-failed` | 上游报错，`code` 透传上游错误码 |
+| 503 | `session-service-unavailable` | 会话服务未就绪 |
+
+**清单从哪来。** `workspaceRegistry.list()` 给出 DSH 已登记的目录（**同步**返回，不读持久化），
+再并上"已有会话的 `cwd`" —— 后者能覆盖"手动 cd 过去开过会话、但从没登记过"的目录。
+两边按 `path` 去重，登记表优先（它带名字），最后再加一个手输绝对路径的入口，
+这样**一个会话都没有的新文件夹也能开**。
+
+**为什么不给新建会话加模式选择器。** 新建出来的是 `blank` 会话，DSH 只禁止**已开跑**的会话改模式
+（见上面的 `preset-locked`）。所以进去以后头部那枚模式芯片本来就能点，建的时候再问一遍是多余的一步。
+`preset` 字段留着是给"从别处跳过来、明确知道要什么模式"的场景用的。
+
+**`workspaceRegistry` 是单独一次 `root.inject`。** Cordis 的 `inject` 要等**所有**依赖就绪才回调，
+把它塞进 `agentPresets` / `agents` 那一批里，任何一个服务缺失都会连带饿死另外两个。
+`tools/host-test.mjs` 里有一条断言专门盯着"没有把它混进那一批"。
+
+### `GET /api/questions` · `POST /api/answer` · `GET /api/questions/stream` —— 手机回答提问
+
+```jsonc
+// GET /api/questions?id=<sessionId> → 200
+{ "items": [{ "id": "q-1", "sessionId": "sess-1", "callId": "…", "createdAt": 1791350663634,
+              "questions": [{ "id": "q1", "question": "要继续吗？", "header": "确认",
+                              "detail": "会影响磁盘", "multiSelect": false,
+                              "options": [{ "label": "继续", "description": "往下做" }] }] }] }
+
+// POST /api/answer
+{ "questionId": "q-1", "answers": [{ "id": "q1", "selected": ["继续"], "custom": "或者我自己写的" }] }
+// → 200 { "accepted": true, "answers": [ … ] }
+```
+
+| 状态 | `error` | 含义 |
+|---|---|---|
+| 400 | `missing-question-id` / `bad-answers` / `empty-answer` / `answer-too-long` | 参数问题 |
+| 404 | `question-not-found` | 已经答过、已被桌面端回答、或已经过期 |
+
+**怎么接上去的。** `userQuestions.answer()` 这条路走不通：`ask_user_question` 是**无超时**的
+（schema 里只有 `questions`，没有 `timeout`），所以 DSH 从不把它登记成"活动中的提问"，
+`answer()` 会直接返回 `false`。改用 Host 侧的 `user-questions/request` waterfall：
+
+```
+root.on('user-questions/request', answerer, { prepend: true })
+```
+
+- **`prepend` 是必须的**：Remote 转发层那个 answerer 认出 agent 之后**不再调用 `next()`**，
+  排在它后面就永远不会被执行。Cordis 的 `register` 用 `unshift` 处理 `prepend`，
+  所以这样能插到最前。
+- answerer 会**先同步调用 `next()`**（让桌面端的提问卡片照常出现），再
+  `Promise.race([手机答案, 桌面答案])`：手机先答就用手机的，桌面先答就把手机侧的卡片收起来。
+- 桌面那条路报错（GUI 没开）而手机还挂着时，继续等手机 —— 这正是这个功能存在的意义。
+- 注册失败不影响任何现有功能：问题照常只在桌面回答，启动日志会明确写出来。
+
+`GET /api/questions/stream` 是一条独立的 SSE（与 `/api/follow` 分开，因为它不绑定某个会话）：
+连上时先补发一遍当前所有待答问题，之后实时推送 `{ "e": "question", … }` 与
+`{ "e": "question-settled", … }`，另有 20 秒一次的心跳注释行。
+
 ## 安全边界
 
 - **Host 校验**：只接受回环、私有网段 IPv4（10 / 172.16–31 / 192.168 / 169.254）
@@ -220,7 +385,12 @@ DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界
 - **口令**：scrypt 加盐哈希，异步实现（不阻塞宿主事件循环）；比较走 `timingSafeEqual`。
 - **节流**：同来源连续失败指数退避（1s→30s），10 次后锁 5 分钟；
   节流在哈希之前生效，被锁的请求连 scrypt 都不跑，避免被刷成对 DSH 的拒绝服务。
-- **会话**：HttpOnly + SameSite=Strict + Secure 的随机 Cookie；改密码会注销所有旧会话。
+- **会话**：HttpOnly + SameSite=Strict + Secure 的随机 Cookie，**不带 `Max-Age`**（关浏览器即失效）；
+  改密码会注销所有旧会话。
+- **静态资源白名单**：路径必须命中 `STATIC_FILES` 里的固定项，不做任何路径拼接，
+  所以目录遍历天然不成立。唯一**无需登录**的资源是 `/font.css` 与两个 TTF ——
+  字体不是机密（OFL 授权、谁都能下载），而登录页自己就要用它。
+  白名单之外的 `/font/*` 路径会掉回"需要登录"，未登录者连"哪个文件存在"都问不出来。
 - **SSE 背压**：客户端读得慢时 `await drain`，不会把事件无限堆在内存里；
   连接关闭时通过 `AbortController` 中止上游 `follow()`。
 - **写操作的 CSRF 三道防线**：`SameSite=Strict` 的 Cookie、`Origin` 必须与 `Host` 同源、
@@ -232,21 +402,82 @@ DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界
 ## 自测
 
 ```bash
-node tools/cert-test.mjs     # 证书层：27 项
-node tools/smoke.mjs         # HTTPS + 认证集成：32 项
-node tools/mirror-test.mjs   # 数据层 + 五条路由：156 项
+npm test    # 一次跑完下面七套
 ```
 
-三套都不需要启动 DSH，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
+| 命令 | 覆盖 | 项数 |
+|---|---|---|
+| `node tools/cert-test.mjs` | 证书层（含真实 TLS 握手） | 27 |
+| `node tools/smoke.mjs` | HTTPS + 认证集成 | 32 |
+| `node tools/mirror-test.mjs` | 数据层 + 全部路由（含 P3 / P4） | 425 |
+| `node tools/host-test.mjs` | 入口层：真跑一遍 `apply()` | 46 |
+| `node tools/web-test.mjs` | 页面静态资源断言 + 纯函数 + 接线 | 199 |
+| `node tools/web-pure-test.cjs` | `app.js` 导出的纯函数（重点是 Markdown） | 165 |
+| `node tools/web-dom-test.cjs` | 用 fake DOM 真跑一遍页面行为 | 268 |
+
+七套都不需要启动 DSH，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
 
 - `cert-test.mjs` 的关键一项是**真实 TLS 握手**：拿生成的证书起一个 HTTPS 服务，
   用 `rejectUnauthorized: true` + 指定 CA 连上去。能过就说明这张手写的证书在
   OpenSSL 眼里结构正确、签名有效、对该地址有效。另外验证了负向情况
   （不信任该 CA 时必须失败、域名不匹配时必须失败），确保它不是"碰巧能用"。
-- `mirror-test.mjs` 用**伪造的 sessionController** 驱动真实的 HTTPS 服务，
-  于是不用启动 DSH 就能端到端验证整条管道：SSE 响应头、快照与事件投影、
+- `mirror-test.mjs` 用**伪造的 sessionController / agentPresets / agents** 驱动真实的
+  HTTPS 服务，于是不用启动 DSH 就能端到端验证整条管道：SSE 响应头、快照与事件投影、
   逐字帧拼接、鉴权顺序、缺参 400、伪造 Host 403、静态资源分发与目录遍历 404，
-  以及 P2 的写操作——校验、幂等重放优先于节流、节流 429、`enablePrompt=false` 全拒。
+  以及写操作——校验、幂等重放优先于节流、节流 429、`enablePrompt=false` 全拒，
+  还有 P3 的模型目录缓存、切换模型/模式、提问中心与 answerer 竞速、问题流 SSE。
+- `host-test.mjs` 用一个极简的 Cordis 上下文替身**真的调用 `lib/index.js` 的 `apply()`**
+  （真的起服务、真的登录），是唯一覆盖入口接线的一套。它按 Cordis 的 waterfall 语义
+  手工组合处理器，正面验证"手机作答后 waterfall 拿到的就是手机的答案"，
+  也反面验证"顺序反过来时手机根本答不上"—— 后者正是 `prepend: true` 的存在理由。
+  顺带验证 dispose 之后端口真的不再接受连接（否则禁用插件会残留占用）。
+- `web-dom-test.cjs` 用一个极简 fake DOM + fake fetch/EventSource 把 `app.js` 真跑一遍，
+  是**唯一能覆盖页面行为**的一套（`boot()` 不抛错本身就证明 app.js 引用的 id 在
+  index.html 里都存在）。它抓出过一个纯函数测试抓不到的真 bug：`tryJson` 返回的是
+  `{ ok, value }` 而不是解析结果，把包装对象当帧传下去会让提问帧被静默丢弃。
+
+## 手机端的几个取舍
+
+### 「记住我」被删掉了，不是修好了
+
+登录会话存在**内存**里（`createSessionStore`），DSH 一重启就全没了 —— 跟 Cookie 上写不写
+`Max-Age` 无关。原来那个"30 天记住我"复选框只是在骗人：重启 DSH 之后照样要重新登录。
+既然要持久化就得把会话落盘（多一份凭据落盘面），用户选择了直接去掉。
+
+现在 Cookie 不带 `Max-Age`，关掉浏览器就失效；服务端的 `sessionTtlDays` 只管"标签页一直开着"。
+`tools/smoke.mjs` 里那条断言**故意仍然提交 `remember=on`**（模拟浏览器缓存的旧登录页），
+验证服务端彻底忽略它 —— 防止这个字段被顺手接回去。
+
+### 默认折叠工作区
+
+会话多起来以后，展开的列表要滑很久才找得到目标，所以分组默认折叠、点组头展开。
+折叠状态存在 `localStorage`（键 `dsh-mm-collapsed:<workspaceKey>`）。
+**展开也要显式写 `'0'`**，不能靠 `removeItem` 表示展开 —— 否则"默认折叠"会让刷新后的展开状态弹回去。
+
+### Markdown
+
+`renderMarkdown` 是手写的（不引第三方包，省得给插件加运行时依赖）。支持：标题、段落、
+`<br>` 换行、粗体 / 斜体 / 粗斜体 / 删除线、行内代码、围栏代码块（带语言角标）、
+引用、水平线、链接、图片、`<url>` 自动链接、有序/无序列表（含嵌套与 `start` 属性）、
+任务列表、**GFM 表格（含对齐）**。
+
+安全不变量：**先转义再替换**；链接与图片只放行 `http` / `https`（`javascript:` / `data:`
+降级成纯文本）；行内代码与代码块的内容不参与任何标记解析。
+`web-pure-test.cjs` 里有一组专门的用例，包括 `a **** b` 不该被凑成 `<em>`、
+`foo_bar_baz` 不该被当成斜体。
+
+### 字体：JetBrains Mono，只给代码
+
+**字体是内嵌的，不是只写个名字。** 页面在**手机**上渲染，而 JetBrains Mono 只装在电脑上；
+只写 `font-family: "JetBrains Mono"` 在手机上等于没写。所以仓库里带了两个 TTF
+（Regular + Bold，约 538 KB），走 `/font.css` 的 `@font-face` 加载，`font-display: swap`
+先拿回退字体渲染。首次加载多 538 KB（局域网内可忽略），之后浏览器长缓存。
+
+作用范围**只有代码**：`.md code`、`pre.md-code`（含语言角标）、工具调用摘要与参数、
+调试 JSON。正文与**思考过程**（`.reason-body`）保持系统等宽 —— 那是散文不是代码，
+等宽字体读起来更累。`tools/web-test.mjs` 里有对应断言把"思考过程仍用 `--mono`"钉住。
+
+字体按 SIL OFL 1.1 分发，`lib/web/fonts/OFL.txt` 是许可证全文。
 
 ## 开发注意事项
 
@@ -262,6 +493,12 @@ DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / 
 - **P1（已完成）**：会话列表、历史快照与翻页、实时逐字输出（SSE）、手机端界面。
 - **P2（已完成）**：手机发消息（`sessionController.prompt`，幂等 + 节流）、
   停止当前轮（`cancel`，需二次确认）、`enablePrompt` 只读总开关。
-- **P3**：二维码配对、桌面内配对页、多网卡地址选择。
+- **P3（已完成）**：会话按工作区分组（可折叠、状态持久化）、切换会话的模型
+  （含推理档位）、显示与切换模式（标准 / PTC / 极简 / 创造，已开跑的会话置灰）、
+  在手机上回答 DSH 的提问（Host 侧 `user-questions/request` waterfall）。
+- **P4（已完成）**：手机端新建会话（工作区清单 + 手输绝对路径）、分组默认折叠、
+  Markdown 渲染补全（表格 / 嵌套列表 / 任务列表 / 删除线等）、内嵌 JetBrains Mono
+  （仅代码）、去掉名不副实的「记住我」。
+- **P5**：二维码配对、桌面内配对页、多网卡地址选择。
 - **之后可做**：手机贴图（要走 `admitPromptContent` 准入管道）、
   会话重命名（`rename`）、消息队列管理（`updateQueue`）、附件下载端点。

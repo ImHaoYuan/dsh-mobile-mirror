@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
 <title>DSH 手机镜像 · 登录</title>
+<link rel="stylesheet" href="/font.css">
 <style>
   :root { --bg:#0f1115; --card:#181b22; --line:#262b35; --fg:#e8eaed; --dim:#9aa3b2; --accent:#4c8dff; --bad:#ff6b6b; --warn:#ffb454; }
   * { box-sizing:border-box; }
@@ -29,12 +30,11 @@
     font-size:16px; font-weight:600; cursor:pointer;
   }
   button:active { transform:scale(.99); }
-  .remember { display:flex; align-items:center; gap:9px; margin:2px 0 18px; font-size:14px; color:var(--dim); }
-  .remember input { width:18px; height:18px; accent-color:var(--accent); }
   .err { background:#2a1618; border:1px solid #5c2b2f; color:#ffb3b3; border-radius:10px; padding:11px 13px; font-size:14px; margin-bottom:16px; }
   .note { color:var(--dim); font-size:12.5px; margin-top:16px; line-height:1.75; }
   .warn { color:var(--warn); }
-  code { background:#0b0d11; border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:12.5px; }
+  code { background:#0b0d11; border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:12.5px;
+         font-family:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 </style>
 </head>
 <body>
@@ -51,11 +51,6 @@
 
       <label for="password">密码</label>
       <input id="password" name="password" type="password" autocomplete="current-password" required>
-
-      <div class="remember">
-        <input id="remember" name="remember" type="checkbox" value="on" checked>
-        <label for="remember" style="margin:0">记住我（30 天内免登录）</label>
-      </div>
 
       <button type="submit">登录</button>
     </form>

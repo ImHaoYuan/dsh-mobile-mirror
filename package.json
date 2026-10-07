@@ -26,6 +26,9 @@
     "README.md"
   ],
   "license": "MIT",
+  "scripts": {
+    "test": "node tools/cert-test.mjs && node tools/smoke.mjs && node tools/mirror-test.mjs && node tools/host-test.mjs && node tools/web-test.mjs && node tools/web-pure-test.cjs && node tools/web-dom-test.cjs"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

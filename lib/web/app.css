@@ -8,6 +8,10 @@
   --ok:#3ddc84; --bad:#ff6b6b; --accent:#4c8dff; --warn:#ffb454;
   --me:#242d40; --code:#0b0d11; --chip:#151821;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* 代码专用字体：JetBrains Mono 由插件自己内嵌下发（见 /font.css）。
+     手机上没有这个字体，只写字体名是没用的，必须 @font-face 带过去。
+     --mono 保留给"思考过程"这类散文式的等宽文本，只有真正是代码/JSON 的地方用 --code-font。 */
+  --code-font: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
 * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -192,7 +196,7 @@ a { color:#7cb7ff; }
 
 .tool-name { flex:0 0 auto; color:var(--fg); font-weight:600; }
 .tool-brief {
-  flex:1 1 auto; min-width:0; color:var(--dim); font:12px/1.5 var(--mono);
+  flex:1 1 auto; min-width:0; color:var(--dim); font:12px/1.5 var(--code-font);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 .tool-flag {
@@ -202,7 +206,7 @@ a { color:#7cb7ff; }
 .tool-flag.bad { border-color:#5c2b2f; background:#2a1618; color:#ffb3b3; }
 
 .tool-args {
-  margin:0; padding:10px 12px; font:12.5px/1.6 var(--mono); color:#c7d0dd;
+  margin:0; padding:10px 12px; font:12.5px/1.6 var(--code-font); color:#c7d0dd;
   white-space:pre-wrap; overflow-wrap:anywhere; max-height:44vh; overflow:auto;
 }
 .tool-result { border-top:1px dashed var(--line); padding:9px 12px; font-size:13.5px; }
@@ -296,9 +300,9 @@ a { color:#7cb7ff; }
 .debug-actions .ghost-btn { min-height:36px; padding:0 10px; }
 .debug-body { overflow:auto; -webkit-overflow-scrolling:touch; padding:8px 10px 12px; }
 .dbg-item { margin:0 0 9px; }
-.dbg-kind { font:11px/1.5 var(--mono); color:#7cb7ff; letter-spacing:.4px; }
+.dbg-kind { font:11px/1.5 var(--code-font); color:#7cb7ff; letter-spacing:.4px; }
 .dbg-json {
-  margin:2px 0 0; font:11.5px/1.55 var(--mono); color:#c7d0dd;
+  margin:2px 0 0; font:11.5px/1.55 var(--code-font); color:#c7d0dd;
   white-space:pre-wrap; overflow-wrap:anywhere;
 }
 
@@ -334,15 +338,196 @@ a { color:#7cb7ff; }
 .md a { color:#7cb7ff; text-decoration:none; border-bottom:1px solid rgba(124,183,255,.35); }
 .md strong { font-weight:650; color:#f2f4f7; }
 .md em { font-style:italic; color:#dfe4ea; }
+.md del { color:#7b8494; }
+.md img { max-width:100%; height:auto; border-radius:8px; margin:4px 0; display:block; }
 .md code {
   background:var(--code); border:1px solid var(--line); border-radius:6px;
-  padding:1px 5px; font:13px/1.5 var(--mono); overflow-wrap:anywhere;
+  padding:1px 5px; font:13px/1.5 var(--code-font); overflow-wrap:anywhere;
 }
 .md pre.md-code {
   background:var(--code); border:1px solid var(--line); border-radius:10px;
   padding:10px 11px; margin:0 0 9px; overflow:auto; -webkit-overflow-scrolling:touch;
 }
 .md pre.md-code code {
-  background:transparent; border:0; padding:0; font:12.5px/1.6 var(--mono);
+  background:transparent; border:0; padding:0; font:12.5px/1.6 var(--code-font);
   white-space:pre; display:block;
 }
+/* 代码块左上角的语言角标（来自 ```js 这种围栏信息串） */
+.md pre.md-code[data-lang]::before {
+  content:attr(data-lang); display:block; margin:0 0 6px;
+  font:10.5px/1.4 var(--code-font); color:#7cb7ff; letter-spacing:.6px;
+}
+/* 嵌套列表：每深一层收紧一点，手机上别把正文挤没 */
+.md li > ul, .md li > ol { margin:2px 0 2px; padding-left:18px; }
+
+/* GFM 表格：外层容器负责横向滚动，宽表格不撑破页面 */
+.md .md-table { margin:0 0 9px; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.md table { border-collapse:collapse; width:100%; font-size:13.5px; }
+.md th, .md td { border:1px solid var(--line); padding:6px 9px; vertical-align:top; }
+.md th { background:#151821; color:#f2f4f7; font-weight:650; white-space:nowrap; }
+.md tbody tr:nth-child(even) { background:rgba(255,255,255,.022); }
+
+/* 任务列表：用 span 画勾选框，不用 input（省掉表单语义和原生样式重置） */
+.md li.md-task { list-style:none; margin-left:-18px; }
+.md .md-check {
+  display:inline-block; width:14px; height:14px; margin:0 7px 0 0; vertical-align:-2px;
+  border:1.5px solid #465063; border-radius:4px; position:relative;
+}
+.md .md-check.on { background:var(--accent); border-color:var(--accent); }
+.md .md-check.on::after {
+  content:""; position:absolute; left:4px; top:1px; width:3px; height:7px;
+  border:solid #fff; border-width:0 2px 2px 0; transform:rotate(45deg);
+}
+
+/* ======================================================================
+ * P3-A：按工作区（文件夹）分组
+ * ==================================================================== */
+
+.group { margin:0 0 16px; }
+.group-head {
+  display:flex; align-items:center; gap:8px; width:100%; min-height:44px;
+  padding:4px 2px; margin:0 0 6px; background:transparent; border:0;
+  color:inherit; font:inherit; text-align:left; cursor:pointer;
+}
+.group-caret {
+  flex:0 0 auto; width:12px; color:var(--dim); font-size:10px;
+  transition:transform .15s ease;
+}
+.group.collapsed .group-caret { transform:rotate(-90deg); }
+.group-name { flex:0 0 auto; font-size:13.5px; font-weight:650; color:#cfd6e2; }
+.group-count {
+  flex:0 0 auto; font-size:11px; color:var(--dim);
+  border:1px solid var(--line); border-radius:999px; padding:0 7px; line-height:1.7;
+}
+.group-path {
+  flex:1 1 auto; min-width:0; font-size:11.5px; color:#6b7382;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:right;
+}
+.group-body { display:flex; flex-direction:column; }
+.group.collapsed .group-body { display:none; }
+@media (prefers-reduced-motion:reduce) { .group-caret { transition:none; } }
+
+/* ======================================================================
+ * P3-B / P3-C：头部的模型 / 模式芯片
+ * ==================================================================== */
+
+.topbar-sub { display:flex; align-items:center; gap:6px; }
+.sub-text {
+  flex:0 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.chip {
+  flex:0 0 auto; display:inline-flex; align-items:center; gap:4px;
+  max-width:44vw; padding:1px 9px; border-radius:999px;
+  border:1px solid var(--line); background:#1b1f27; color:#cfd6e2;
+  font-family:inherit; font-size:12px; line-height:1.7; cursor:pointer;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.chip:active { background:#232833; }
+.chip::after { content:'⌄'; color:var(--dim); font-size:10px; }
+.chip[disabled] { opacity:.45; cursor:default; }
+.chip[disabled]::after { content:''; }
+.chip-static { border-color:transparent; background:transparent; padding:1px 0; color:var(--dim); }
+.chip-static::after { content:''; }
+
+/* ======================================================================
+ * P3-B / P3-C：底部选择面板
+ * ==================================================================== */
+
+.sheet { position:fixed; inset:0; z-index:40; display:flex; flex-direction:column; justify-content:flex-end; }
+.sheet-backdrop { position:absolute; inset:0; background:rgba(0,0,0,.55); }
+.sheet-panel {
+  position:relative; max-height:76vh; display:flex; flex-direction:column;
+  background:var(--card); border-top:1px solid var(--line);
+  border-radius:18px 18px 0 0; padding-bottom:env(safe-area-inset-bottom, 0px);
+  animation:sheet-up .18s ease;
+}
+@keyframes sheet-up { from { transform:translateY(16px); opacity:.5; } to { transform:none; opacity:1; } }
+@media (prefers-reduced-motion:reduce) { .sheet-panel { animation:none; } }
+.sheet-head {
+  flex:0 0 auto; display:flex; align-items:center; gap:10px;
+  padding:12px calc(12px + env(safe-area-inset-right, 0px)) 8px calc(14px + env(safe-area-inset-left, 0px));
+  border-bottom:1px solid var(--line);
+}
+.sheet-title { flex:1 1 auto; min-width:0; font-size:15px; font-weight:650; }
+.sheet-body {
+  flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  padding:10px calc(12px + env(safe-area-inset-right, 0px)) 18px calc(12px + env(safe-area-inset-left, 0px));
+}
+.sheet-group { font-size:12px; color:var(--dim); margin:12px 2px 6px; }
+.sheet-group:first-child { margin-top:2px; }
+.sheet-note { font-size:12.5px; color:var(--dim); line-height:1.7; margin:2px 2px 10px; }
+.sheet-note.warn { color:var(--warn); }
+
+.opt {
+  display:block; width:100%; text-align:left; margin:0 0 8px;
+  padding:10px 12px; border-radius:12px; border:1px solid var(--line);
+  background:#151821; color:inherit; font:inherit; cursor:pointer;
+}
+.opt:active { background:#1e222a; }
+.opt.on { border-color:var(--accent); background:#16202f; }
+.opt[disabled] { opacity:.45; cursor:default; }
+.opt-label { display:block; font-size:14.5px; font-weight:600; }
+.opt-desc { display:block; font-size:12.5px; color:var(--dim); margin-top:2px; line-height:1.6; }
+.opt-efforts { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 0; }
+.effort {
+  padding:4px 11px; border-radius:999px; border:1px solid var(--line);
+  background:#111722; color:var(--dim); font-family:inherit; font-size:12.5px; cursor:pointer;
+}
+.effort.on { border-color:var(--accent); color:var(--fg); background:#16202f; }
+
+/* P4：手输路径那一块。用独立的容器类，别蹭 .sheet-group —— 那是纯文字样式。 */
+.sheet-block {
+  margin:14px 0 0; padding:12px 0 0; border-top:1px solid var(--line);
+}
+.sheet-input {
+  display:block; width:100%; margin:0 0 8px; padding:11px 12px;
+  border-radius:11px; border:1px solid var(--line); background:var(--code); color:var(--fg);
+  font:14px/1.5 var(--code-font); outline:none;
+}
+.sheet-input:focus { border-color:var(--accent); }
+.sheet-input::placeholder { color:#5b6472; }
+
+/* ======================================================================
+ * P3-D：提问卡片
+ * ==================================================================== */
+
+.qcard {
+  flex:0 0 auto; max-height:54vh; display:flex; flex-direction:column;
+  padding:10px calc(12px + env(safe-area-inset-right, 0px)) 12px calc(12px + env(safe-area-inset-left, 0px));
+  background:#131a25; border-top:1px solid #2a3a52;
+}
+.qcard-head { flex:0 0 auto; display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.qcard-title { flex:1 1 auto; min-width:0; font-size:13.5px; font-weight:650; color:#cfe0ff; }
+.qcard-count { font-size:11.5px; color:var(--dim); }
+.qcard-body { flex:1 1 auto; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+.qcard-foot { flex:0 0 auto; display:flex; align-items:center; gap:10px; margin-top:10px; }
+.qcard-note { flex:1 1 auto; font-size:11.5px; color:var(--dim); line-height:1.5; }
+
+.q-item { margin:0 0 14px; }
+.q-item:last-child { margin-bottom:0; }
+.q-head { font-size:11.5px; color:var(--dim); }
+.q-q { font-size:14.5px; font-weight:600; line-height:1.55; margin:2px 0 0; }
+.q-detail { font-size:12.5px; color:var(--dim); line-height:1.7; margin-top:5px; white-space:pre-wrap; }
+.q-opts { display:flex; flex-direction:column; gap:7px; margin-top:8px; }
+.q-opt {
+  display:flex; gap:9px; align-items:flex-start; width:100%; text-align:left;
+  padding:9px 11px; border-radius:11px; border:1px solid var(--line);
+  background:#111722; color:inherit; font:inherit; cursor:pointer;
+}
+.q-opt:active { background:#18202e; }
+.q-opt.on { border-color:var(--accent); background:#16202f; }
+.q-mark { flex:0 0 auto; width:15px; color:var(--dim); font-size:13px; line-height:1.5; }
+.q-opt.on .q-mark { color:var(--accent); }
+.q-opt-main { flex:1 1 auto; min-width:0; }
+.q-opt-label { display:block; font-size:14px; font-weight:600; }
+.q-opt-desc { display:block; font-size:12px; color:var(--dim); margin-top:2px; line-height:1.6; }
+.q-custom {
+  display:block; width:100%; margin-top:8px; min-height:44px; padding:9px 11px; resize:vertical;
+  background:var(--code); color:var(--fg); border:1px solid var(--line); border-radius:11px;
+  font-family:inherit; font-size:14px; line-height:1.6;
+}
+.q-custom:focus { outline:none; border-color:var(--accent); }
+.q-sent { font-size:12.5px; color:var(--ok); line-height:1.6; }
+
+/* 列表里的"待回答"角标 */
+.tag-ask { color:#cfe0ff; border-color:#2a3a52; background:#16202f; }

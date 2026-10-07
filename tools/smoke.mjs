@@ -164,14 +164,16 @@ check('错账号 → 303 且报错码统一为 bad',
 // 上一步已经触发了一次失败退避，等它过去再登录
 await sleep(1200)
 
+// 故意带上 remember=on：旧版登录页（或浏览器缓存的旧页面）还会提交这个字段，
+// 服务端必须彻底忽略它。这条断言就是防止"记住我"被顺手接回来的回归钉子。
 const good = await request('/login', { method: 'POST', body: { username: USER, password: PASS, remember: 'on' } })
 const setCookie = String(good.headers['set-cookie'] || '')
 check('对账号密码 → 303 跳 /', good.status === 303 && good.headers.location === '/', `${good.status} ${good.headers.location}`)
 check('下发会话 Cookie 且带 HttpOnly / SameSite=Strict / Secure',
   /HttpOnly/.test(setCookie) && /SameSite=Strict/.test(setCookie) && /Secure/.test(setCookie),
   setCookie.slice(0, 80))
-check('记住我 → Cookie 带 Max-Age',
-  /Max-Age=\d+/.test(setCookie), (setCookie.match(/Max-Age=\d+/) || [''])[0])
+check('会话 Cookie 不带 Max-Age（旧页面的 remember 字段被忽略）',
+  !/Max-Age/i.test(setCookie), setCookie.slice(0, 100))
 
 const cookie = setCookie.split(';')[0]
 

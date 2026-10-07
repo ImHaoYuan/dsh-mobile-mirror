@@ -12,6 +12,7 @@
 <meta name="apple-mobile-web-app-title" content="DSH 镜像">
 <meta name="format-detection" content="telephone=no">
 <title>DSH 手机镜像</title>
+<link rel="stylesheet" href="/font.css">
 <link rel="stylesheet" href="/app.css">
 <script defer src="/app.js"></script>
 </head>
@@ -24,6 +25,7 @@
       <div class="topbar-title">DSH 手机镜像</div>
       <div class="topbar-sub">{{USERNAME}}</div>
     </div>
+    <button type="button" class="icon-btn" id="btn-new" aria-label="新建会话" title="新建会话">＋</button>
     <button type="button" class="icon-btn" id="btn-refresh" aria-label="刷新会话列表" title="刷新">⟳</button>
     <a class="topbar-link" href="/logout">退出</a>
   </header>
@@ -81,6 +83,19 @@
     <div class="debug-body" id="debug-body"></div>
   </div>
 
+  <!-- P3-D：agent 的提问。手机与桌面都能看到，谁先答谁生效。 -->
+  <div class="qcard" id="qcard" hidden>
+    <div class="qcard-head">
+      <span class="qcard-title" id="qcard-title">需要你决定</span>
+      <span class="qcard-count" id="qcard-count"></span>
+    </div>
+    <div class="qcard-body" id="qcard-body"></div>
+    <div class="qcard-foot">
+      <button type="button" class="btn" id="qcard-submit">提交</button>
+      <span class="qcard-note" id="qcard-note"></span>
+    </div>
+  </div>
+
   <div class="composer" id="composer" hidden>
     <div class="composer-row">
       <textarea id="composer-input" rows="1" placeholder="发消息…" autocomplete="off" spellcheck="false"></textarea>
@@ -92,6 +107,18 @@
     </div>
   </div>
 </section>
+
+<!-- ==================== 底部选择面板（模型 / 模式） ==================== -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-backdrop" id="sheet-backdrop"></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-head">
+      <div class="sheet-title" id="sheet-title"></div>
+      <button type="button" class="ghost-btn" id="sheet-close">关闭</button>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </div>
+</div>
 
 <div class="toast" id="toast" hidden></div>
 
