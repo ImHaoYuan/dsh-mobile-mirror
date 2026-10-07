@@ -1,0 +1,16 @@
+# 统一换行符，避免不同平台 clone 之后互相改坏
+* text=auto
+
+# Shell 脚本必须保持 LF：在 Windows 上被转成 CRLF 后，
+# WSL / Git Bash 里执行会报 "bad interpreter: /bin/sh^M"
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Windows 批处理必须保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件：不做任何换行符转换
+*.ttf binary
+*.jar binary
+*.apk binary
