@@ -1,0 +1,15 @@
+# ============================================================================
+# dsh-mobile-mirror —— DSH bundle patch
+# ============================================================================
+# DSH 启动时按 bundle 层栈叠加各插件的 patch，本文件把插件插入配置树。
+# Host 半侧在 lib/index.js：自己起一个只面向局域网的 HTTP 服务，
+# 不注册到现有 webServer，也不改动它的 host / port。
+#
+# 安装（本地开发）：
+#   profile 的 package.json 里加 "dsh-mobile-mirror": "link:<本目录绝对路径>"
+#   并把 "dsh-mobile-mirror" 加进 dsh.profile.bundles
+# ============================================================================
+
+- insert:
+    - id: mobile-mirror
+      name: dsh-mobile-mirror

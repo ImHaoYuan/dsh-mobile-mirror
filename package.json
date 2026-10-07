@@ -1,0 +1,34 @@
+{
+  "name": "dsh-mobile-mirror",
+  "version": "0.1.0",
+  "private": true,
+  "description": "在局域网内用手机镜像 DSH 会话：看对话、看实时输出、回复消息、停止当前轮。桌面端行为不变。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "mobile",
+    "mirror",
+    "lan"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
