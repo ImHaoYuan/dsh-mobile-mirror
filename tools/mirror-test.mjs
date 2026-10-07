@@ -66,6 +66,16 @@ const userEvent = projectEvent({ type: 'user/message', seq: 1, time: 10, data: {
 eq('user/message：role', userEvent.data.role, 'user')
 eq('user/message：文本', userEvent.data.blocks[0].text, 'hello')
 
+// MessageBase 的确切字段名没查到，正文位置的兜底必须覆盖
+eq('正文兜底：data.blocks',
+  projectEvent({ type: 'user/message', seq: 1, time: 1, data: { blocks: [{ type: 'text', text: 'B' }] } }).data.blocks[0].text, 'B')
+eq('正文兜底：message.blocks',
+  projectEvent({ type: 'assistant/message', seq: 1, time: 1, data: { message: { blocks: [{ type: 'text', text: 'C' }] } } }).data.blocks[0].text, 'C')
+eq('正文兜底：content 是裸字符串',
+  projectEvent({ type: 'user/message', seq: 1, time: 1, data: { content: 'D' } }).data.blocks[0].text, 'D')
+eq('正文兜底：都没有则为空数组，不炸',
+  projectEvent({ type: 'user/message', seq: 1, time: 1, data: { nothing: 1 } }).data.blocks.length, 0)
+
 const headerEvent = projectEvent({
   type: 'request/header', seq: 2, time: 20,
   data: { turn: 1, reason: 'user', header: { config: { model: 'm', provider: 'p' }, tools: [{}, {}, {}] } },
