@@ -24,6 +24,8 @@ import {
   validateAnswers, createQuestionHub, createQuestionAnswerer, MAX_ANSWER_CHARS,
   // P4：新建会话
   normalizeWorkspaces, listRegisteredWorkspaces, validateSessionCreate, createSession,
+  // P5：隐藏系统消息
+  isInjectedUserMessage, stripInjectedBlocks,
 } from '../lib/mirror.js'
 import { createMirrorServer, WEB_ROOT } from '../lib/server.js'
 
@@ -113,9 +115,103 @@ const resultEvent = projectEvent({
 eq('tool/result：callId 从 source 取', resultEvent.data.callId, 'c1')
 eq('tool/result：错误标记', resultEvent.data.isError, true)
 
-const sysEvent = projectEvent({ type: 'system/message', seq: 6, time: 60, data: { content: [{ type: 'text', text: 'x'.repeat(50000) }] } })
-eq('system/message：省略', sysEvent.data.omitted, true)
-check('system/message：不携带 5 万字正文', !JSON.stringify(sysEvent).includes('xxxxx'))
+// 系统提示 / 开发者消息：整条丢弃，连"已省略"标记都不发
+// （早先会下发一行 note，但那行本身就是噪音）
+eq('system/message：整条丢弃',
+  projectEvent({ type: 'system/message', seq: 6, time: 60, data: { content: [{ type: 'text', text: 'x'.repeat(50000) }] } }), null)
+eq('developer/message：整条丢弃',
+  projectEvent({ type: 'developer/message', seq: 6, time: 60, data: { content: [{ type: 'text', text: 'AGENTS.md 正文' }] } }), null)
+
+// —— 注入的 user/message ——
+//
+// DSH 把 AGENTS.md、运行时上下文、技能目录等**也塞进 user/message**，只能靠
+// `data.source.kind` 区分真人输入。kind 取值取自真实会话日志
+// （sessions/--D-VibeCoding-Plugin--/session-*/session.v4.jsonl.zstd）。
+console.log('\n  -- 注入的 user/message --')
+
+const realUserEvent = {
+  type: 'user/message', seq: 10, time: 100,
+  data: { id: 'u1', content: [{ type: 'text', text: '你好' }], source: { kind: 'user', rpcId: 'r1' } },
+}
+eq('真人消息：保留', projectEvent(realUserEvent).data.blocks[0].text, '你好')
+
+for (const kind of ['agent-instructions', 'runtime-context', 'skill-catalog', 'user-approval']) {
+  eq(`注入 kind=${kind}：丢弃`, projectEvent({
+    type: 'user/message', seq: 11, time: 100,
+    data: { id: 'u2', content: [{ type: 'text', text: '<system-reminder>很长的一段英文</system-reminder>' }], source: { kind } },
+  }), null)
+}
+
+// fail-safe：任何"说不清来源"的情况都必须当真人消息保留 ——
+// 宁可多显示一条注入内容，也绝不能吞掉用户自己说的话。
+const noSource = { type: 'user/message', seq: 12, time: 100, data: { content: [{ type: 'text', text: 'hi' }] } }
+eq('缺 source：保留（fail-safe）', projectEvent(noSource).data.blocks[0].text, 'hi')
+eq('source 不是对象：保留',
+  projectEvent({ type: 'user/message', seq: 12, time: 100, data: { content: [{ type: 'text', text: 'hi' }], source: 'nope' } }).data.blocks[0].text, 'hi')
+eq('source 里没有 kind：保留',
+  projectEvent({ type: 'user/message', seq: 12, time: 100, data: { content: [{ type: 'text', text: 'hi' }], source: {} } }).data.blocks[0].text, 'hi')
+eq('kind 是空串：保留',
+  projectEvent({ type: 'user/message', seq: 12, time: 100, data: { content: [{ type: 'text', text: 'hi' }], source: { kind: '' } } }).data.blocks[0].text, 'hi')
+eq('kind 不是字符串：保留',
+  projectEvent({ type: 'user/message', seq: 12, time: 100, data: { content: [{ type: 'text', text: 'hi' }], source: { kind: 7 } } }).data.blocks[0].text, 'hi')
+
+// 纯函数直接测（含"将来 DSH 加新 kind"的白名单语义）
+eq('isInjectedUserMessage(null)', isInjectedUserMessage(null), false)
+eq('isInjectedUserMessage(undefined)', isInjectedUserMessage(undefined), false)
+eq('isInjectedUserMessage(不是对象)', isInjectedUserMessage('x'), false)
+eq('isInjectedUserMessage({})', isInjectedUserMessage({}), false)
+eq('kind=user → 不是注入', isInjectedUserMessage({ source: { kind: 'user' } }), false)
+eq('kind=runtime-context → 是注入', isInjectedUserMessage({ source: { kind: 'runtime-context' } }), true)
+eq('将来新增的未知 kind 也算注入（白名单语义，免得又冒出一堆噪音）',
+  isInjectedUserMessage({ source: { kind: 'future-thing' } }), true)
+
+// —— 按块剥离 <system-reminder> ——
+//
+// 为什么不能只靠 source.kind：**子代理的启动提示** kind 是 `user`（对那个子会话
+// 来说它确实是"用户输入"），但内容是两块 —— 第 0 块是 reminder，第 1 块是真正的
+// 任务书。整条丢掉会把任务书也丢了，所以只能按块剥。用例取自真实会话日志。
+console.log('\n  -- 按块剥离 <system-reminder> --')
+
+const REMINDER = '<system-reminder>\nYou are teammate "mobile-ui".\nYour Team Lead is named "lead".\n</system-reminder>\n\n'
+const teammateMsg = {
+  type: 'user/message', seq: 20, time: 200,
+  data: {
+    id: 'u3', source: { kind: 'user' },
+    content: [{ type: 'text', text: REMINDER }, { type: 'text', text: '你要为插件实现手机端界面' }],
+  },
+}
+const teammateOut = projectEvent(teammateMsg)
+eq('子代理提示：剥掉 reminder 后还剩一块', teammateOut.data.blocks.length, 1)
+eq('子代理提示：留下的是真正的任务书', teammateOut.data.blocks[0].text, '你要为插件实现手机端界面')
+
+eq('整条就是一个 reminder → 连空气泡都不要',
+  projectEvent({
+    type: 'user/message', seq: 21, time: 200,
+    data: { id: 'u4', source: { kind: 'user' }, content: [{ type: 'text', text: REMINDER }] },
+  }), null)
+
+// 只在**开头**出现、正文跟在同一个块里的，保持原样 —— 别误伤"引用了 reminder 又接着说正事"
+const quoted = projectEvent({
+  type: 'user/message', seq: 22, time: 200,
+  data: { id: 'u5', content: [{ type: 'text', text: '<system-reminder>x</system-reminder>\n然后是正文' }] },
+})
+eq('reminder 后面跟着正文的块：不剥', quoted.data.blocks[0].text, '<system-reminder>x</system-reminder>\n然后是正文')
+eq('纯文本消息照常', projectEvent({
+  type: 'user/message', seq: 23, time: 200,
+  data: { id: 'u6', content: [{ type: 'text', text: '普通一句' }] },
+}).data.blocks[0].text, '普通一句')
+// 没有文本块的消息不能因为"剥完为空"被误删（那是真人发的，比如只带附件）
+check('本来就没有文本块 → 仍然下发（不当成剥空）',
+  projectEvent({ type: 'user/message', seq: 24, time: 200, data: { id: 'u7', content: [] } }) !== null)
+
+// 纯函数直接测
+eq('stripInjectedBlocks(null)', stripInjectedBlocks(null), null)
+eq('stripInjectedBlocks(非数组)', stripInjectedBlocks('x'), 'x')
+eq('stripInjectedBlocks 只动文本块', stripInjectedBlocks([
+  { type: 'image' }, { type: 'text', text: REMINDER }, { type: 'text', text: '正文' },
+]).length, 2)
+eq('stripInjectedBlocks 不动非字符串 text', stripInjectedBlocks([{ type: 'text', text: 123 }]).length, 1)
+eq('stripInjectedBlocks 不动空对象', stripInjectedBlocks([null, {}, 'x']).length, 3)
 
 eq('assistant/attempt：整条丢弃', projectEvent({ type: 'assistant/attempt', seq: 7, time: 70, data: {} }), null)
 eq('未知类型：保留 type 但不下发 data', projectEvent({ type: 'brand/new', seq: 8, time: 80, data: { big: 'x'.repeat(9999) } }).unknown, true)
@@ -149,6 +245,23 @@ eq('快照：hasMore', snapshot.hasMore, true)
 eq('快照：records 投影', snapshot.records[0].data.blocks[0].text, 'a')
 eq('快照：投影值透传', snapshot.projections.title, 'T')
 eq('快照：活动 attempt 重放', snapshot.assistantStream.activeAttempt.stream[0].t, 'partial')
+
+// 快照路径同样过滤（projectSnapshot 内部就是 projectEvent + filter(Boolean)）——
+// 这一条很重要：翻历史时会重放整段记录，注入内容也在这里被挡掉，手机根本收不到。
+const filteredSnap = projectSnapshot({
+  header: { id: 's9', cwd: 'D:\\x', createdAt: 1 },
+  cursor: 3,
+  hasMore: false,
+  records: [
+    { type: 'event', event: realUserEvent },
+    { type: 'event', event: { type: 'user/message', seq: 11, time: 100, data: { content: [{ type: 'text', text: 'AGENTS.md 正文' }], source: { kind: 'agent-instructions' } } } },
+    { type: 'event', event: { type: 'system/message', seq: 12, time: 100, data: { content: [{ type: 'text', text: '系统提示' }] } } },
+    { type: 'event', event: { type: 'developer/message', seq: 13, time: 100, data: { content: [{ type: 'text', text: '开发者消息' }] } } },
+  ],
+  projections: { values: {} },
+})
+eq('快照：注入内容与系统提示都被过滤', filteredSnap.records.length, 1)
+eq('快照：留下的正是真人消息', filteredSnap.records[0].data.blocks[0].text, '你好')
 
 eq('信封：snapshot', encodeFollowFrame({ type: 'snapshot', header: {}, records: [] }).e, 'snapshot')
 eq('信封：冗余帧返回 null', encodeFollowFrame({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: '' } } }), null)
@@ -231,6 +344,9 @@ const RAW_EVENTS = [
   { type: 'tool/call', seq: 5, time: 500, data: { callId: 'c1', name: 'read_file', arguments: '{"path":"README.md"}' } },
   { type: 'tool/result', seq: 6, time: 600, data: { message: { isError: false, source: { callId: 'c1' }, content: [{ type: 'text', text: '内容' }] } } },
   { type: 'turn/end', seq: 7, time: 700, data: { turn: 1, reason: { kind: 'completed' } } },
+  // 注入的 user/message（AGENTS.md / 运行时上下文那一类）—— 必须整条丢弃。
+  // 放在末尾是刻意的：前面那几条的索引（slice(0,4) / [4] / [6]）都不用动。
+  { type: 'user/message', seq: 8, time: 800, data: { id: 'm2', content: [{ type: 'text', text: '<system-reminder>很长的一段英文'.repeat(500) }], source: { kind: 'runtime-context' } } },
 ]
 
 let followRequest = null
@@ -336,6 +452,8 @@ function fakeController() {
         yield { type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text-delta', index: 0, text: '' } } }
         yield { type: 'assistant-stream', frame: { type: 'end', outcome: { kind: 'committed' } } }
         yield { type: 'event', event: RAW_EVENTS[6] }
+        // 注入消息也要走一遍真实的长连接路径，验证它在服务端就被丢掉
+        yield { type: 'event', event: RAW_EVENTS[7] }
         if (signal && signal.aborted) return
       })()
     },
@@ -543,12 +661,15 @@ const frames = follow.text
 
 eq('SSE 首帧是 snapshot', frames[0].e, 'snapshot')
 eq('snapshot cursor', frames[0].d.cursor, 7)
-eq('snapshot 只投影了前 4 条历史', frames[0].d.records.length, 4)
-check('snapshot 里的 system/message 被省略', frames[0].d.records[3].data.omitted === true)
+eq('snapshot 只投影了前 4 条里的 3 条（system/message 被整条丢掉）', frames[0].d.records.length, 3)
+check('snapshot 里没有任何 system/message / developer/message',
+  frames[0].d.records.every((r) => r.type !== 'system/message' && r.type !== 'developer/message'))
 check('snapshot 里的 assistant/message 丢掉了冗余 stream', frames[0].d.records[2].data.stream === undefined)
 
 const eventFrames = frames.filter((frame) => frame.e === 'event')
 eq('SSE 下发事件帧', eventFrames.length, 2)
+// 长连接上真跑一遍注入消息：它在服务端就被丢掉，手机一个字节都收不到
+check('注入的 user/message 一帧都没下发（事件帧仍是 2）', !follow.text.includes('system-reminder'))
 eq('tool/call 事件投影', eventFrames[0].d.data.name, 'read_file')
 eq('turn/end 事件投影 reason', eventFrames[1].d.data.reason, 'completed')
 

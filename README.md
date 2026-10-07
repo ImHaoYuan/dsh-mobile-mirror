@@ -4,7 +4,7 @@
 以及**发消息**、**停止当前轮**、**新建会话**、**切换会话的模型与模式**、**在手机上回答 DSH 的提问**。
 **桌面端行为完全不变** —— 不注入 UI、不遮挡、不改布局、不碰现有 webServer。
 
-当前进度：**P4 完成**。剩余：二维码配对与桌面内配对页（P5）。
+当前进度：**P5 完成**。剩余：二维码配对与桌面内配对页（P6）。
 
 ## 为什么是独立端口
 
@@ -174,13 +174,72 @@ DSH 的会话事件里有几个**极大**的条目，直接下发会把手机界
 | 原始事件 | 处理 |
 |---|---|
 | `request/header` | 带**完整工具 schema 列表**（几十上百 KB）→ 只留 `model`/`provider`/`toolCount` |
-| `system/message` | 带**整个系统提示** → 只留一行"已省略"标记 |
+| `user/message`（注入的） | AGENTS.md / 运行时上下文 / 技能目录等也是 `user/message`，靠 `source.kind` 与 `<system-reminder>` 块识别 → **整条或按块丢弃** |
+| `system/message` | 带**整个系统提示** → **整条丢弃** |
 | `developer/message` | 同上 |
 | `assistant/message` | 额外带一份 `stream` 原始记录（逐字内容已单独推送）→ 丢弃该字段 |
 | `assistant/attempt` | 与 `assistant/message` 重复 → **整条丢弃** |
 | 未知类型 | 只下发 `type` + `seq`，不透传 `data`（调试视图能看到"这里有个没处理的事件"） |
 
 文本块截断到 4000 字符、工具参数 2000 字符，截断处留可见标记。
+
+### 隐藏系统消息：怎么区分"人打的"和"机器塞的"
+
+手机上只想看到**谁说了什么**，不想看 AGENTS.md、`Current runtime context…` 这类每轮重放
+几千字节英文。麻烦在于：**这些注入内容也是以 `user/message` 送进来的**，`role` 同样是 `user`，
+从内容上根本分不出来（`Current runtime context…` 那条连 `<system-reminder>` 标签都没有）。
+
+唯一可靠的判别依据是 `data.source.kind`：
+
+| `source.kind` | 内容 | 手机上 |
+|---|---|---|
+| `user` | 真人输入 | **显示** |
+| `agent-instructions` | `AGENTS.md` / `CLAUDE.md` 等指令文件 | 隐藏 |
+| `runtime-context` | `Current runtime context…` | 隐藏 |
+| `skill-catalog` | 技能目录 | 隐藏 |
+| `user-approval` | 审批策略变更通知 | 隐藏 |
+
+（这些取值是从真实会话日志 `sessions/--*/session-*/session.v4.jsonl.zstd` 里读出来的，
+不是猜的。日志是**多帧 zstd**，按魔数 `28 B5 2F FD` 切开逐帧解压即可。）
+
+判定函数是 `isInjectedUserMessage(data)`，**刻意用白名单**（只认 `user`）而不是黑名单：
+`source.kind` 表达的是**来源**，`user` 是唯一意味着"人打的"的来源。将来 DSH 新增注入类型时
+默认也会被隐藏，不会又冒出来一堆噪音。
+
+**fail-safe 方向很重要**：取不到 `source`、`source` 不是对象、`kind` 缺失或不是非空字符串时，
+一律**按真人消息处理**。宁可多显示一条注入内容，也绝不能吞掉用户自己说的话。
+
+#### 还有第二种注入：`<system-reminder>` 块
+
+只用 `source.kind` 会漏掉一类 —— **子代理（teammate）的启动提示**。对那个子会话来说，
+它的 prompt 就是"用户输入"，所以 `kind` 是 `user`；但内容是**两个块**：
+
+```
+块 0: <system-reminder>You are teammate "mobile-ui". Your Team Lead is named "lead"…</system-reminder>
+块 1: 你要为一个已经存在的 DSH 插件实现手机端界面…（8000 字的真实任务书）
+```
+
+整条丢掉会把任务书也丢了，所以这里按**块**剥：只剥"整块首尾都被 `<system-reminder>` 包住"
+的文本块（`stripInjectedBlocks`），剥完什么都不剩才把整条丢掉。
+
+刻意要求**首尾都被包住**：只在开头出现、正文跟在同一个块里的保持原样，
+免得误伤"引用了一段 reminder 然后接着说正事"的内容。另外，"本来就没有文本块"的消息
+（比如只带附件）不会因为"剥完为空"被误删 —— 判据是 `rawBlocks.length > 0 && blocks.length === 0`。
+
+这两个规则都是拿真实会话日志回放验证过的：三份日志（含一个子代理会话）共 1478 条记录，
+回放后手机上保留的 8 条 `user/message` 全是真人输入，**零条**残留 `system-reminder`。
+
+过滤放在 `lib/mirror.js` 的 `projectEvent`（宿主侧）而不是页面里，有三个好处：
+
+1. 翻历史时快照要**重放整段记录**，注入内容也在这里被挡掉，手机一个字节都收不到；
+2. 快照与实时流走的是同一个 `projectEvent`，改一处两处都对；
+3. 顺带消掉一个隐患 —— `app.js` 里 `shiftPending()` 是"见到 `user/message` 就消掉最老的
+   发送中气泡"，注入消息也会触发它。目前只是因为注入消息恰好排在真人消息**之后**才没出错，
+   属于靠顺序侥幸。
+
+客户端那边对应的 `renderSystemNote` 与 `.sys-note` 样式一并删掉了（不留死代码）。
+顺带的好处：`lib/web/*` 是热更新的，所以**即使宿主还没重启**（旧宿主仍在下发"已省略"标记），
+新页面也已经不会渲染它们了。
 
 ### 标题从哪来
 
@@ -409,11 +468,11 @@ npm test    # 一次跑完下面七套
 |---|---|---|
 | `node tools/cert-test.mjs` | 证书层（含真实 TLS 握手） | 27 |
 | `node tools/smoke.mjs` | HTTPS + 认证集成 | 32 |
-| `node tools/mirror-test.mjs` | 数据层 + 全部路由（含 P3 / P4） | 425 |
+| `node tools/mirror-test.mjs` | 数据层 + 全部路由（含 P3 / P4 / P5） | 456 |
 | `node tools/host-test.mjs` | 入口层：真跑一遍 `apply()` | 46 |
-| `node tools/web-test.mjs` | 页面静态资源断言 + 纯函数 + 接线 | 199 |
+| `node tools/web-test.mjs` | 页面静态资源断言 + 纯函数 + 接线 | 216 |
 | `node tools/web-pure-test.cjs` | `app.js` 导出的纯函数（重点是 Markdown） | 165 |
-| `node tools/web-dom-test.cjs` | 用 fake DOM 真跑一遍页面行为 | 268 |
+| `node tools/web-dom-test.cjs` | 用 fake DOM 真跑一遍页面行为 | 274 |
 
 七套都不需要启动 DSH，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
 
@@ -425,16 +484,21 @@ npm test    # 一次跑完下面七套
   HTTPS 服务，于是不用启动 DSH 就能端到端验证整条管道：SSE 响应头、快照与事件投影、
   逐字帧拼接、鉴权顺序、缺参 400、伪造 Host 403、静态资源分发与目录遍历 404，
   以及写操作——校验、幂等重放优先于节流、节流 429、`enablePrompt=false` 全拒，
-  还有 P3 的模型目录缓存、切换模型/模式、提问中心与 answerer 竞速、问题流 SSE。
+  还有 P3 的模型目录缓存、切换模型/模式、提问中心与 answerer 竞速、问题流 SSE，
+  以及 P4 的新建会话与内嵌字体（字体那条用**原始字节**比对，`req()` 会按 utf8 转字符串，
+  读坏了也看不出来）、P5 的注入消息过滤（连"缺 `source` 时必须保留"的 fail-safe 方向都钉住了）。
 - `host-test.mjs` 用一个极简的 Cordis 上下文替身**真的调用 `lib/index.js` 的 `apply()`**
   （真的起服务、真的登录），是唯一覆盖入口接线的一套。它按 Cordis 的 waterfall 语义
   手工组合处理器，正面验证"手机作答后 waterfall 拿到的就是手机的答案"，
   也反面验证"顺序反过来时手机根本答不上"—— 后者正是 `prepend: true` 的存在理由。
-  顺带验证 dispose 之后端口真的不再接受连接（否则禁用插件会残留占用）。
+  顺带验证 dispose 之后端口真的不再接受连接（否则禁用插件会残留占用），
+  以及 `workspaceRegistry` 是**单独一次 `inject`**（混进 `agentPresets` 那一批会互相饿死）。
 - `web-dom-test.cjs` 用一个极简 fake DOM + fake fetch/EventSource 把 `app.js` 真跑一遍，
   是**唯一能覆盖页面行为**的一套（`boot()` 不抛错本身就证明 app.js 引用的 id 在
   index.html 里都存在）。它抓出过一个纯函数测试抓不到的真 bug：`tryJson` 返回的是
   `{ ok, value }` 而不是解析结果，把包装对象当帧传下去会让提问帧被静默丢弃。
+  场景 F 还**故意**把旧宿主才会发的 `system/message` 灌进长连接，验证"新页面 + 旧宿主"
+  这个半更新状态下也不会又冒出一堆英文。
 
 ## 手机端的几个取舍
 
@@ -499,6 +563,9 @@ DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / 
 - **P4（已完成）**：手机端新建会话（工作区清单 + 手输绝对路径）、分组默认折叠、
   Markdown 渲染补全（表格 / 嵌套列表 / 任务列表 / 删除线等）、内嵌 JetBrains Mono
   （仅代码）、去掉名不副实的「记住我」。
-- **P5**：二维码配对、桌面内配对页、多网卡地址选择。
+- **P5（已完成）**：隐藏系统消息 —— 注入的 `user/message`（AGENTS.md / 运行时上下文 /
+  技能目录 / 审批通知）与 `system/message` / `developer/message` 全部在宿主侧丢弃，
+  会话里只剩真人消息、助手回复、工具调用。
+- **P6**：二维码配对、桌面内配对页、多网卡地址选择。
 - **之后可做**：手机贴图（要走 `admitPromptContent` 准入管道）、
   会话重命名（`rename`）、消息队列管理（`updateQueue`）、附件下载端点。

@@ -533,6 +533,7 @@ async function main() {
   await scenarioP2();
   await scenarioP3();
   await scenarioP4();
+  await scenarioP5();
 
   summary();
 }
@@ -1239,6 +1240,62 @@ async function scenarioP4() {
   eq('只读模式下新建面板不打开', registry['sheet'].hidden, true);
   ok('只读模式下给了提示', registry['toast'].textContent.indexOf('enablePrompt') !== -1, registry['toast'].textContent);
   eq('只读模式下没发新建请求', sessionCalls.length, 0);
+}
+
+/* ============================== 场景 F：P5 隐藏系统消息 ============================== */
+
+async function scenarioP5() {
+  console.log('\n[场景 F] P5 隐藏系统消息');
+
+  // 正常情况下客户端根本收不到这些东西：宿主侧 lib/mirror.js 的 projectEvent
+  // 已经把注入消息和系统提示整条丢掉了。这里**故意**从长连接灌进去，验证两件事：
+  //   1) 真人消息照常渲染
+  //   2) 老宿主（还没重启）发来的 system/message / developer/message 不再渲染出任何节点
+  // 第 2 条正好覆盖"新页面 + 旧宿主"这个半更新状态，不然那一瞬间又会冒出一堆英文。
+  buildDom('yes');
+  fakeLocalStorage = {};
+  routes = {
+    '/api/sessions': () => resp({ items: [
+      { id: 'h1', title: '隐藏测试', running: false, blank: false, agentAvailable: true, updatedAt: NOW, cwd: 'D:\\proj\\alpha' }
+    ] })
+  };
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+
+  es.emit('message', JSON.stringify({
+    e: 'snapshot',
+    d: {
+      header: { id: 'h1', cwd: 'D:\\proj\\alpha', createdAt: NOW, agentPreset: 'standard' },
+      cursor: 0, hasMore: false, assistantStream: null,
+      records: [{ type: 'user/message', seq: 1, time: NOW, data: { role: 'user', id: 'u1', blocks: [{ type: 'text', text: '真人说的' }] } }],
+      projections: { title: '隐藏测试' }
+    }
+  }));
+  await tick();
+  eq('真人消息照常渲染', findAll(registry['stream'], 'me').length, 1);
+  const before = registry['stream'].childNodes.length;
+  ok('真人消息内容在页面上', registry['stream'].textContent.indexOf('真人说的') !== -1, registry['stream'].textContent);
+
+  // 老宿主才会发的两类：系统提示 / 开发者消息（旧版会下发一行"已省略"标记）
+  es.emit('message', JSON.stringify({
+    e: 'event', d: { type: 'system/message', seq: 2, time: NOW, data: { omitted: true, note: '系统提示（已省略）' } }
+  }));
+  es.emit('message', JSON.stringify({
+    e: 'event', d: { type: 'developer/message', seq: 3, time: NOW, data: { omitted: true, note: '开发者消息（已省略）' } }
+  }));
+  await tick();
+  eq('system/message 不产生任何节点', registry['stream'].childNodes.length, before);
+  eq('页面上没有 sys-note', findAll(registry['stream'], 'sys-note').length, 0);
+  ok('页面上看不到"已省略"', registry['stream'].textContent.indexOf('已省略') === -1, registry['stream'].textContent);
+
+  // 未知类型走 default 分支，同样不该炸、不该产生节点
+  es.emit('message', JSON.stringify({ e: 'event', d: { type: 'brand/new', seq: 4, time: NOW, data: null } }));
+  await tick();
+  eq('未知事件类型也不产生节点', registry['stream'].childNodes.length, before);
 }
 
 function summary() {

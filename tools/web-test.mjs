@@ -363,5 +363,35 @@ has('建完直接进新会话', code, 'openSession(id)')
 has('新会话不缓存旧的工作区清单', code, 'state.workspaces = null')
 hasNot('不做模式选择器（新会话进去再改）', code, 'createSession({ cwd: item.path, preset:')
 
+/* ==================== ⑥ P5：隐藏系统消息 ==================== */
+console.log('\n———— P5 隐藏系统消息 ————')
+
+// 判别依据：DSH 把 AGENTS.md / 运行时上下文等也塞进 user/message，
+// 只有 data.source.kind 能区分真人输入。
+has('mirror 导出 isInjectedUserMessage', mirrorCode, 'export function isInjectedUserMessage(')
+has('只认 kind === "user" 是真人输入', mirrorCode, "const USER_SOURCE_KIND = 'user'")
+has('projectEvent 里注入消息直接返回 null', mirrorCode, 'if (isInjectedUserMessage(data)) return null')
+has('source 缺失时 fail-safe 保留', mirrorCode, "if (!source || typeof source !== 'object') return false")
+has('kind 缺失时 fail-safe 保留', mirrorCode, "if (!kind) return false")
+has('kind 必须严格等于 user 才算真人', mirrorCode, 'return kind !== USER_SOURCE_KIND')
+
+// 光靠 kind 不够：子代理的启动提示 kind 就是 user，但里面裹着 <system-reminder>，
+// 而且真正的任务书在**同一块的后面**，所以只能按块剥。
+has('mirror 导出 stripInjectedBlocks', mirrorCode, 'export function stripInjectedBlocks(')
+has('识别整块 <system-reminder>', mirrorCode, 'SYSTEM_REMINDER_RE')
+has('必须首尾都被包住才剥（免得误伤"引用了 reminder 又接着说正事"）', mirrorCode, '/^\\s*<system-reminder>[\\s\\S]*<\\/system-reminder>\\s*$/')
+has('剥空后整条丢掉', mirrorCode, 'if (rawBlocks.length > 0 && blocks.length === 0) return null')
+
+// 系统提示 / 开发者消息：连"已省略"那一行标记都不再下发
+has('仍有 system/message 分支', mirrorCode, "case 'system/message':")
+has('仍有 developer/message 分支', mirrorCode, "case 'developer/message':")
+hasNot('不再下发"系统提示（已省略）"', mirrorCode, '系统提示（已省略）')
+hasNot('不再下发"开发者消息（已省略）"', mirrorCode, '开发者消息（已省略）')
+hasNot('projectEvent 里不再出现 omitted 标记', mirrorCode, 'omitted: true')
+
+// 客户端侧的对应处理也一并删掉，免得留死代码
+hasNot('客户端不再有 renderSystemNote', code, 'renderSystemNote')
+hasNot('CSS 里没有 .sys-note', css, '.sys-note')
+
 console.log(`\n${passed}/${passed + failed} 通过`)
 if (failed > 0) process.exitCode = 1
