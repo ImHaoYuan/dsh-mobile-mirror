@@ -263,6 +263,23 @@ function resp(obj, status) {
 }
 function tick() { return new Promise((r) => setTimeout(r, 0)); }
 
+/**
+ * 可派发事件的目标。
+ * document / window 以前是空壳 addEventListener(){}，而"认领提问等待"正是靠
+ * visibilitychange 与 pagehide 决定要不要放开认领 —— 不能派发就测不到。
+ */
+function makeEventTarget(extra) {
+  const listeners = {};
+  return Object.assign({
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener(type, fn) {
+      const list = listeners[type];
+      if (list) listeners[type] = list.filter((f) => f !== fn);
+    },
+    dispatch(type, event) { (listeners[type] || []).forEach((fn) => fn(event || { type: type })); }
+  }, extra || {});
+}
+
 function buildDom(enablePrompt) {
   Object.keys(registry).forEach((k) => delete registry[k]);
   const html = fs.readFileSync(INDEX, 'utf8').replace('{{ENABLE_PROMPT}}', enablePrompt).replace('{{USERNAME}}', 'alice');
@@ -289,17 +306,16 @@ function buildDom(enablePrompt) {
   idList.forEach((id) => body.appendChild(registry[id]));
   ROOT = body;
 
-  globalThis.document = {
+  globalThis.document = makeEventTarget({
     readyState: 'complete',
     visibilityState: 'visible',
     body: body,
-    addEventListener() {},
     createElement(t) { return new El(t); },
     createDocumentFragment() { return new Frag(); },
     createTextNode(t) { return new Txt(t); },
     getElementById(id) { return registry[id] || null; }
-  };
-  globalThis.window = { addEventListener() {}, confirm: () => confirmAnswer };
+  });
+  globalThis.window = makeEventTarget({ confirm: () => confirmAnswer });
   globalThis.location = { href: 'http://127.0.0.1:19388/' };
   globalThis.EventSource = FakeEventSource;
   // P4：折叠状态要真落盘才能验证"默认折叠 + 展开也存 0"。
@@ -317,6 +333,7 @@ function buildDom(enablePrompt) {
       url: String(url),
       method: method,
       headers: (opts && opts.headers) || {},
+      keepalive: !!(opts && opts.keepalive),
       body: opts && opts.body !== undefined ? String(opts.body) : null
     };
     fetchLog.push(rec);
@@ -329,6 +346,8 @@ function buildDom(enablePrompt) {
       if (key === '/api/presets') return resp({ presets: [] });
       if (key === '/api/questions') return resp({ items: [] });
     }
+    // 认领等待：服务端默认"接受且认领成功"，场景里想验失败路径再覆盖它
+    if (!h && method === 'POST' && key === '/api/questions/hold') return resp({ ok: true, held: true, claimed: true });
     if (!h) return resp({ error: 'not-found' }, 404);
     return h(rec);
   };
@@ -1121,6 +1140,38 @@ async function scenarioP3() {
   eq('有自定义答案输入框', findAll(registry['qcard-body'], 'q-custom').length, 1);
   eq('没作答时不能提交', registry['qcard-submit'].disabled, true);
   eq('没作答时给出提示', registry['qcard-count'].textContent, '还剩 1 题');
+
+  // ---- 认领等待（Bug2：手机上答完不该变成"答案被暂存 + agent 又跑一轮"） ----
+  // 卡片一出现就要认领：宿主默认只等 120 秒，没人认领时到点就放行模型
+  await tick();
+  const holdCall = lastCall('/api/questions/hold');
+  ok('卡片出现后立刻认领等待', !!holdCall, holdCall && holdCall.body);
+  eq('认领请求带问题 id', JSON.parse(holdCall.body).questionId, 'q-1');
+  eq('认领请求 hold=true', JSON.parse(holdCall.body).hold, true);
+
+  // 服务端确认接管后，脚注要如实说明"不会超时"
+  questionsES.emit('message', JSON.stringify({ e: 'question-hold', d: { id: 'q-1', sessionId: 'd1', held: true, remainingMs: 118000 } }));
+  await tick();
+  eq('接管后脚注说明不会超时', registry['qcard-note'].textContent, '已接管等待，答完之前不会超时');
+
+  // 切到后台：必须放开认领，否则宿主会一直等一个没人看的卡片（agent 卡死）
+  globalThis.document.visibilityState = 'hidden';
+  globalThis.document.dispatch('visibilitychange');
+  await tick();
+  eq('切到后台放开认领', JSON.parse(lastCall('/api/questions/hold').body).hold, false);
+  eq('放开后脚注退回默认说明', registry['qcard-note'].textContent, '手机上答完，电脑那边会自动继续');
+
+  // 回到前台：重新认领
+  globalThis.document.visibilityState = 'visible';
+  globalThis.document.dispatch('visibilitychange');
+  await tick();
+  eq('回到前台重新认领', JSON.parse(lastCall('/api/questions/hold').body).hold, true);
+
+  // 页面卸载：放开认领（keepalive 让请求在卸载过程中也能发出去）
+  globalThis.window.dispatch('pagehide');
+  await tick();
+  eq('页面卸载时放开认领', JSON.parse(lastCall('/api/questions/hold').body).hold, false);
+  eq('卸载时的释放请求带 keepalive', lastCall('/api/questions/hold').keepalive, true);
 
   findAll(registry['qcard-body'], 'q-opt')[0].dispatch('click');
   eq('选中的选项被标出来', findAll(registry['qcard-body'], 'q-opt')[0]._classes.has('on'), true);

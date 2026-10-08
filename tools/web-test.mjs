@@ -340,10 +340,23 @@ has('问题流用 parsed.value 当帧', code, 'var frame = parsed.value;')
 hasNot('不把 tryJson 的包装对象直接当帧', code, 'var frame = tryJson(')
 
 // 服务端路由
-for (const route of ['/api/models', '/api/model', '/api/presets', '/api/preset', '/api/questions', '/api/answer', '/api/questions/stream']) {
+for (const route of ['/api/models', '/api/model', '/api/presets', '/api/preset', '/api/questions', '/api/answer', '/api/questions/stream', '/api/questions/hold']) {
   has(`server 有 ${route}`, serverCode, `'${route}'`)
 }
 has('写操作统一走 guardedJsonBody', serverCode, 'guardedJsonBody')
+
+// 认领等待（Bug2：手机上答完不该变成"答案被暂存 + agent 又跑一轮"）
+has('宿主侧认领实现来自 ctx.userQuestions', indexCode, "root.get('userQuestions')")
+has('认领用官方的 attachWait', indexCode, 'service.attachWait(agent, callId, signal)')
+has('认领挂在 answerer 的 attachWait 上', indexCode, 'attachWait: (agent, callId, signal)')
+has('提问中心有 hold 入口', mirrorCode, 'hold(id, on)')
+has('认领期间把剩余时长推给手机', mirrorCode, "'question-hold'")
+has('手机侧卡片出现就认领', code, 'syncQuestionHold')
+has('切后台/离开聊天页要放开认领', code, 'function releaseQuestionHold')
+has('页面卸载时放开认领（keepalive）', code, 'keepalive: true')
+has('超时要如实告诉用户', code, '问题已超时，本轮已继续')
+has('接管成功后脚注说明不会超时', code, '已接管等待，答完之前不会超时')
+hasNot('不再把"手机上答完会自动继续"当成唯一说明', code, "state.questionNote || '手机上答完，电脑那边会自动继续';")
 has('agent-preset/locked 翻成 409', serverCode, 'preset-locked')
 has('/api/sessions 带 groups', serverCode, '{ items, groups }')
 has('目录缓存 60 秒', serverCode, 'createCatalogCache({ ttlMs: 60000 })')
