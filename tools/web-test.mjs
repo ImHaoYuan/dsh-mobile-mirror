@@ -362,7 +362,7 @@ has('手机侧卡片出现就认领', code, 'syncQuestionHold')
 has('切后台/离开聊天页要放开认领', code, 'function releaseQuestionHold')
 has('页面卸载时放开认领（keepalive）', code, 'keepalive: true')
 has('超时要如实告诉用户', code, '问题已超时，本轮已继续')
-has('接管成功后脚注说明不会超时', code, '已接管等待，答完之前不会超时')
+has('接管成功后脚注说明不会超时', code, '已接管等待，宿主这边不会超时')
 hasNot('不再把"手机上答完会自动继续"当成唯一说明', code, "state.questionNote || '手机上答完，电脑那边会自动继续';")
 
 // 提问卡片可收起（Bug3：卡片一直占着输入框上方，把会话消息挤扁）

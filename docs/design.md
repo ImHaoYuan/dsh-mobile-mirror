@@ -347,17 +347,39 @@ because that is a creation fact."。会话**在还是空白的时候可以换模
 | 400 | `missing-question-id` / `bad-answers` / `empty-answer` / `answer-too-long` | 参数问题 |
 | 404 | `question-not-found` | 已经答过、已被桌面端回答、或已经过期 |
 
-**它是限时提问 —— 这一点决定了整个设计。** 工具 schema 里确实没有 `timeout` 字段，
-但 Host 侧用 `registerTimedAskUser(ctx, timeout = 120)` 把它登记成**限时提问（默认 120 秒）**，
-并把它放进"活动中的提问"表里。于是：
+**两种提问模式，认领只对其中一种有意义。** `@deepseek-ai/dsh-tool-ask-user` 的配置是
+`mode: legacy | timed`（**默认 legacy**）+ `timeout`（秒，默认 120）。三套内置 preset
+（standard / PTC / cordis）都**不带 config** 地注册它，所以默认跑的是 legacy：
+
+| | `legacy`（默认） | `timed` |
+|---|---|---|
+| 工具执行 | `ctx.userQuestions.ask({ …, wait: { callId } })` | `askTimed(…, timeout*1000)` |
+| 有没有 deadline | 没有，等到答为止 | 有，默认 120 秒 |
+| 请求里的 `wait.timed` | 无 | `true` |
+| 会话投影 `userQuestions` | **不登记**（`applyUserQuestionEvent` 的 `tool/call` 分支开头就是 `if (!fold.timed …) return fold`） | 登记 open / continued / settled |
+| 超时之后 | 不存在 | 工具返回 `{ pending: true }`，问题进 `continued`；此后 `answer()` 把回复 steer 成一条 `user-question-reply`（官方说法"排队到 agent 收下为止"＝**答案被暂存**），并**创建新的用户轮次**（＝**agent 又回答一遍**） |
+
+认领（`attachWait`）只在 `request.wait.timed === true` 时成立，所以**legacy 下它是个空操作**，
+行为与改造前完全一致；`timed` 下它才有意义：
 
 - 有任何回答界面**认领**这次等待（`claims.size > 0`）时，宿主不跑自己的倒计时，
   钟归认领方管（`TimedQuestionWait.schedule()` 在有认领时直接返回）；
-- **没有任何人认领**时，到点 `close(timeout)`：`askTimed` 返回 `{ pending: true, callId }`，
-  工具把 `pending` 交给模型，问题进入 `continued`。此后作答走的是另一条路 ——
-  `answer()` 把回复 steer 成一条 `user-question-reply` 用户消息（官方文档的说法是
-  "排队到 agent 收下为止"，用户看到的就是**答案被暂存**），并**创建新的用户轮次**
-  （用户看到的就是 **agent 又回答一遍**）。
+- 没有任何人认领时，到点 `close(timeout)` → 上面表格里那条"暂存 + 又跑一轮"的链子。
+
+**认领只挡住宿主那个计时器**：桌面客户端自己也会倒计时（它 `attachWait` 之后按剩余时长
+在本地计时，到零 reject `ASK_TIMED_OUT`），所以真正被救的是"桌面 GUI 没开、只有手机在看"
+这种场合 —— 而这正是这个插件的存在意义。
+
+**顺带发现（legacy 的一个真实缺陷）**：投影不登记 legacy 提问，而桌面卡片的移除
+"遵循投影"（`dsh-client-ui-user-questions`：`卡片移除遵循投影`）。于是 legacy 下
+**手机上作答之后，桌面那张提问卡片不会被结算**，一直挂在那儿；用户再在桌面答一次时，
+gateway 会因为"另一个浏览器先结算了同一请求"**静默丢弃**这次结果
+（`forwardWaterfall` 只在客户端回答时 resolve，宿主侧没有反向通知）。
+这不是本插件能补的（Host 没有关闭桌面卡片的接口），
+所以 README 里给的是配置建议：`mode: timed` + `timeout: -1` ——
+投影因此开始登记提问（schema 声明了 `timeout` ⇒ `fold.timed = true`），
+手机答完桌面卡片随投影收掉；而 `timeout: -1` 让工具仍走**非限时**那条 `ask()`，
+既不产生 deadline，也不会出现"迟到回复"。
 
 **怎么接上去的。** 用 Host 侧的 `user-questions/request` waterfall：
 
@@ -641,10 +663,11 @@ DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / 
   正在跑时展开、`turn/end` 一到自动折起。
   同一版还修了两件事：长内容上限（正文/思考 4000 → 100000 字符、请求体 64KB → 1MB）
   与**限时提问的认领**（见下）。
-- **限时提问的认领（1.2）**：`ask_user_question` 默认只等 120 秒，没有任何回答界面
-  认领时到点宿主就放行模型，之后再作答会走"迟到回复"——答案被暂存、agent 又跑一轮。
-  手机看着卡片期间用 `ctx.userQuestions.attachWait` 认领，钟归手机管；
-  切后台 / 离开聊天页 / 卸载页面 / 最后一个问题流订阅者断开（留 3 秒宽限）都会放开认领。
+- **限时提问的认领（1.2）**：`tool-ask-user` 配成 `mode: timed` 时才有 deadline，
+  没有任何回答界面认领时到点宿主就放行模型，之后再作答会走"迟到回复"——
+  答案被暂存、agent 又跑一轮。手机看着卡片期间用 `ctx.userQuestions.attachWait` 认领，
+  宿主就不再自己计时；切后台 / 离开聊天页 / 卸载页面 / 最后一个问题流订阅者断开
+  （留 3 秒宽限）都会放开认领。默认的 `legacy` 模式没有限时等待，认领是空操作。
 - **P8**：二维码配对、桌面内配对页、多网卡地址选择。
 - **之后可做**：手机贴图（要走 `admitPromptContent` 准入管道）、
   会话重命名（`rename`）、消息队列管理（`updateQueue`）、附件下载端点。

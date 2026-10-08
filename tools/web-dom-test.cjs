@@ -1178,7 +1178,7 @@ async function scenarioP3() {
   // 服务端确认接管后，脚注要如实说明"不会超时"
   questionsES.emit('message', JSON.stringify({ e: 'question-hold', d: { id: 'q-1', sessionId: 'd1', held: true, remainingMs: 118000 } }));
   await tick();
-  eq('接管后脚注说明不会超时', registry['qcard-note'].textContent, '已接管等待，答完之前不会超时');
+  eq('接管后脚注说明不会超时', registry['qcard-note'].textContent, '已接管等待，宿主这边不会超时');
 
   // 切到后台：必须放开认领，否则宿主会一直等一个没人看的卡片（agent 卡死）
   globalThis.document.visibilityState = 'hidden';
