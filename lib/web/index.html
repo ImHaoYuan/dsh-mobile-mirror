@@ -94,6 +94,9 @@
     <div class="qcard-head">
       <span class="qcard-title" id="qcard-title">需要你决定</span>
       <span class="qcard-count" id="qcard-count"></span>
+      <!-- 提问卡片会一直占着输入框上方那块地，把上面的会话消息挤扁。
+           收起后只留这一行（标题 + 还剩几题），要点开随时点得回来。 -->
+      <button type="button" class="ghost-btn qcard-toggle" id="qcard-toggle" aria-expanded="true" aria-controls="qcard-body">收起</button>
     </div>
     <div class="qcard-body" id="qcard-body"></div>
     <div class="qcard-foot">

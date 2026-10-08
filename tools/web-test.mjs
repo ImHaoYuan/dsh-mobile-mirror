@@ -106,12 +106,18 @@ hasNot('没有内联 <style>', html, '<style')
 check('没有内联 <script> 代码', !/<script(?![^>]*\bsrc=)[^>]*>\s*\S/i.test(html))
 
 // P3-D：提问卡片
-for (const id of ['qcard', 'qcard-title', 'qcard-count', 'qcard-body', 'qcard-submit', 'qcard-note']) {
+for (const id of ['qcard', 'qcard-title', 'qcard-count', 'qcard-body', 'qcard-submit', 'qcard-note', 'qcard-toggle']) {
   has(`提问卡片有 #${id}`, html, `id="${id}"`)
 }
 has('提问卡片有 aria 语义', html, 'aria-modal="true"')
 check('提问卡片排在输入框之前（位置紧贴输入框上方）',
   html.indexOf('id="qcard"') !== -1 && html.indexOf('id="qcard"') < html.indexOf('id="composer"'))
+// 卡片可收起：不收起的话它一直占着输入框上方，把上面的会话消息挤扁
+has('收起键说明它管的是哪块', html, 'aria-controls="qcard-body"')
+has('CSS 有收起态', css, '.qcard.collapsed .qcard-body,')
+has('收起后不留头部下边距（真的只剩一行）', css, '.qcard.collapsed .qcard-head { margin-bottom:0; }')
+has('展开态高度收到 44vh', css, 'flex:0 0 auto; max-height:44vh; display:flex; flex-direction:column;')
+has('收起态不做高度动画（高度由内容撑，动画只会把文字挤成一团）', css, '.qcard.collapsed { max-height:none; }')
 
 // P3-B/C：选择面板
 for (const id of ['sheet', 'sheet-backdrop', 'sheet-title', 'sheet-body', 'sheet-close']) {
@@ -358,6 +364,12 @@ has('页面卸载时放开认领（keepalive）', code, 'keepalive: true')
 has('超时要如实告诉用户', code, '问题已超时，本轮已继续')
 has('接管成功后脚注说明不会超时', code, '已接管等待，答完之前不会超时')
 hasNot('不再把"手机上答完会自动继续"当成唯一说明', code, "state.questionNote || '手机上答完，电脑那边会自动继续';")
+
+// 提问卡片可收起（Bug3：卡片一直占着输入框上方，把会话消息挤扁）
+has('点收起键切换', code, "els.qcardToggle.addEventListener('click', toggleQcard)")
+has('收起状态落到 DOM 上', code, 'function applyQcardCollapsed()')
+has('换新问题自动展开', code, 'state.qcardCollapsed = false;')
+has('收起时放掉等待认领', code, '!els.qcard.hidden && !state.qcardCollapsed')
 has('agent-preset/locked 翻成 409', serverCode, 'preset-locked')
 has('/api/sessions 带 groups', serverCode, '{ items, groups }')
 has('目录缓存 60 秒', serverCode, 'createCatalogCache({ ttlMs: 60000 })')

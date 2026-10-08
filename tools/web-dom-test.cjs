@@ -1181,6 +1181,22 @@ async function scenarioP3() {
   await tick();
   eq('回到前台重新认领', JSON.parse(lastCall('/api/questions/hold').body).hold, true);
 
+  // ---- 卡片可收起：不收起的话它一直占着输入框上方，把上面的会话消息挤扁 ----
+  eq('默认展开', registry['qcard']._classes.has('collapsed'), false);
+  eq('收起键写着"收起"', registry['qcard-toggle'].textContent, '收起');
+  eq('展开时 aria-expanded=true', registry['qcard-toggle'].getAttribute('aria-expanded'), 'true');
+  registry['qcard-toggle'].dispatch('click');
+  eq('点一下就收起', registry['qcard']._classes.has('collapsed'), true);
+  eq('收起后按钮变成"展开"', registry['qcard-toggle'].textContent, '展开');
+  eq('收起后 aria-expanded=false', registry['qcard-toggle'].getAttribute('aria-expanded'), 'false');
+  await tick();
+  eq('收起时放掉认领（不能等一个被收起来的卡片）',
+    JSON.parse(lastCall('/api/questions/hold').body).hold, false);
+  registry['qcard-toggle'].dispatch('click');
+  eq('再点一下展开', registry['qcard']._classes.has('collapsed'), false);
+  await tick();
+  eq('展开后重新认领', JSON.parse(lastCall('/api/questions/hold').body).hold, true);
+
   // 页面卸载：放开认领（keepalive 让请求在卸载过程中也能发出去）
   globalThis.window.dispatch('pagehide');
   await tick();
@@ -1211,6 +1227,25 @@ async function scenarioP3() {
   await tick();
   eq('别的会话的提问不占当前会话的卡片', registry['qcard'].hidden, true);
   ok('别的会话的提问给了提示', registry['toast'].textContent.indexOf('等你回答') !== -1, registry['toast'].textContent);
+
+  // ---- 换一个新问题：自动展开（收起状态只属于上一张卡片） ----
+  registry['qcard-toggle'].dispatch('click');   // 先把上一张收起
+  eq('收起状态记下了', appState().qcardCollapsed, true);
+  questionsES.emit('message', JSON.stringify({
+    e: 'question',
+    d: {
+      id: 'q-10', sessionId: 'd1', callId: 'call-10', createdAt: NOW,
+      questions: [{ id: 'qc', question: '换个新问题' }]
+    }
+  }));
+  await tick();
+  eq('新问题出现', registry['qcard'].hidden, false);
+  eq('新问题自动展开（新问题必须让人看见）', registry['qcard']._classes.has('collapsed'), false);
+  eq('展开状态同步到按钮', registry['qcard-toggle'].getAttribute('aria-expanded'), 'true');
+  eq('新问题重新认领等待', JSON.parse(lastCall('/api/questions/hold').body).hold, true);
+  questionsES.emit('message', JSON.stringify({ e: 'question-settled', d: { id: 'q-10', sessionId: 'd1', outcome: 'answered' } }));
+  await tick();
+  eq('新问题结束后卡片收起', registry['qcard'].hidden, true);
 
   // ---- 只读模式：两枚芯片都点不动 ----
   buildDom('no');
