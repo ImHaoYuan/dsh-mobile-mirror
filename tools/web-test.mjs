@@ -346,7 +346,8 @@ for (const route of ['/api/models', '/api/model', '/api/presets', '/api/preset',
 has('写操作统一走 guardedJsonBody', serverCode, 'guardedJsonBody')
 
 // 认领等待（Bug2：手机上答完不该变成"答案被暂存 + agent 又跑一轮"）
-has('宿主侧认领实现来自 ctx.userQuestions', indexCode, "root.get('userQuestions')")
+has('优先用 agent 自己的 ctx 解析 userQuestions', indexCode, "agent.ctx.get('userQuestions')")
+has('宿主侧认领实现兜底走 root.get', indexCode, "root.get('userQuestions')")
 has('认领用官方的 attachWait', indexCode, 'service.attachWait(agent, callId, signal)')
 has('认领挂在 answerer 的 attachWait 上', indexCode, 'attachWait: (agent, callId, signal)')
 has('提问中心有 hold 入口', mirrorCode, 'hold(id, on)')
