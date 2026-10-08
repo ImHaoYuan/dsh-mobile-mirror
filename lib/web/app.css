@@ -388,6 +388,10 @@ a { color:var(--link); }
    正在跑的那一轮展开，turn/end 一到就自己收起来（见 app.js 的 closeWorkFold）。 */
 .work-label { flex:0 0 auto; color:var(--fg-soft); }
 .work-count { flex:0 0 auto; font-size:11.5px; color:var(--dim-3); }
+/* 收起来时在右侧补一句"这是能点的"：手机上只看到一条灰线很容易当成分隔条看漏 */
+.fold.work:not([open]) > .work-sum::after {
+  content:"点开看"; flex:0 0 auto; margin-left:auto; font-size:11.5px; color:var(--dim-3);
+}
 .work-body { padding:4px 8px 8px; }
 /* 里面的工具卡自己也是折叠卡：压一下外边距，别叠出双份空隙 */
 .work-body > .fold { margin:6px 0; }
@@ -486,6 +490,16 @@ a { color:var(--link); }
 }
 .btn-stop:active { transform:scale(.97); }
 .btn-stop:disabled { opacity:.45; }
+/* 页面内二次确认的第一下：按钮自己变成"确认停止？"（不用 window.confirm —— APK 的
+   WebView 没接管 onJsConfirm，原生弹窗会直接返回 false，点了等于没点） */
+.btn-stop.armed {
+  background:var(--bad-bg); border:2px solid var(--bad); color:var(--bad); font-weight:700;
+  animation:stop-arm .22s ease both;
+}
+@keyframes stop-arm {
+  from { transform:scale(.96); }
+  to { transform:scale(1); }
+}
 
 /* ------------------------------ 调试面板 ------------------------------ */
 

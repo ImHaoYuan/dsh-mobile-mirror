@@ -692,6 +692,16 @@ has('可点元素统一补了 transition', css,
 check('点击反馈只过渡 transform 与颜色（不碰布局属性，不引起重排）',
   css.indexOf('transition:transform .1s ease, background-color .14s ease, border-color .14s ease;') !== -1)
 
+// 停止：页面内二次确认（APK 的 WebView 没接管 onJsConfirm，window.confirm 会直接返回 false）
+has('停止按钮有"上膛"样式', css, '.btn-stop.armed {')
+check('上膛动画只动 transform',
+  /@keyframes stop-arm \{\s*from \{ transform:[^}]*\}\s*to \{ transform:[^}]*\}\s*\}/.test(css))
+has('第一次点只上膛，不直接停', code, 'if (!state.stopArmed) {')
+has('上膛时按钮自己说明要确认', code, "els.btnStop.textContent = '确认停止？';")
+has('3 秒没再点就自动复位', code, 'state.stopTimer = setTimeout(resetStopArm, 3000);')
+check('不再用 window.confirm（APK 里等于点了没反应）',
+  code.indexOf('window.confirm(') === -1)
+
 // 右侧快捷跳转刻度条
 has('页面里有刻度条容器', html, 'id="rail"')
 has('页面里有刻度预览气泡', html, 'id="rail-tip"')
@@ -720,15 +730,19 @@ has('CSS 有工作过程正文区', css, '.work-body {')
 has('CSS 有工作过程里的思考小节', css, '.work-reason {')
 has('CSS 里工作过程的标题用次级前景色', css, '.work-label { flex:0 0 auto; color:var(--fg-soft); }')
 has('思考不再套第二层折叠（手机上难点）', css, '.work-reason .reason-body { padding:0; max-height:40vh; }')
-has('轮次开始备好折叠卡', code, 'function openWorkFold(anchor)')
+has('收起来时提示这是能点的', css, '.fold.work:not([open]) > .work-sum::after {')
+has('卡片由第一件工作现场建（不依赖 turn/start）', code, 'function ensureWork(host) {')
 has('第一件工作才挂进流里（不留空卡）', code, 'function attachWork()')
 has('轮次结束把过程收起来', code, 'function closeWorkFold()')
 has('记一件工作内容', code, 'function bumpWork()')
 has('思考用普通 div 而不是嵌套 details', code, "box.className = 'work-reason';")
-has('有工作过程卡时思考收进去', code, 'if (opts.workBody) {')
-has('工具调用也收进同一张卡', code, "var intoWork = !!state.work && (type === 'tool/call' || type === 'tool/result');")
-has('助手正文仍留在消息里', code, 'renderBlocksInto(wrap.body, blocks, { workBody: state.work ? state.work.body : null });')
+has('思考收进工作过程卡', code, 'ensureWork(opts.workHost).body.appendChild(workReasonEl(b.text));')
+has('工具调用也收进同一张卡', code, "ensureWork(opts.workHost).body.appendChild(cardEl);")
+has('命令事件也会现场建卡（快照里没有 turn/start 时靠它）', code, "ensureWork(host);\n      intoWork = true;")
+has('助手正文仍留在消息里', code, 'renderBlocksInto(wrap.body, blocks, { workFold: true, workHost: host || els.stream });')
+has('块全进了卡、自己没正文的消息不再留空气泡', code, 'if (!hasBody && !interrupted && blocks.length) return null;')
 has('回答结束（turn/end）就收起工作过程', code, 'closeWorkFold();\n    state.activeTurn = null;')
+has('往上翻历史时先把当前这一轮的卡搁下（老记录别塞进它）', code, 'var running = state.work;\n    state.work = null;')
 
 // 转场名与 backdrop-filter 不能落在同一个元素上。
 // 按 CSS View Transitions 规范 §2.1.1，view-transition-name 不是 none 的元素

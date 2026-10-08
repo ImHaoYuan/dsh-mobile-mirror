@@ -793,24 +793,37 @@ async function scenarioP2() {
   input.value = '';
   input.dispatch('input');
 
-  // ---- 停止按钮 ----
+  // ---- 停止按钮：页面内二次确认 ----
+  // 为什么不用 window.confirm：APK 是 WebView 外壳，MainActivity 只设了 WebViewClient、
+  // 没设 WebChromeClient，Android 在没人接管 onJsConfirm 时让 confirm() **直接返回 false**
+  // —— 点「停止」等于什么都没发生。所以下面把 confirm 钉成 false 来跑这一整段。
+  confirmAnswer = false;
   eq('空闲时停止按钮隐藏', stopBtn.hidden, true);
   es.emit('message', JSON.stringify({ e: 'event', d: { type: 'turn/start', seq: 20, time: NOW, data: { turn: 2 } } }));
   eq('运行中停止按钮出现', stopBtn.hidden, false);
 
-  confirmAnswer = false;
-  cancelReplies = [];          // 取消确认时不该发出请求，所以不留任何响应
+  cancelReplies = [];          // 上膛阶段不该发出任何请求，所以不留响应
   stopBtn.dispatch('click');
-  await tick(); await tick();
-  eq('确认框取消则不请求 /api/cancel', countCalls('/api/cancel'), 0);
-  eq('取消后按钮仍可用', stopBtn.disabled, false);
+  await tick();
+  eq('第一下只上膛，不请求 /api/cancel', countCalls('/api/cancel'), 0);
+  eq('上膛时按钮自己写着要确认', stopBtn.textContent, '确认停止？');
+  ok('上膛有样式类', stopBtn.classList.contains('armed'));
+  ok('上膛时给了提示', registry['toast'].textContent.indexOf('再点一次') !== -1, registry['toast'].textContent);
 
-  confirmAnswer = true;
+  // 上膛后 3 秒没再点要自己复位，否则按钮会一直卡在"确认停止？"上
+  await new Promise((r) => setTimeout(r, 3100));
+  eq('3 秒没再点就自动复位', stopBtn.textContent, '停止');
+  ok('复位后不再是上膛态', !stopBtn.classList.contains('armed'));
+  eq('复位后仍可用', stopBtn.disabled, false);
+
   const cancelDefer = deferred();
   cancelReplies.push(cancelDefer);
   stopBtn.dispatch('click');
   await tick();
-  eq('确认后请求 /api/cancel', countCalls('/api/cancel'), 1);
+  eq('再点一下重新上膛', stopBtn.textContent, '确认停止？');
+  stopBtn.dispatch('click');
+  await tick();
+  eq('第二下才请求 /api/cancel（confirm 恒为 false 也不受影响）', countCalls('/api/cancel'), 1);
   eq('停止请求体只有 sessionId', lastCall('/api/cancel').body, JSON.stringify({ sessionId: 's1' }));
   eq('停止请求进行中按钮禁用', stopBtn.disabled, true);
   stopBtn.dispatch('click');
@@ -818,13 +831,17 @@ async function scenarioP2() {
   cancelDefer.reply({ accepted: true }, 200);
   await tick(); await tick();
   eq('停止完成后按钮恢复可用', stopBtn.disabled, false);
+  eq('停止完成后按钮文案复位', stopBtn.textContent, '停止');
   ok('停止成功给了提示', registry['toast'].textContent.indexOf('已请求停止') !== -1, registry['toast'].textContent);
 
   // ---- 停止失败文案 ----
   cancelReplies.push({ body: { error: 'cancel-failed', message: '上游炸了' }, status: 502 });
   stopBtn.dispatch('click');
+  await tick();
+  stopBtn.dispatch('click');
   await tick(); await tick(); await tick();
   ok('停止失败提示上游报错', registry['toast'].textContent.indexOf('停止失败') !== -1, registry['toast'].textContent);
+  confirmAnswer = true;
 
   // ---- 重连 snapshot 里已经有我这条消息 → 不重复挂气泡 ----
   es.emit('message', userMessageEvent(30, '重连前发的'));
@@ -1583,7 +1600,8 @@ async function scenarioG() {
   await tick();
   eq('只复制正文，不含思考过程', copiedMsg, '这是正文');
 
-  // 纯工具调用的一轮没有正文 → 不该出现一个点了复制到空字符串的键
+  // 纯工具调用的一轮没有正文：它的块全进了「工作过程」卡，消息自己没什么可显示的
+  // → 整条不渲染。以前会退化成一句「（无内容）」，还带一个点了只复制到空字符串的键。
   es.emit('message', JSON.stringify({
     e: 'event',
     d: {
@@ -1596,8 +1614,10 @@ async function scenarioG() {
     }
   }));
   await tick();
-  const metas = findAll(stream, 'meta');
-  eq('没有正文时不出现复制键', findAll(metas[metas.length - 1], 'copy-btn').length, 0);
+  eq('没有正文的助手消息不再渲染成空气泡', findAll(stream, 'assistant').length, 1);
+  eq('它也就不会多出一条元信息行（复制键跟着一起没了）', findAll(stream, 'meta').length, 1);
+  eq('它的命令进了工作过程卡', findAll(findAll(stream, 'work')[0], 'tool').length, 1);
+  ok('正文里没有「（无内容）」', dump(stream).indexOf('（无内容）') === -1);
 }
 
 /* ===================== 场景 H：进场动画 ===================== */
@@ -2077,10 +2097,10 @@ async function scenarioWorkFold() {
   const stream = registry['stream'];
   const ev = (type, seq, data) => es.emit('message', JSON.stringify({ e: 'event', d: { type, seq, time: NOW, data } }));
 
-  // ---- 1. 轮次开始：折叠卡先备好，但还没干活就不挂进流里（不留空卡） ----
+  // ---- 1. 轮次开始：**不**在这里建卡（第一件工作时才现场建），所以不留空卡 ----
   ev('turn/start', 1, { turn: 1 });
   await tick();
-  ok('轮次开始先备好工作过程卡', !!appState().work && appState().work.n === 0);
+  ok('轮次开始不预先建卡（快照里没有 turn/start 时也靠现场建）', !appState().work);
   eq('还没干活时不占位', findAll(stream, 'work').length, 0);
 
   // ---- 2. 用户消息不算工作内容 ----
@@ -2178,6 +2198,77 @@ async function scenarioWorkFold() {
   eq('历史思考在里面', findAll(snapFolds[0], 'work-reason')[0].textContent.indexOf('历史思考') !== -1, true);
   eq('历史命令也在里面', findAll(snapFolds[0], 'tool-args').length, 1);
   eq('正在跑的那一轮展开', snapFolds[1].open, true);
+
+  // ---- 11. 真实形状：快照窗口把某一轮的 turn/start 切在外面（轮中片段） ----
+  // 真实会话里约七成助手消息只有「思考 + 命令」、没有正文；而历史快照按条数切窗口，
+  // 很容易把 turn/start 切在窗口外 —— 那时若还等 turn/start 才建卡，整轮就没有卡，
+  // 思考和命令又散回消息里，手机上看到的就是"折叠没生效"。
+  es.emit('message', snapshot([
+    { type: 'assistant/message', seq: 60, time: NOW - 5000, data: { role: 'assistant', blocks: [
+      { type: 'reasoning', text: '轮中思考' },
+      { type: 'tool-call', id: 'm1', name: 'read_file', args: '{"path":"a.js"}' }
+    ] } },
+    { type: 'tool/result', seq: 61, time: NOW - 4900, data: { callId: 'm1', isError: false, blocks: [{ type: 'text', text: '文件内容' }] } },
+    { type: 'assistant/message', seq: 62, time: NOW - 4800, data: { role: 'assistant', blocks: [
+      { type: 'tool-call', id: 'm2', name: 'grep', args: '{"pattern":"x"}' }
+    ] } }
+  ], 62));
+  await tick();
+  eq('窗口里没有 turn/start 也能建出工作过程卡', findAll(stream, 'work').length, 1);
+  const midCard = findAll(stream, 'work')[0];
+  eq('轮中思考进了卡', findAll(midCard, 'work-reason').length, 1);
+  eq('两条命令都进了卡', findAll(midCard, 'fold').length, 2);
+  eq('件数 = 思考 + 两条命令', findAll(midCard, 'work-count')[0].textContent, '3 项');
+  eq('没有正文的助手消息一条都不渲染（不再满屏空气泡）', findAll(stream, 'assistant').length, 0);
+  eq('正文里没有「（无内容）」', dump(stream).indexOf('（无内容）'), -1);
+
+  // ---- 12. 真·空数据（blocks 为空）才留「（无内容）」 ----
+  es.emit('message', snapshot([
+    { type: 'assistant/message', seq: 70, time: NOW, data: { role: 'assistant', blocks: [] } }
+  ], 70));
+  await tick();
+  eq('块数组本身为空时才留一个「（无内容）」', dump(stream).indexOf('（无内容）') !== -1, true);
+
+  // ---- 13. 已中断的消息即使没有正文也照样渲染（标签不能丢） ----
+  es.emit('message', snapshot([
+    { type: 'assistant/message', seq: 71, time: NOW, data: { role: 'assistant', blocks: [{ type: 'reasoning', text: '被打断的思考' }], interrupted: true } }
+  ], 71));
+  await tick();
+  const cut = findAll(stream, 'assistant');
+  eq('已中断的消息照样渲染', cut.length, 1);
+  eq('它带着「已中断」', cut[0].textContent.indexOf('已中断') !== -1, true);
+  eq('思考仍然进了卡', findAll(findAll(stream, 'work')[0], 'work-reason').length, 1);
+
+  // ---- 14. 往上翻历史：老记录不能塞进当前这一轮的卡里 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 80, time: NOW, data: { turn: 9 } },
+    { type: 'user/message', seq: 81, time: NOW, data: { role: 'user', blocks: [{ type: 'text', text: '现在这一轮' }] } },
+    { type: 'assistant/message', seq: 82, time: NOW, data: { role: 'assistant', blocks: [{ type: 'reasoning', text: '当前思考' }] } }
+  ], 82, { hasMore: true }));
+  await tick();
+  eq('当前这一轮有卡', findAll(stream, 'work').length, 1);
+  eq('当前这一轮 1 件工作', findAll(findAll(stream, 'work')[0], 'work-reason').length, 1);
+  eq('只有一件时标题上不写件数（"1 项"是废话）', findAll(findAll(stream, 'work')[0], 'work-count')[0].textContent, '');
+
+  routes['/api/page'] = () => resp({ records: [
+    { type: 'turn/start', seq: 70, time: NOW - 9000, data: { turn: 8 } },
+    { type: 'assistant/message', seq: 71, time: NOW - 8900, data: { role: 'assistant', blocks: [
+      { type: 'reasoning', text: '更早的思考' },
+      { type: 'tool-call', id: 'old1', name: 'read_file', args: '{"path":"z.js"}' }
+    ] } },
+    { type: 'turn/end', seq: 72, time: NOW - 8800, data: { turn: 8, reason: 'completed' } }
+  ], hasMore: false });
+  appState().scrollLock = 0;
+  stream.scrollTop = 0;
+  fetchLog = [];
+  stream.dispatch('scroll');
+  await tick(); await tick(); await tick();
+  eq('确实去要了更早的一页', countCalls('/api/page'), 1);
+  const twoCards = findAll(stream, 'work');
+  eq('历史自己也有一张卡', twoCards.length, 2);
+  eq('历史思考进了历史那张卡', findAll(twoCards[0], 'work-reason')[0].textContent.indexOf('更早的思考') !== -1, true);
+  eq('历史那张卡是收起来的', twoCards[0].open, false);
+  eq('当前这一轮还是 1 件工作（没被历史污染）', findAll(twoCards[1], 'work-reason').length, 1);
 }
 
 function summary() {
