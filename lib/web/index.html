@@ -70,6 +70,10 @@
 
   <div class="stream-wrap">
     <div class="scroll stream" id="stream"></div>
+    <!-- 右侧快捷跳转：只标"我自己说过的话"，刻度按它们在消息流里的位置排。
+         借 DeepSeek 网页端右侧那条导航的心智，但只服务"回头找我说的那句"这一件事。 -->
+    <div class="rail-tip" id="rail-tip" hidden></div>
+    <div class="rail" id="rail" hidden></div>
     <div class="top-hint" id="stream-hint" hidden></div>
     <button type="button" class="to-bottom" id="btn-bottom" hidden>↓ 回到最新</button>
   </div>

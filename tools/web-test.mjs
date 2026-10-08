@@ -680,6 +680,29 @@ has('可点元素统一补了 transition', css,
 check('点击反馈只过渡 transform 与颜色（不碰布局属性，不引起重排）',
   css.indexOf('transition:transform .1s ease, background-color .14s ease, border-color .14s ease;') !== -1)
 
+// 右侧快捷跳转刻度条
+has('页面里有刻度条容器', html, 'id="rail"')
+has('页面里有刻度预览气泡', html, 'id="rail-tip"')
+has('CSS 有刻度条', css, '.rail {')
+has('CSS 有刻度', css, '.rail-tick {')
+has('刻度落在右内边距里（不压正文）', css, 'position:absolute; top:50%; right:0;')
+has('刻度条不吃空白处的触摸（不挡滚动）', css, 'pointer-events:none;')
+has('刻度自己收点击', css, 'pointer-events:auto; cursor:pointer;')
+has('高亮态用主色', css, '.rail-tick.on::before { background:var(--accent);')
+has('CSS 有 jump-hit 关键帧', css, '@keyframes jump-hit {')
+has('跳转动画只动 transform/opacity', css,
+  '35%  { opacity:1; transform:translate3d(0,-3px,0) scale(1.015); }')
+has('刻度条尊重 prefers-reduced-motion', css, '.msg.jump-hit > .body > .bubble { animation:none; }')
+has('只给用户消息打刻度', code, "els.stream.querySelectorAll('.me')")
+has('发送中/失败的气泡不打刻度', code, "cls.indexOf(' pending ') >= 0 || cls.indexOf(' failed ') >= 0")
+has('两句以上才出现', code, 'targets.length < RAIL_MIN')
+has('刻度按消息在流里的比例定位', code, 'railRatio(targets[i], total)')
+has('点刻度跳过去', code, 'function railJump(index)')
+has('按住刻度先看内容', code, 'function railPreview(index)')
+has('滚动时高亮跟着走', code, 'updateRailActive()')
+has('实时追加消息后重排刻度（防抖）', code, 'function scheduleRail()')
+has('补历史后重排刻度', code, 'el.scrollTop = beforeTop + delta;\n    state.stick = false;\n    buildRail();')
+
 // 转场名与 backdrop-filter 不能落在同一个元素上。
 // 按 CSS View Transitions 规范 §2.1.1，view-transition-name 不是 none 的元素
 // （**任何时候**，不只在转场期间）会形成一个 backdrop root —— 让带 backdrop-filter

@@ -115,6 +115,15 @@ class El {
   get isConnected() { return connected(this); }
   get scrollHeight() { return this._scrollHeight === null ? this.childNodes.length * 100 : this._scrollHeight; }
   set scrollHeight(v) { this._scrollHeight = v; }
+  /* 布局量：与 scrollHeight 那套「每个直接子节点 100px」的模型保持一致。
+     刻度条要按消息在流里的位置算比例，没有这两个值就永远算在 0 上。 */
+  get offsetHeight() { return 100; }
+  get offsetTop() {
+    const parent = this.parentNode;
+    if (!parent) return 0;
+    const i = parent.childNodes.indexOf(this);
+    return i < 0 ? 0 : i * 100;
+  }
   appendChild(node) {
     if (node.nodeType === 11) {
       node.childNodes.slice().forEach((c) => this.appendChild(c));
@@ -149,7 +158,11 @@ class El {
   getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attributes, k) ? this.attributes[k] : null; }
   addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
   dispatch(type, ev) { (this._listeners[type] || []).forEach((fn) => fn(ev || {})); }
-  scrollTo() { this.scrollTop = this.scrollHeight; }
+  // 真 scrollTo 认参数对象（{top, behavior}）；不传就按"滚到底"处理
+  scrollTo(opts) {
+    if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+    else this.scrollTop = this.scrollHeight;
+  }
   // 复制兜底路径会调这两个（textarea + execCommand），真 DOM 有，这里给个空实现
   select() {}
   setSelectionRange() {}
@@ -577,6 +590,7 @@ async function main() {
   await scenarioI();
   await scenarioSubagent();
   await scenarioTurnFailure();
+  await scenarioRail();
 
   summary();
 }
@@ -1866,6 +1880,125 @@ async function scenarioTurnFailure() {
   ok('原始 reason 对象取 kind 而不是 [object Object]',
     dump(stream).indexOf('本轮已中止') !== -1 && dump(stream).indexOf('[object Object]') === -1, dump(stream).slice(-120));
   eq('aborted 不弹 toast（用户自己停的）', registry['toast'].hidden, true);
+}
+
+/* ===================== 场景 L：右侧快捷跳转刻度条 =====================
+ *
+ * 目标只有一件事：回头能立刻找到"我自己说过的那句"。
+ * 所以只标用户消息、只在两句以上时出现、点一下跳过去。
+ * 助手消息不标 —— 它每轮都说一大段，全标出来等于没标。
+ */
+async function scenarioRail() {
+  console.log('\n[场景 L] 右侧快捷跳转刻度条');
+  buildDom('yes');
+
+  const s1 = { id: 's1', title: '长会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha' };
+  routes = {
+    '/api/sessions': () => resp({ items: [s1], groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: [s1], updatedAt: NOW - 1000, running: false }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } }),
+    'POST /api/prompt': () => resp({ accepted: true, requestId: 'r1' })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  const stream = registry['stream'];
+  const rail = registry['rail'];
+
+  // ---- 1. 只说过一句：不出现（一句的时候刻度条只会挡视线） ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'user/message', seq: 2, time: NOW - 4900, data: { role: 'user', id: 'u1', blocks: [{ type: 'text', text: '第一句' }] } },
+    { type: 'assistant/message', seq: 3, time: NOW - 4800, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } }
+  ], 3));
+  await tick();
+  eq('只说过一句时不显示刻度条', rail.hidden, true);
+  eq('刻度数为 0', findAll(rail, 'rail-tick').length, 0);
+
+  // ---- 2. 两句以上：常驻，一句一条 ----
+  // 流里的节点顺序：分隔条 / me / assistant / 分隔条 / me / assistant / me / assistant
+  // 假 DOM 里每个直接子节点算 100px，所以三句的位置分别是 100 / 400 / 600。
+  const recs = [
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'user/message', seq: 2, time: NOW - 4900, data: { role: 'user', id: 'u1', blocks: [{ type: 'text', text: '帮我看看登录' }] } },
+    { type: 'assistant/message', seq: 3, time: NOW - 4800, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } },
+    { type: 'turn/start', seq: 4, time: NOW - 4000, data: { turn: 2 } },
+    { type: 'user/message', seq: 5, time: NOW - 3900, data: { role: 'user', id: 'u2', blocks: [{ type: 'text', text: '再看下注册' }] } },
+    { type: 'assistant/message', seq: 6, time: NOW - 3800, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } },
+    { type: 'user/message', seq: 7, time: NOW - 3700, data: { role: 'user', id: 'u3', blocks: [{ type: 'text', text: '顺便把测试补上' }] } },
+    { type: 'assistant/message', seq: 8, time: NOW - 3600, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } }
+  ];
+  es.emit('message', snapshot(recs, 8));
+  await tick();
+  eq('两句以上时常驻显示', rail.hidden, false);
+  const ticks = findAll(rail, 'rail-tick');
+  eq('刻度数 = 我说过的话的句数（助手消息不占刻度）', ticks.length, 3);
+  eq('刻度按位置排（100/800、450/800、650/800）',
+    ticks.map((t) => t.style.top).join(','), '18.75%,56.25%,81.25%');
+  eq('刻度带无障碍说明', ticks[0].getAttribute('aria-label'), '跳到我说的第 1 句');
+  // 滚到底时高亮的是最后一句
+  eq('离视口中线最近的那条被高亮', ticks[2]._classes.has('on'), true);
+  eq('其余刻度不高亮', ticks[0]._classes.has('on'), false);
+
+  // ---- 3. "发送中"的气泡不算（它还没在 records 里落定，位置随后会跳） ----
+  registry['composer-input'].value = '正在发的那句';
+  registry['composer-send'].dispatch('click');
+  await tick();
+  eq('发送中的气泡进流了', countClass(stream, 'pending') >= 1, true);
+  eq('发送中的气泡不占刻度', findAll(rail, 'rail-tick').length, 3);
+
+  // ---- 4. 点一下跳过去 ----
+  const targets = findAll(stream, 'me').filter((n) => !n._classes.has('pending'));
+  ticks[0].dispatch('click');
+  eq('跳到那句（留 12px 余量）', stream.scrollTop, 88);
+  eq('跳过去的目标闪一下', targets[0]._classes.has('jump-hit'), true);
+  eq('跳过去后刻度高亮跟着走', ticks[0]._classes.has('on'), true);
+
+  // ---- 5. 按住先看内容，松手收起 ----
+  const tip = registry['rail-tip'];
+  eq('平时不显示预览', tip.hidden, true);
+  ticks[1].dispatch('pointerdown');
+  eq('按住刻度显示预览', tip.hidden, false);
+  eq('预览里是那句的原话', tip.textContent, '再看下注册');
+  ticks[1].dispatch('pointerup');
+  eq('松手收起预览', tip.hidden, true);
+
+  // ---- 6. 滚动时高亮跟着走 ----
+  // 跳转后有 700ms 的锁：平滑滚动自己会发一串 scroll，那期间不能改判高亮。
+  stream.scrollTop = 600;
+  stream.dispatch('scroll');
+  await tick();
+  eq('跳转动画期间滚动事件不改判', ticks[0]._classes.has('on'), true);
+  // 锁过期（= 动画滚完）之后，滚动才接管高亮
+  appState().scrollLock = 0;
+  stream.dispatch('scroll');
+  await tick();
+  eq('滚到下面时高亮最后一句', ticks[2]._classes.has('on'), true);
+  eq('上面那条不再高亮', ticks[0]._classes.has('on'), false);
+
+  // ---- 7. 开了"减少动效"：直接跳，不闪 ----
+  const realMatchMedia = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = () => ({ matches: true });
+  targets[2]._classes.delete('jump-hit');
+  ticks[2].dispatch('click');
+  eq('减少动效时不播"到了"动画', targets[2]._classes.has('jump-hit'), false);
+  eq('减少动效时仍然跳到位', stream.scrollTop, 588);
+  globalThis.window.matchMedia = realMatchMedia;
+
+  // ---- 8. 换会话要把刻度一起清掉 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'user/message', seq: 2, time: NOW - 4900, data: { role: 'user', id: 'x1', blocks: [{ type: 'text', text: '新会话里只说了这一句' }] } }
+  ], 2));
+  await tick();
+  eq('新会话只有一句时刻度条收起', rail.hidden, true);
+  eq('旧刻度被清干净', findAll(rail, 'rail-tick').length, 0);
 }
 
 function summary() {
