@@ -618,11 +618,14 @@ async function scenarioP2() {
   eq('有内容后发送按钮可用', sendBtn.disabled, false);
   eq('短文本不显示字数', registry['composer-count'].hidden, true);
 
-  input.value = 'x'.repeat(7001);
+  // 上限与提示线都从 app.js 取，不写死 —— 见 web-pure-test.cjs 里同一处的说明
+  const PROMPT_MAX = appExports.PROMPT_MAX;
+  const PROMPT_AT = appExports.PROMPT_COUNTER_AT;
+  input.value = 'x'.repeat(PROMPT_AT + 1);
   input.dispatch('input');
-  eq('7001 字符显示字数', registry['composer-count'].textContent, '7001/8000');
+  eq('过提示线显示字数', registry['composer-count'].textContent, (PROMPT_AT + 1) + '/' + PROMPT_MAX);
   eq('未超限不算 over', registry['composer-count']._classes.has('over'), false);
-  input.value = 'x'.repeat(8001);
+  input.value = 'x'.repeat(PROMPT_MAX + 1);
   input.dispatch('input');
   eq('超限时标红', registry['composer-count']._classes.has('over'), true);
   eq('超限时发送按钮禁用', sendBtn.disabled, true);

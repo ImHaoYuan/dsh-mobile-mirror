@@ -268,9 +268,15 @@ eq('turn/end reason 缺失：降级 unknown', projectEvent({ type: 'turn/end', s
 
 eq('非法输入返回 null', projectEvent(null), null)
 
-// 截断
-const longText = projectEvent({ type: 'user/message', seq: 9, time: 90, data: { content: [{ type: 'text', text: 'y'.repeat(10000) }] } })
-check('超长文本被截断并留标记', longText.data.blocks[0].text.includes('已截断') && longText.data.blocks[0].text.length < 5000, `长度 ${longText.data.blocks[0].text.length}`)
+// 截断（Bug1：上限曾经是 4000，正常的长回答在手机上被硬截断）
+const longText = projectEvent({ type: 'user/message', seq: 9, time: 90, data: { content: [{ type: 'text', text: 'y'.repeat(50000) }] } })
+eq('五万字正文原样透传（不再截断正常消息）', longText.data.blocks[0].text.length, 50000)
+check('五万字正文里没有截断标记', !longText.data.blocks[0].text.includes('已截断'))
+const hugeText = projectEvent({ type: 'user/message', seq: 9.1, time: 90.1, data: { content: [{ type: 'text', text: 'y'.repeat(120000) }] } })
+check('病态超长（12 万）仍截断并留标记', hugeText.data.blocks[0].text.includes('已截断，原长 120000 字符'))
+check('病态超长的体积被压住', hugeText.data.blocks[0].text.length < 110000, `长度 ${hugeText.data.blocks[0].text.length}`)
+const longReason = projectEvent({ type: 'assistant/message', seq: 9.2, time: 90.2, data: { message: { content: [{ type: 'reasoning', text: 'z'.repeat(30000) }] } } })
+eq('三万字思考过程原样透传', longReason.data.blocks[0].text.length, 30000)
 
 // 逐字帧
 eq('逐字：text-delta', projectStreamFrame({ type: 'chunk', chunk: { type: 'text-delta', index: 0, text: 'ab' } }).k, 'text')
@@ -860,6 +866,30 @@ const badHostPrompt = await req('/api/prompt', {
   json: { sessionId: SESSION_ID, requestId: 'req-9', text: 'x' }, skipNameCheck: true,
 })
 check('伪造 Host 发消息被挡', badHostPrompt.status === 403, String(badHostPrompt.status))
+
+// Bug1 回归：长内容必须真的发得出去。
+// 上限是 4000 的时候，正常的长回答在手机上被截断；上限提到 100000 后，
+// 请求体闸门（MAX_JSON_BYTES）也必须跟着放宽，否则会退化成一句 socket hang up。
+const longPrompt = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: 'v5', requestId: 'v5', text: 'x'.repeat(50000) },
+})
+eq('五万字符消息 → 200（长内容发得出去）', longPrompt.status, 200)
+// 上限按 UTF-16 字符数算，请求体按 UTF-8 字节算：中文一字 3 字节，
+// 所以"字符数没超"不等于"字节数没超"。这条专门钉住这个换算。
+const chinesePrompt = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: 'v6', requestId: 'v6', text: '好'.repeat(50000) },
+})
+eq('五万汉字消息 → 200（字节数被正确考虑）', chinesePrompt.status, 200)
+// 真·超限：回一个干净的 413，而不是把连接掐掉
+const oversized = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: 'v7', requestId: 'v7', text: 'x'.repeat(2 * 1024 * 1024) },
+})
+eq('超大请求体 → 413（不是断链）', oversized.status, 413)
+eq('超大请求体错误码', oversized.body.error, 'body-too-large')
+check('超大请求体给出可读提示', /KB/.test(String(oversized.body.message)), String(oversized.body.message))
 
 // ==================== 三·五·五、P3：分组 / 模型 / 模式 / 提问 ====================
 console.log('\n———— P3 纯函数：工作区分组 ————')

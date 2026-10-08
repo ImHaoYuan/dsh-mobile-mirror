@@ -707,6 +707,32 @@ eq('关键帧只动 transform / opacity（不触发重排）',
 check('过渡也没有涉及布局属性',
   !/transition:[^;]*\b(width|height|top|left|right|bottom|margin|padding|font-size)\b/.test(css))
 
+/* ---------------------------------------------------------------------
+ * ⑨b 内容上限护栏（Bug1：字太多被截断）
+ *
+ * 这些数字改错的后果是"手机上看到的正文被悄悄截断"——界面上只会多一句
+ * "已截断"，用户没有任何办法看到被丢掉的部分。所以钉死两件事：
+ *   ① 网页侧与宿主侧的**消息**上限必须逐字一致（两边各判一次，不一致就会出现
+ *      "手机上打得出来、服务端拒收"）；
+ *   ② 内容上限不许退回"会截断正常消息"的量级（4000 那个值就是元凶）。
+ * ------------------------------------------------------------------- */
+console.log('\n———— ⑨b 内容上限 ————')
+
+const webPromptMax = /var PROMPT_MAX = (\d+);/.exec(code)
+const hostPromptMax = /export const MAX_PROMPT_CHARS = (\d+)/.exec(mirrorSrc)
+check('网页侧写死了 PROMPT_MAX', !!webPromptMax, String(webPromptMax))
+check('宿主侧写死了 MAX_PROMPT_CHARS', !!hostPromptMax, String(hostPromptMax))
+eq('两侧消息上限逐字一致', webPromptMax && webPromptMax[1], hostPromptMax && hostPromptMax[1])
+eq('消息上限已提到 100000', hostPromptMax && Number(hostPromptMax[1]), 100000)
+
+const maxText = /const MAX_TEXT = (\d+)/.exec(mirrorSrc)
+const maxArgs = /const MAX_ARGS = (\d+)/.exec(mirrorSrc)
+const maxAnswer = /export const MAX_ANSWER_CHARS = (\d+)/.exec(mirrorSrc)
+eq('正文/思考上限已提到 100000（不再截断正常消息）', maxText && Number(maxText[1]), 100000)
+eq('工具参数上限已提到 20000', maxArgs && Number(maxArgs[1]), 20000)
+eq('自定义答案上限已提到 20000', maxAnswer && Number(maxAnswer[1]), 20000)
+has('截断标记仍然保留（病态数据的兜底）', mirrorSrc, '已截断，原长')
+
 /* ==================== ⑩ 桌面设置面板（客户端 bundle）==================== */
 console.log('\n———— ⑩ 桌面设置面板 ————')
 
