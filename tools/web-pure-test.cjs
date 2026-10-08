@@ -308,14 +308,19 @@ if (P) {
   eq('normalizePromptText(null)', P.normalizePromptText(null), '');
   eq('空文本 → empty-text', P.promptTextError('   \n '), 'empty-text');
   eq('正常文本无错', P.promptTextError('你好'), '');
-  eq('正好 8000 字符通过', P.promptTextError('x'.repeat(8000)), '');
-  eq('8001 字符 → text-too-long', P.promptTextError('x'.repeat(8001)), 'text-too-long');
-  eq('去空白后判长', P.promptTextError('  ' + 'x'.repeat(8000) + '  '), '');
-  eq('counterText 7000 不显示', P.counterText('x'.repeat(7000)).text, '');
-  eq('counterText 7001 显示', P.counterText('x'.repeat(7001)).text, '7001/8000');
-  eq('counterText 7001 未超限', P.counterText('x'.repeat(7001)).over, false);
-  eq('counterText 8000 未超限', P.counterText('x'.repeat(8000)).over, false);
-  eq('counterText 8001 超限', P.counterText('x'.repeat(8001)).over, true);
+  // 上限不再写死在测试里：Bug1 把它从 8000 提到 100000 时，写死的用例全得跟着改，
+  // 而"上限到底是多少"本来就不是这些用例要验的东西（它们验的是边界行为）。
+  const MAX = P.PROMPT_MAX;
+  const AT = P.PROMPT_COUNTER_AT;
+  ok('发送上限已提到 100000（截断 bug 的护栏）', MAX >= 100000, String(MAX));
+  eq('正好上限字符通过', P.promptTextError('x'.repeat(MAX)), '');
+  eq('上限 +1 → text-too-long', P.promptTextError('x'.repeat(MAX + 1)), 'text-too-long');
+  eq('去空白后判长', P.promptTextError('  ' + 'x'.repeat(MAX) + '  '), '');
+  eq('counterText 未到提示线不显示', P.counterText('x'.repeat(AT)).text, '');
+  eq('counterText 过提示线显示', P.counterText('x'.repeat(AT + 1)).text, (AT + 1) + '/' + MAX);
+  eq('counterText 过提示线未超限', P.counterText('x'.repeat(AT + 1)).over, false);
+  eq('counterText 上限未超限', P.counterText('x'.repeat(MAX)).over, false);
+  eq('counterText 上限 +1 超限', P.counterText('x'.repeat(MAX + 1)).over, true);
 
   const uuid = P.newRequestId({ randomUUID: () => 'a1b2c3d4-e5f6-7890-abcd-ef1234567890' }, 1700000000000);
   eq('newRequestId 用 randomUUID', uuid, 'a1b2c3d4-e5f6-7890-abcd-ef1234567890');

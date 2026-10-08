@@ -70,6 +70,10 @@
 
   <div class="stream-wrap">
     <div class="scroll stream" id="stream"></div>
+    <!-- 右侧快捷跳转：只标"我自己说过的话"，刻度按它们在消息流里的位置排。
+         借 DeepSeek 网页端右侧那条导航的心智，但只服务"回头找我说的那句"这一件事。 -->
+    <div class="rail-tip" id="rail-tip" hidden></div>
+    <div class="rail" id="rail" hidden></div>
     <div class="top-hint" id="stream-hint" hidden></div>
     <button type="button" class="to-bottom" id="btn-bottom" hidden>↓ 回到最新</button>
   </div>
@@ -90,6 +94,9 @@
     <div class="qcard-head">
       <span class="qcard-title" id="qcard-title">需要你决定</span>
       <span class="qcard-count" id="qcard-count"></span>
+      <!-- 提问卡片会一直占着输入框上方那块地，把上面的会话消息挤扁。
+           收起后只留这一行（标题 + 还剩几题），要点开随时点得回来。 -->
+      <button type="button" class="ghost-btn qcard-toggle" id="qcard-toggle" aria-expanded="true" aria-controls="qcard-body">收起</button>
     </div>
     <div class="qcard-body" id="qcard-body"></div>
     <div class="qcard-foot">

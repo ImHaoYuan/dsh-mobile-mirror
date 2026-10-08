@@ -268,9 +268,15 @@ eq('turn/end reason 缺失：降级 unknown', projectEvent({ type: 'turn/end', s
 
 eq('非法输入返回 null', projectEvent(null), null)
 
-// 截断
-const longText = projectEvent({ type: 'user/message', seq: 9, time: 90, data: { content: [{ type: 'text', text: 'y'.repeat(10000) }] } })
-check('超长文本被截断并留标记', longText.data.blocks[0].text.includes('已截断') && longText.data.blocks[0].text.length < 5000, `长度 ${longText.data.blocks[0].text.length}`)
+// 截断（Bug1：上限曾经是 4000，正常的长回答在手机上被硬截断）
+const longText = projectEvent({ type: 'user/message', seq: 9, time: 90, data: { content: [{ type: 'text', text: 'y'.repeat(50000) }] } })
+eq('五万字正文原样透传（不再截断正常消息）', longText.data.blocks[0].text.length, 50000)
+check('五万字正文里没有截断标记', !longText.data.blocks[0].text.includes('已截断'))
+const hugeText = projectEvent({ type: 'user/message', seq: 9.1, time: 90.1, data: { content: [{ type: 'text', text: 'y'.repeat(120000) }] } })
+check('病态超长（12 万）仍截断并留标记', hugeText.data.blocks[0].text.includes('已截断，原长 120000 字符'))
+check('病态超长的体积被压住', hugeText.data.blocks[0].text.length < 110000, `长度 ${hugeText.data.blocks[0].text.length}`)
+const longReason = projectEvent({ type: 'assistant/message', seq: 9.2, time: 90.2, data: { message: { content: [{ type: 'reasoning', text: 'z'.repeat(30000) }] } } })
+eq('三万字思考过程原样透传', longReason.data.blocks[0].text.length, 30000)
 
 // 逐字帧
 eq('逐字：text-delta', projectStreamFrame({ type: 'chunk', chunk: { type: 'text-delta', index: 0, text: 'ab' } }).k, 'text')
@@ -861,6 +867,30 @@ const badHostPrompt = await req('/api/prompt', {
 })
 check('伪造 Host 发消息被挡', badHostPrompt.status === 403, String(badHostPrompt.status))
 
+// Bug1 回归：长内容必须真的发得出去。
+// 上限是 4000 的时候，正常的长回答在手机上被截断；上限提到 100000 后，
+// 请求体闸门（MAX_JSON_BYTES）也必须跟着放宽，否则会退化成一句 socket hang up。
+const longPrompt = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: 'v5', requestId: 'v5', text: 'x'.repeat(50000) },
+})
+eq('五万字符消息 → 200（长内容发得出去）', longPrompt.status, 200)
+// 上限按 UTF-16 字符数算，请求体按 UTF-8 字节算：中文一字 3 字节，
+// 所以"字符数没超"不等于"字节数没超"。这条专门钉住这个换算。
+const chinesePrompt = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: 'v6', requestId: 'v6', text: '好'.repeat(50000) },
+})
+eq('五万汉字消息 → 200（字节数被正确考虑）', chinesePrompt.status, 200)
+// 真·超限：回一个干净的 413，而不是把连接掐掉
+const oversized = await req('/api/prompt', {
+  method: 'POST', headers: { Cookie: cookie },
+  json: { sessionId: 'v7', requestId: 'v7', text: 'x'.repeat(2 * 1024 * 1024) },
+})
+eq('超大请求体 → 413（不是断链）', oversized.status, 413)
+eq('超大请求体错误码', oversized.body.error, 'body-too-large')
+check('超大请求体给出可读提示', /KB/.test(String(oversized.body.message)), String(oversized.body.message))
+
 // ==================== 三·五·五、P3：分组 / 模型 / 模式 / 提问 ====================
 console.log('\n———— P3 纯函数：工作区分组 ————')
 
@@ -1145,6 +1175,171 @@ eq('answerer：next() 同步抛时手机这条路仍然可用', hub6.list('sess-
 hub6.answer({ questionId: hub6.list('sess-1')[0].id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
 eq('answerer：同步抛之后仍能拿到手机答案', (await pending6).answers.length, 2)
 
+/* ==================================================================
+ * 认领等待（Bug2：手机上答完不该变成"答案被暂存 + agent 又跑一轮"）
+ *
+ * 背景：`ask_user_question` 是限时提问（默认 120 秒）。没有任何回答界面认领时，
+ * 到点宿主直接放行模型 → 工具返回 pending → 问题进入 continued；此后作答会走
+ * "迟到回复"那条路（steer 一条用户消息），于是答案被暂存、agent 又跑一轮。
+ * 手机认领之后钟归手机管，作答永远是"时答"。
+ *
+ * 这里用假的 attachWait 验证认领/释放的时机，不需要真宿主。
+ * ================================================================== */
+console.log('\n———— 认领等待 ————')
+
+/** 假 attachWait：记录调用参数，被释放时记一笔。 */
+function fakeWaitAttach(options = {}) {
+  const calls = []
+  const ended = []
+  const fn = (agent, callId, signal) => {
+    calls.push({ agent, callId, signal })
+    if (options.throws) throw new Error('assertLiveRoot failed')
+    return (async function* () {
+      try {
+        if (signal.aborted) return
+        yield { remainingMs: options.remainingMs === undefined ? 118000 : options.remainingMs }
+        if (options.endAfterFirstFrame) return
+        await new Promise((resolve) => {
+          if (signal.aborted) return resolve()
+          signal.addEventListener('abort', resolve, { once: true })
+        })
+      } finally {
+        ended.push(callId)
+      }
+    })()
+  }
+  return { fn, calls, ended }
+}
+
+/** 造一个"限时提问"的 answerer 调用。 */
+function timedRequest(agent) {
+  return { agent, questions, signal: null, wait: { callId: 'call-1', timed: true } }
+}
+
+// ① 没注入认领实现（拿不到 ctx.userQuestions）→ 不认领，行为同改造前
+const hubHold0 = createQuestionHub({})
+const ansHold0 = createQuestionAnswerer(hubHold0, { log: () => {} })
+const pendHold0 = ansHold0(timedRequest({ id: 'sess-1' }), () => new Promise(() => {}))
+await new Promise((r) => setTimeout(r, 5))
+const q0 = hubHold0.list('sess-1')[0]
+eq('没有认领实现时 hold 仍然返回 ok', hubHold0.hold(q0.id, true).ok, true)
+eq('没有认领实现时 claimed=false（如实说没接管）', hubHold0.hold(q0.id, true).claimed, false)
+hubHold0.answer({ questionId: q0.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+eq('不认领也不影响作答', (await pendHold0).answers.length, 2)
+
+// ② 认领：attachWait 被调用，参数正确，并把剩余时长推给手机
+const att1 = fakeWaitAttach({})
+const hubHold1 = createQuestionHub({})
+const ansHold1 = createQuestionAnswerer(hubHold1, { log: () => {}, attachWait: att1.fn })
+const frames1 = []
+hubHold1.subscribe((f) => frames1.push(f))
+const pendHold1 = ansHold1(timedRequest({ id: 'sess-1' }), () => new Promise(() => {}))
+await new Promise((r) => setTimeout(r, 5))
+const q1h = hubHold1.list('sess-1')[0]
+const hold1 = hubHold1.hold(q1h.id, true)
+eq('认领成功', hold1.claimed, true)
+await new Promise((r) => setTimeout(r, 5))
+eq('attachWait 被调用一次', att1.calls.length, 1)
+eq('attachWait 收到 callId', att1.calls[0].callId, 'call-1')
+eq('attachWait 收到 agent 本体（认领要按 agent 校验存活）', att1.calls[0].agent.id, 'sess-1')
+eq('认领后把剩余时长推给手机',
+  JSON.stringify(frames1.filter((f) => f.e === 'question-hold').map((f) => [f.d.held, f.d.remainingMs])),
+  JSON.stringify([[true, 118000]]))
+
+// ③ 手机作答 → 自动释放认领（宿主随即按自己的规则收尾）
+hubHold1.answer({ questionId: q1h.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+eq('作答后手机拿到答案', (await pendHold1).answers.length, 2)
+await new Promise((r) => setTimeout(r, 5))
+eq('作答后释放了认领', att1.ended.length, 1)
+eq('释放的正是那一次认领', att1.ended[0], 'call-1')
+eq('作答后不再待答', hubHold1.size, 0)
+
+// ④ 手机说"不看了" → 立刻释放
+const att2 = fakeWaitAttach({})
+const hubHold2 = createQuestionHub({})
+const ansHold2 = createQuestionAnswerer(hubHold2, { log: () => {}, attachWait: att2.fn })
+const pendHold2 = ansHold2(timedRequest({ id: 'sess-1' }), () => new Promise(() => {}))
+await new Promise((r) => setTimeout(r, 5))
+const q2h = hubHold2.list('sess-1')[0]
+hubHold2.hold(q2h.id, true)
+await new Promise((r) => setTimeout(r, 5))
+hubHold2.hold(q2h.id, false)
+await new Promise((r) => setTimeout(r, 5))
+eq('说"不看了"就释放认领', att2.ended.length, 1)
+hubHold2.answer({ questionId: q2h.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+await pendHold2
+
+// ⑤ 最后一个订阅者断开 → 宽限期后释放；宽限期内又连上就不释放
+const att3 = fakeWaitAttach({})
+const hubHold3 = createQuestionHub({ holdGraceMs: 0 })
+const ansHold3 = createQuestionAnswerer(hubHold3, { log: () => {}, attachWait: att3.fn })
+const unsub3 = hubHold3.subscribe(() => {})
+const pendHold3 = ansHold3(timedRequest({ id: 'sess-1' }), () => new Promise(() => {}))
+await new Promise((r) => setTimeout(r, 5))
+const q3h = hubHold3.list('sess-1')[0]
+hubHold3.hold(q3h.id, true)
+await new Promise((r) => setTimeout(r, 5))
+eq('手机连着时认领有效', att3.ended.length, 0)
+unsub3()
+await new Promise((r) => setTimeout(r, 5))
+eq('手机全断了立刻释放（holdGraceMs=0）', att3.ended.length, 1)
+
+const att4 = fakeWaitAttach({})
+const hubHold4 = createQuestionHub({ holdGraceMs: 30 })
+const ansHold4 = createQuestionAnswerer(hubHold4, { log: () => {}, attachWait: att4.fn })
+const unsub4 = hubHold4.subscribe(() => {})
+const pendHold4 = ansHold4(timedRequest({ id: 'sess-1' }), () => new Promise(() => {}))
+await new Promise((r) => setTimeout(r, 5))
+const q4h = hubHold4.list('sess-1')[0]
+hubHold4.hold(q4h.id, true)
+await new Promise((r) => setTimeout(r, 5))
+unsub4()
+hubHold4.subscribe(() => {})   // 宽限期内页面重连（刷新）
+await new Promise((r) => setTimeout(r, 60))
+eq('宽限期内重连就不释放认领（页面刷新不该丢掉提问）', att4.ended.length, 0)
+
+// ⑥ 非限时提问不认领（legacy 模式下没有 wait 信息）
+const att5 = fakeWaitAttach({})
+const hubHold5 = createQuestionHub({})
+const ansHold5 = createQuestionAnswerer(hubHold5, { log: () => {}, attachWait: att5.fn })
+const pendHold5 = ansHold5({ agent: { id: 'sess-1' }, questions, signal: null }, () => new Promise(() => {}))
+await new Promise((r) => setTimeout(r, 5))
+const q5h = hubHold5.list('sess-1')[0]
+eq('非限时提问不认领（没有 wait 信息）', hubHold5.hold(q5h.id, true).claimed, false)
+eq('非限时提问不会去调 attachWait', att5.calls.length, 0)
+hubHold5.answer({ questionId: q5h.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+await pendHold5
+
+// ⑦ 认领实现抛错（agent 不是存活根 agent）→ 降级，不炸、不卡
+const att6 = fakeWaitAttach({ throws: true })
+const hubHold6 = createQuestionHub({})
+const ansHold6 = createQuestionAnswerer(hubHold6, { log: () => {}, attachWait: att6.fn })
+const pendHold6 = ansHold6(timedRequest({ id: 'sess-1' }), () => new Promise(() => {}))
+await new Promise((r) => setTimeout(r, 5))
+const q6h = hubHold6.list('sess-1')[0]
+hubHold6.hold(q6h.id, true)
+await new Promise((r) => setTimeout(r, 10))
+hubHold6.answer({ questionId: q6h.id, answers: [{ id: 'q1', selected: ['A'] }, { id: 'q2', selected: ['X'] }] })
+eq('认领实现抛错也不影响作答', (await pendHold6).answers.length, 2)
+
+// ⑧ 认领后宿主那条路先答 → 认领同样要释放
+const att7 = fakeWaitAttach({})
+const hubHold7 = createQuestionHub({})
+const ansHold7 = createQuestionAnswerer(hubHold7, { log: () => {}, attachWait: att7.fn })
+let resolveDesktop7 = null
+const desktopLater7 = new Promise((resolve) => { resolveDesktop7 = resolve })
+const pendHold7 = ansHold7(timedRequest({ id: 'sess-1' }), () => desktopLater7)
+await new Promise((r) => setTimeout(r, 5))
+const q7h = hubHold7.list('sess-1')[0]
+hubHold7.hold(q7h.id, true)
+await new Promise((r) => setTimeout(r, 5))
+eq('桌面还没答时认领生效', att7.ended.length, 0)
+resolveDesktop7(desktopAnswer)
+eq('桌面先答仍用桌面的答案', await pendHold7, desktopAnswer)
+await new Promise((r) => setTimeout(r, 5))
+eq('桌面先答后认领被释放（不留悬挂认领）', att7.ended.length, 1)
+
+
 console.log('\n———— P3 路由：分组 / 模型 / 模式 / 提问 ————')
 
 const groupedRes = await req('/api/sessions', { headers: { Cookie: cookie } })
@@ -1259,6 +1454,31 @@ eq('没有待答问题的会话不标记', flagged.body.items.find((i) => i.id =
 const listedQuestions = await req('/api/questions?id=' + SESSION_ID, { headers: { Cookie: cookie } })
 eq('按会话查待答问题', listedQuestions.body.items.length, 1)
 eq('查别的会话为空', (await req('/api/questions?id=sess-2', { headers: { Cookie: cookie } })).body.items.length, 0)
+
+// —— 认领等待（写操作）：手机看着卡片时别让宿主超时 ——
+const holdOn = await req('/api/questions/hold', {
+  method: 'POST', headers: { Cookie: cookie }, json: { questionId: liveQuestion.id, hold: true },
+})
+eq('认领等待 → 200', holdOn.status, 200)
+eq('认领返回 held=true', holdOn.body.held, true)
+// 测试里的镜像没注入 attachWait（那是 lib/index.js 在真宿主里做的），
+// 所以这里如实回 claimed=false —— 没接管就别说接管了。
+eq('没有认领实现时如实回 claimed=false', holdOn.body.claimed, false)
+const holdOff = await req('/api/questions/hold', {
+  method: 'POST', headers: { Cookie: cookie }, json: { questionId: liveQuestion.id, hold: false },
+})
+eq('释放等待 → 200', holdOff.status, 200)
+eq('释放返回 held=false', holdOff.body.held, false)
+const holdNoId = await req('/api/questions/hold', { method: 'POST', headers: { Cookie: cookie }, json: { hold: true } })
+eq('认领缺 questionId → 400', holdNoId.status, 400)
+eq('认领缺 questionId 错误码', holdNoId.body.error, 'missing-question-id')
+const holdGone = await req('/api/questions/hold', {
+  method: 'POST', headers: { Cookie: cookie }, json: { questionId: 'never-existed', hold: true },
+})
+eq('认领已结束的问题 → 404', holdGone.status, 404)
+eq('认领已结束的问题错误码', holdGone.body.error, 'question-not-found')
+const anonHold = await req('/api/questions/hold', { method: 'POST', json: { questionId: 'x', hold: true } })
+eq('未登录认领 → 401', anonHold.status, 401)
 
 const answerRes = await req('/api/answer', {
   method: 'POST', headers: { Cookie: cookie },
@@ -1472,6 +1692,11 @@ const roAnswer = await req('/api/answer', {
   method: 'POST', headers: { Cookie: roCookie }, json: { questionId: 'q', answers: [] },
 })
 eq('enablePrompt=false 回答问题 → 403', roAnswer.status, 403)
+const roHold = await req('/api/questions/hold', {
+  method: 'POST', headers: { Cookie: roCookie }, json: { questionId: 'q', hold: true },
+})
+eq('enablePrompt=false 认领等待 → 403', roHold.status, 403)
+eq('认领等待的 403 错误码', roHold.body.error, 'prompt-disabled')
 const roCreate = await req('/api/session', {
   method: 'POST', headers: { Cookie: roCookie }, json: { cwd: 'D:\\a' },
 })

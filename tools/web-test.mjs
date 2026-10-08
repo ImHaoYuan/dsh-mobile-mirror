@@ -106,12 +106,18 @@ hasNot('没有内联 <style>', html, '<style')
 check('没有内联 <script> 代码', !/<script(?![^>]*\bsrc=)[^>]*>\s*\S/i.test(html))
 
 // P3-D：提问卡片
-for (const id of ['qcard', 'qcard-title', 'qcard-count', 'qcard-body', 'qcard-submit', 'qcard-note']) {
+for (const id of ['qcard', 'qcard-title', 'qcard-count', 'qcard-body', 'qcard-submit', 'qcard-note', 'qcard-toggle']) {
   has(`提问卡片有 #${id}`, html, `id="${id}"`)
 }
 has('提问卡片有 aria 语义', html, 'aria-modal="true"')
 check('提问卡片排在输入框之前（位置紧贴输入框上方）',
   html.indexOf('id="qcard"') !== -1 && html.indexOf('id="qcard"') < html.indexOf('id="composer"'))
+// 卡片可收起：不收起的话它一直占着输入框上方，把上面的会话消息挤扁
+has('收起键说明它管的是哪块', html, 'aria-controls="qcard-body"')
+has('CSS 有收起态', css, '.qcard.collapsed .qcard-body,')
+has('收起后不留头部下边距（真的只剩一行）', css, '.qcard.collapsed .qcard-head { margin-bottom:0; }')
+has('展开态高度收到 44vh', css, 'flex:0 0 auto; max-height:44vh; display:flex; flex-direction:column;')
+has('收起态不做高度动画（高度由内容撑，动画只会把文字挤成一团）', css, '.qcard.collapsed { max-height:none; }')
 
 // P3-B/C：选择面板
 for (const id of ['sheet', 'sheet-backdrop', 'sheet-title', 'sheet-body', 'sheet-close']) {
@@ -340,10 +346,30 @@ has('问题流用 parsed.value 当帧', code, 'var frame = parsed.value;')
 hasNot('不把 tryJson 的包装对象直接当帧', code, 'var frame = tryJson(')
 
 // 服务端路由
-for (const route of ['/api/models', '/api/model', '/api/presets', '/api/preset', '/api/questions', '/api/answer', '/api/questions/stream']) {
+for (const route of ['/api/models', '/api/model', '/api/presets', '/api/preset', '/api/questions', '/api/answer', '/api/questions/stream', '/api/questions/hold']) {
   has(`server 有 ${route}`, serverCode, `'${route}'`)
 }
 has('写操作统一走 guardedJsonBody', serverCode, 'guardedJsonBody')
+
+// 认领等待（Bug2：手机上答完不该变成"答案被暂存 + agent 又跑一轮"）
+has('优先用 agent 自己的 ctx 解析 userQuestions', indexCode, "agent.ctx.get('userQuestions')")
+has('宿主侧认领实现兜底走 root.get', indexCode, "root.get('userQuestions')")
+has('认领用官方的 attachWait', indexCode, 'service.attachWait(agent, callId, signal)')
+has('认领挂在 answerer 的 attachWait 上', indexCode, 'attachWait: (agent, callId, signal)')
+has('提问中心有 hold 入口', mirrorCode, 'hold(id, on)')
+has('认领期间把剩余时长推给手机', mirrorCode, "'question-hold'")
+has('手机侧卡片出现就认领', code, 'syncQuestionHold')
+has('切后台/离开聊天页要放开认领', code, 'function releaseQuestionHold')
+has('页面卸载时放开认领（keepalive）', code, 'keepalive: true')
+has('超时要如实告诉用户', code, '问题已超时，本轮已继续')
+has('接管成功后脚注说明不会超时', code, '已接管等待，宿主这边不会超时')
+hasNot('不再把"手机上答完会自动继续"当成唯一说明', code, "state.questionNote || '手机上答完，电脑那边会自动继续';")
+
+// 提问卡片可收起（Bug3：卡片一直占着输入框上方，把会话消息挤扁）
+has('点收起键切换', code, "els.qcardToggle.addEventListener('click', toggleQcard)")
+has('收起状态落到 DOM 上', code, 'function applyQcardCollapsed()')
+has('换新问题自动展开', code, 'state.qcardCollapsed = false;')
+has('收起时放掉等待认领', code, '!els.qcard.hidden && !state.qcardCollapsed')
 has('agent-preset/locked 翻成 409', serverCode, 'preset-locked')
 has('/api/sessions 带 groups', serverCode, '{ items, groups }')
 has('目录缓存 60 秒', serverCode, 'createCatalogCache({ ttlMs: 60000 })')
@@ -666,6 +692,44 @@ has('可点元素统一补了 transition', css,
 check('点击反馈只过渡 transform 与颜色（不碰布局属性，不引起重排）',
   css.indexOf('transition:transform .1s ease, background-color .14s ease, border-color .14s ease;') !== -1)
 
+// 右侧快捷跳转刻度条
+has('页面里有刻度条容器', html, 'id="rail"')
+has('页面里有刻度预览气泡', html, 'id="rail-tip"')
+has('CSS 有刻度条', css, '.rail {')
+has('CSS 有刻度', css, '.rail-tick {')
+has('刻度落在右内边距里（不压正文）', css, 'position:absolute; top:50%; right:0;')
+has('刻度条不吃空白处的触摸（不挡滚动）', css, 'pointer-events:none;')
+has('刻度自己收点击', css, 'pointer-events:auto; cursor:pointer;')
+has('高亮态用主色', css, '.rail-tick.on::before { background:var(--accent);')
+has('CSS 有 jump-hit 关键帧', css, '@keyframes jump-hit {')
+has('跳转动画只动 transform/opacity', css,
+  '35%  { opacity:1; transform:translate3d(0,-3px,0) scale(1.015); }')
+has('刻度条尊重 prefers-reduced-motion', css, '.msg.jump-hit > .body > .bubble { animation:none; }')
+has('只给用户消息打刻度', code, "els.stream.querySelectorAll('.me')")
+has('发送中/失败的气泡不打刻度', code, "cls.indexOf(' pending ') >= 0 || cls.indexOf(' failed ') >= 0")
+has('两句以上才出现', code, 'targets.length < RAIL_MIN')
+has('刻度按消息在流里的比例定位', code, 'railRatio(targets[i], total)')
+has('点刻度跳过去', code, 'function railJump(index)')
+has('按住刻度先看内容', code, 'function railPreview(index)')
+has('滚动时高亮跟着走', code, 'updateRailActive()')
+has('实时追加消息后重排刻度（防抖）', code, 'function scheduleRail()')
+has('补历史后重排刻度', code, 'el.scrollTop = beforeTop + delta;\n    state.stick = false;\n    buildRail();')
+
+// 工作过程：一轮里的"思考 + 命令"统一折叠
+has('CSS 有工作过程正文区', css, '.work-body {')
+has('CSS 有工作过程里的思考小节', css, '.work-reason {')
+has('CSS 里工作过程的标题用次级前景色', css, '.work-label { flex:0 0 auto; color:var(--fg-soft); }')
+has('思考不再套第二层折叠（手机上难点）', css, '.work-reason .reason-body { padding:0; max-height:40vh; }')
+has('轮次开始备好折叠卡', code, 'function openWorkFold(anchor)')
+has('第一件工作才挂进流里（不留空卡）', code, 'function attachWork()')
+has('轮次结束把过程收起来', code, 'function closeWorkFold()')
+has('记一件工作内容', code, 'function bumpWork()')
+has('思考用普通 div 而不是嵌套 details', code, "box.className = 'work-reason';")
+has('有工作过程卡时思考收进去', code, 'if (opts.workBody) {')
+has('工具调用也收进同一张卡', code, "var intoWork = !!state.work && (type === 'tool/call' || type === 'tool/result');")
+has('助手正文仍留在消息里', code, 'renderBlocksInto(wrap.body, blocks, { workBody: state.work ? state.work.body : null });')
+has('回答结束（turn/end）就收起工作过程', code, 'closeWorkFold();\n    state.activeTurn = null;')
+
 // 转场名与 backdrop-filter 不能落在同一个元素上。
 // 按 CSS View Transitions 规范 §2.1.1，view-transition-name 不是 none 的元素
 // （**任何时候**，不只在转场期间）会形成一个 backdrop root —— 让带 backdrop-filter
@@ -706,6 +770,32 @@ eq('关键帧只动 transform / opacity（不触发重排）',
   kfBad.size ? [...kfBad].join(', ') : '无', '无')
 check('过渡也没有涉及布局属性',
   !/transition:[^;]*\b(width|height|top|left|right|bottom|margin|padding|font-size)\b/.test(css))
+
+/* ---------------------------------------------------------------------
+ * ⑨b 内容上限护栏（Bug1：字太多被截断）
+ *
+ * 这些数字改错的后果是"手机上看到的正文被悄悄截断"——界面上只会多一句
+ * "已截断"，用户没有任何办法看到被丢掉的部分。所以钉死两件事：
+ *   ① 网页侧与宿主侧的**消息**上限必须逐字一致（两边各判一次，不一致就会出现
+ *      "手机上打得出来、服务端拒收"）；
+ *   ② 内容上限不许退回"会截断正常消息"的量级（4000 那个值就是元凶）。
+ * ------------------------------------------------------------------- */
+console.log('\n———— ⑨b 内容上限 ————')
+
+const webPromptMax = /var PROMPT_MAX = (\d+);/.exec(code)
+const hostPromptMax = /export const MAX_PROMPT_CHARS = (\d+)/.exec(mirrorSrc)
+check('网页侧写死了 PROMPT_MAX', !!webPromptMax, String(webPromptMax))
+check('宿主侧写死了 MAX_PROMPT_CHARS', !!hostPromptMax, String(hostPromptMax))
+eq('两侧消息上限逐字一致', webPromptMax && webPromptMax[1], hostPromptMax && hostPromptMax[1])
+eq('消息上限已提到 100000', hostPromptMax && Number(hostPromptMax[1]), 100000)
+
+const maxText = /const MAX_TEXT = (\d+)/.exec(mirrorSrc)
+const maxArgs = /const MAX_ARGS = (\d+)/.exec(mirrorSrc)
+const maxAnswer = /export const MAX_ANSWER_CHARS = (\d+)/.exec(mirrorSrc)
+eq('正文/思考上限已提到 100000（不再截断正常消息）', maxText && Number(maxText[1]), 100000)
+eq('工具参数上限已提到 20000', maxArgs && Number(maxArgs[1]), 20000)
+eq('自定义答案上限已提到 20000', maxAnswer && Number(maxAnswer[1]), 20000)
+has('截断标记仍然保留（病态数据的兜底）', mirrorSrc, '已截断，原长')
 
 /* ==================== ⑩ 桌面设置面板（客户端 bundle）==================== */
 console.log('\n———— ⑩ 桌面设置面板 ————')

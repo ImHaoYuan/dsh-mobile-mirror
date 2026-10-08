@@ -113,8 +113,27 @@ class El {
   }
   get firstChild() { return this.childNodes.length ? this.childNodes[0] : null; }
   get isConnected() { return connected(this); }
-  get scrollHeight() { return this._scrollHeight === null ? this.childNodes.length * 100 : this._scrollHeight; }
+  get scrollHeight() {
+    if (this._scrollHeight !== null) return this._scrollHeight;
+    // 每个"可见的"直接子节点算 100px。hidden 的节点在真浏览器里不占位，
+    // 刻度条要按消息在流里的位置算比例 —— 把藏起来的节点也算进去就会整体错位。
+    let h = 0;
+    for (const c of this.childNodes) if (c.nodeType === 1 && !c.hidden) h += 100;
+    return h;
+  }
   set scrollHeight(v) { this._scrollHeight = v; }
+  /* 布局量：与上面那套「每个可见直接子节点 100px」的模型保持一致。 */
+  get offsetHeight() { return this.hidden ? 0 : 100; }
+  get offsetTop() {
+    const parent = this.parentNode;
+    if (!parent) return 0;
+    let top = 0;
+    for (const c of parent.childNodes) {
+      if (c === this) return top;
+      if (c.nodeType === 1 && !c.hidden) top += 100;
+    }
+    return 0;
+  }
   appendChild(node) {
     if (node.nodeType === 11) {
       node.childNodes.slice().forEach((c) => this.appendChild(c));
@@ -149,7 +168,11 @@ class El {
   getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attributes, k) ? this.attributes[k] : null; }
   addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
   dispatch(type, ev) { (this._listeners[type] || []).forEach((fn) => fn(ev || {})); }
-  scrollTo() { this.scrollTop = this.scrollHeight; }
+  // 真 scrollTo 认参数对象（{top, behavior}）；不传就按"滚到底"处理
+  scrollTo(opts) {
+    if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+    else this.scrollTop = this.scrollHeight;
+  }
   // 复制兜底路径会调这两个（textarea + execCommand），真 DOM 有，这里给个空实现
   select() {}
   setSelectionRange() {}
@@ -263,6 +286,23 @@ function resp(obj, status) {
 }
 function tick() { return new Promise((r) => setTimeout(r, 0)); }
 
+/**
+ * 可派发事件的目标。
+ * document / window 以前是空壳 addEventListener(){}，而"认领提问等待"正是靠
+ * visibilitychange 与 pagehide 决定要不要放开认领 —— 不能派发就测不到。
+ */
+function makeEventTarget(extra) {
+  const listeners = {};
+  return Object.assign({
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener(type, fn) {
+      const list = listeners[type];
+      if (list) listeners[type] = list.filter((f) => f !== fn);
+    },
+    dispatch(type, event) { (listeners[type] || []).forEach((fn) => fn(event || { type: type })); }
+  }, extra || {});
+}
+
 function buildDom(enablePrompt) {
   Object.keys(registry).forEach((k) => delete registry[k]);
   const html = fs.readFileSync(INDEX, 'utf8').replace('{{ENABLE_PROMPT}}', enablePrompt).replace('{{USERNAME}}', 'alice');
@@ -289,17 +329,16 @@ function buildDom(enablePrompt) {
   idList.forEach((id) => body.appendChild(registry[id]));
   ROOT = body;
 
-  globalThis.document = {
+  globalThis.document = makeEventTarget({
     readyState: 'complete',
     visibilityState: 'visible',
     body: body,
-    addEventListener() {},
     createElement(t) { return new El(t); },
     createDocumentFragment() { return new Frag(); },
     createTextNode(t) { return new Txt(t); },
     getElementById(id) { return registry[id] || null; }
-  };
-  globalThis.window = { addEventListener() {}, confirm: () => confirmAnswer };
+  });
+  globalThis.window = makeEventTarget({ confirm: () => confirmAnswer });
   globalThis.location = { href: 'http://127.0.0.1:19388/' };
   globalThis.EventSource = FakeEventSource;
   // P4：折叠状态要真落盘才能验证"默认折叠 + 展开也存 0"。
@@ -317,6 +356,7 @@ function buildDom(enablePrompt) {
       url: String(url),
       method: method,
       headers: (opts && opts.headers) || {},
+      keepalive: !!(opts && opts.keepalive),
       body: opts && opts.body !== undefined ? String(opts.body) : null
     };
     fetchLog.push(rec);
@@ -329,6 +369,8 @@ function buildDom(enablePrompt) {
       if (key === '/api/presets') return resp({ presets: [] });
       if (key === '/api/questions') return resp({ items: [] });
     }
+    // 认领等待：服务端默认"接受且认领成功"，场景里想验失败路径再覆盖它
+    if (!h && method === 'POST' && key === '/api/questions/hold') return resp({ ok: true, held: true, claimed: true });
     if (!h) return resp({ error: 'not-found' }, 404);
     return h(rec);
   };
@@ -433,7 +475,8 @@ async function main() {
   ok('用户消息里的 XSS 只以文本节点存在（未生成 HTML）',
     text.indexOf('<img src=x onerror=alert(1)>') !== -1 && rawHtmlOf(stream).every((h) => h.indexOf('onerror') === -1));
   ok('assistant Markdown 粗体渲染', text.indexOf('<strong>好</strong>') !== -1);
-  ok('reasoning 折叠块存在', countClass(stream, 'reason') === 1);
+  ok('reasoning 收进「工作过程」折叠卡',
+    countClass(stream, 'work-reason') === 1 && countClass(stream, 'reason') === 0);
   ok('tool/call 折叠卡片存在', countClass(stream, 'tool') === 1);
   ok('usage 小字存在', text.indexOf('输入 1.2k') !== -1);
   eq('末尾没有 turn/end → 判定为运行中', registry['chat-sub'].textContent.indexOf('运行中'), 0);
@@ -558,6 +601,8 @@ async function main() {
   await scenarioI();
   await scenarioSubagent();
   await scenarioTurnFailure();
+  await scenarioRail();
+  await scenarioWorkFold();
 
   summary();
 }
@@ -618,11 +663,14 @@ async function scenarioP2() {
   eq('有内容后发送按钮可用', sendBtn.disabled, false);
   eq('短文本不显示字数', registry['composer-count'].hidden, true);
 
-  input.value = 'x'.repeat(7001);
+  // 上限与提示线都从 app.js 取，不写死 —— 见 web-pure-test.cjs 里同一处的说明
+  const PROMPT_MAX = appExports.PROMPT_MAX;
+  const PROMPT_AT = appExports.PROMPT_COUNTER_AT;
+  input.value = 'x'.repeat(PROMPT_AT + 1);
   input.dispatch('input');
-  eq('7001 字符显示字数', registry['composer-count'].textContent, '7001/8000');
+  eq('过提示线显示字数', registry['composer-count'].textContent, (PROMPT_AT + 1) + '/' + PROMPT_MAX);
   eq('未超限不算 over', registry['composer-count']._classes.has('over'), false);
-  input.value = 'x'.repeat(8001);
+  input.value = 'x'.repeat(PROMPT_MAX + 1);
   input.dispatch('input');
   eq('超限时标红', registry['composer-count']._classes.has('over'), true);
   eq('超限时发送按钮禁用', sendBtn.disabled, true);
@@ -1119,6 +1167,54 @@ async function scenarioP3() {
   eq('没作答时不能提交', registry['qcard-submit'].disabled, true);
   eq('没作答时给出提示', registry['qcard-count'].textContent, '还剩 1 题');
 
+  // ---- 认领等待（Bug2：手机上答完不该变成"答案被暂存 + agent 又跑一轮"） ----
+  // 卡片一出现就要认领：宿主默认只等 120 秒，没人认领时到点就放行模型
+  await tick();
+  const holdCall = lastCall('/api/questions/hold');
+  ok('卡片出现后立刻认领等待', !!holdCall, holdCall && holdCall.body);
+  eq('认领请求带问题 id', JSON.parse(holdCall.body).questionId, 'q-1');
+  eq('认领请求 hold=true', JSON.parse(holdCall.body).hold, true);
+
+  // 服务端确认接管后，脚注要如实说明"不会超时"
+  questionsES.emit('message', JSON.stringify({ e: 'question-hold', d: { id: 'q-1', sessionId: 'd1', held: true, remainingMs: 118000 } }));
+  await tick();
+  eq('接管后脚注说明不会超时', registry['qcard-note'].textContent, '已接管等待，宿主这边不会超时');
+
+  // 切到后台：必须放开认领，否则宿主会一直等一个没人看的卡片（agent 卡死）
+  globalThis.document.visibilityState = 'hidden';
+  globalThis.document.dispatch('visibilitychange');
+  await tick();
+  eq('切到后台放开认领', JSON.parse(lastCall('/api/questions/hold').body).hold, false);
+  eq('放开后脚注退回默认说明', registry['qcard-note'].textContent, '手机上答完，电脑那边会自动继续');
+
+  // 回到前台：重新认领
+  globalThis.document.visibilityState = 'visible';
+  globalThis.document.dispatch('visibilitychange');
+  await tick();
+  eq('回到前台重新认领', JSON.parse(lastCall('/api/questions/hold').body).hold, true);
+
+  // ---- 卡片可收起：不收起的话它一直占着输入框上方，把上面的会话消息挤扁 ----
+  eq('默认展开', registry['qcard']._classes.has('collapsed'), false);
+  eq('收起键写着"收起"', registry['qcard-toggle'].textContent, '收起');
+  eq('展开时 aria-expanded=true', registry['qcard-toggle'].getAttribute('aria-expanded'), 'true');
+  registry['qcard-toggle'].dispatch('click');
+  eq('点一下就收起', registry['qcard']._classes.has('collapsed'), true);
+  eq('收起后按钮变成"展开"', registry['qcard-toggle'].textContent, '展开');
+  eq('收起后 aria-expanded=false', registry['qcard-toggle'].getAttribute('aria-expanded'), 'false');
+  await tick();
+  eq('收起时放掉认领（不能等一个被收起来的卡片）',
+    JSON.parse(lastCall('/api/questions/hold').body).hold, false);
+  registry['qcard-toggle'].dispatch('click');
+  eq('再点一下展开', registry['qcard']._classes.has('collapsed'), false);
+  await tick();
+  eq('展开后重新认领', JSON.parse(lastCall('/api/questions/hold').body).hold, true);
+
+  // 页面卸载：放开认领（keepalive 让请求在卸载过程中也能发出去）
+  globalThis.window.dispatch('pagehide');
+  await tick();
+  eq('页面卸载时放开认领', JSON.parse(lastCall('/api/questions/hold').body).hold, false);
+  eq('卸载时的释放请求带 keepalive', lastCall('/api/questions/hold').keepalive, true);
+
   findAll(registry['qcard-body'], 'q-opt')[0].dispatch('click');
   eq('选中的选项被标出来', findAll(registry['qcard-body'], 'q-opt')[0]._classes.has('on'), true);
   eq('作答后可以提交', registry['qcard-submit'].disabled, false);
@@ -1143,6 +1239,25 @@ async function scenarioP3() {
   await tick();
   eq('别的会话的提问不占当前会话的卡片', registry['qcard'].hidden, true);
   ok('别的会话的提问给了提示', registry['toast'].textContent.indexOf('等你回答') !== -1, registry['toast'].textContent);
+
+  // ---- 换一个新问题：自动展开（收起状态只属于上一张卡片） ----
+  registry['qcard-toggle'].dispatch('click');   // 先把上一张收起
+  eq('收起状态记下了', appState().qcardCollapsed, true);
+  questionsES.emit('message', JSON.stringify({
+    e: 'question',
+    d: {
+      id: 'q-10', sessionId: 'd1', callId: 'call-10', createdAt: NOW,
+      questions: [{ id: 'qc', question: '换个新问题' }]
+    }
+  }));
+  await tick();
+  eq('新问题出现', registry['qcard'].hidden, false);
+  eq('新问题自动展开（新问题必须让人看见）', registry['qcard']._classes.has('collapsed'), false);
+  eq('展开状态同步到按钮', registry['qcard-toggle'].getAttribute('aria-expanded'), 'true');
+  eq('新问题重新认领等待', JSON.parse(lastCall('/api/questions/hold').body).hold, true);
+  questionsES.emit('message', JSON.stringify({ e: 'question-settled', d: { id: 'q-10', sessionId: 'd1', outcome: 'answered' } }));
+  await tick();
+  eq('新问题结束后卡片收起', registry['qcard'].hidden, true);
 
   // ---- 只读模式：两枚芯片都点不动 ----
   buildDom('no');
@@ -1812,6 +1927,257 @@ async function scenarioTurnFailure() {
   ok('原始 reason 对象取 kind 而不是 [object Object]',
     dump(stream).indexOf('本轮已中止') !== -1 && dump(stream).indexOf('[object Object]') === -1, dump(stream).slice(-120));
   eq('aborted 不弹 toast（用户自己停的）', registry['toast'].hidden, true);
+}
+
+/* ===================== 场景 L：右侧快捷跳转刻度条 =====================
+ *
+ * 目标只有一件事：回头能立刻找到"我自己说过的那句"。
+ * 所以只标用户消息、只在两句以上时出现、点一下跳过去。
+ * 助手消息不标 —— 它每轮都说一大段，全标出来等于没标。
+ */
+async function scenarioRail() {
+  console.log('\n[场景 L] 右侧快捷跳转刻度条');
+  buildDom('yes');
+
+  const s1 = { id: 's1', title: '长会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha' };
+  routes = {
+    '/api/sessions': () => resp({ items: [s1], groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: [s1], updatedAt: NOW - 1000, running: false }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } }),
+    'POST /api/prompt': () => resp({ accepted: true, requestId: 'r1' })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  const stream = registry['stream'];
+  const rail = registry['rail'];
+
+  // ---- 1. 只说过一句：不出现（一句的时候刻度条只会挡视线） ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'user/message', seq: 2, time: NOW - 4900, data: { role: 'user', id: 'u1', blocks: [{ type: 'text', text: '第一句' }] } },
+    { type: 'assistant/message', seq: 3, time: NOW - 4800, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } }
+  ], 3));
+  await tick();
+  eq('只说过一句时不显示刻度条', rail.hidden, true);
+  eq('刻度数为 0', findAll(rail, 'rail-tick').length, 0);
+
+  // ---- 2. 两句以上：常驻，一句一条 ----
+  // 流里的节点顺序：分隔条 / me / assistant / 分隔条 / me / assistant / me / assistant
+  // 假 DOM 里每个直接子节点算 100px，所以三句的位置分别是 100 / 400 / 600。
+  const recs = [
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'user/message', seq: 2, time: NOW - 4900, data: { role: 'user', id: 'u1', blocks: [{ type: 'text', text: '帮我看看登录' }] } },
+    { type: 'assistant/message', seq: 3, time: NOW - 4800, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } },
+    { type: 'turn/start', seq: 4, time: NOW - 4000, data: { turn: 2 } },
+    { type: 'user/message', seq: 5, time: NOW - 3900, data: { role: 'user', id: 'u2', blocks: [{ type: 'text', text: '再看下注册' }] } },
+    { type: 'assistant/message', seq: 6, time: NOW - 3800, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } },
+    { type: 'user/message', seq: 7, time: NOW - 3700, data: { role: 'user', id: 'u3', blocks: [{ type: 'text', text: '顺便把测试补上' }] } },
+    { type: 'assistant/message', seq: 8, time: NOW - 3600, data: { role: 'assistant', blocks: [{ type: 'text', text: '好' }] } }
+  ];
+  es.emit('message', snapshot(recs, 8));
+  await tick();
+  eq('两句以上时常驻显示', rail.hidden, false);
+  const ticks = findAll(rail, 'rail-tick');
+  eq('刻度数 = 我说过的话的句数（助手消息不占刻度）', ticks.length, 3);
+  eq('刻度按位置排（100/800、450/800、650/800）',
+    ticks.map((t) => t.style.top).join(','), '18.75%,56.25%,81.25%');
+  eq('刻度带无障碍说明', ticks[0].getAttribute('aria-label'), '跳到我说的第 1 句');
+  // 滚到底时高亮的是最后一句
+  eq('离视口中线最近的那条被高亮', ticks[2]._classes.has('on'), true);
+  eq('其余刻度不高亮', ticks[0]._classes.has('on'), false);
+
+  // ---- 3. "发送中"的气泡不算（它还没在 records 里落定，位置随后会跳） ----
+  registry['composer-input'].value = '正在发的那句';
+  registry['composer-send'].dispatch('click');
+  await tick();
+  eq('发送中的气泡进流了', countClass(stream, 'pending') >= 1, true);
+  eq('发送中的气泡不占刻度', findAll(rail, 'rail-tick').length, 3);
+
+  // ---- 4. 点一下跳过去 ----
+  const targets = findAll(stream, 'me').filter((n) => !n._classes.has('pending'));
+  ticks[0].dispatch('click');
+  eq('跳到那句（留 12px 余量）', stream.scrollTop, 88);
+  eq('跳过去的目标闪一下', targets[0]._classes.has('jump-hit'), true);
+  eq('跳过去后刻度高亮跟着走', ticks[0]._classes.has('on'), true);
+
+  // ---- 5. 按住先看内容，松手收起 ----
+  const tip = registry['rail-tip'];
+  eq('平时不显示预览', tip.hidden, true);
+  ticks[1].dispatch('pointerdown');
+  eq('按住刻度显示预览', tip.hidden, false);
+  eq('预览里是那句的原话', tip.textContent, '再看下注册');
+  ticks[1].dispatch('pointerup');
+  eq('松手收起预览', tip.hidden, true);
+
+  // ---- 6. 滚动时高亮跟着走 ----
+  // 跳转后有 700ms 的锁：平滑滚动自己会发一串 scroll，那期间不能改判高亮。
+  stream.scrollTop = 600;
+  stream.dispatch('scroll');
+  await tick();
+  eq('跳转动画期间滚动事件不改判', ticks[0]._classes.has('on'), true);
+  // 锁过期（= 动画滚完）之后，滚动才接管高亮
+  appState().scrollLock = 0;
+  stream.dispatch('scroll');
+  await tick();
+  eq('滚到下面时高亮最后一句', ticks[2]._classes.has('on'), true);
+  eq('上面那条不再高亮', ticks[0]._classes.has('on'), false);
+
+  // ---- 7. 开了"减少动效"：直接跳，不闪 ----
+  const realMatchMedia = globalThis.window.matchMedia;
+  globalThis.window.matchMedia = () => ({ matches: true });
+  targets[2]._classes.delete('jump-hit');
+  ticks[2].dispatch('click');
+  eq('减少动效时不播"到了"动画', targets[2]._classes.has('jump-hit'), false);
+  eq('减少动效时仍然跳到位', stream.scrollTop, 588);
+  globalThis.window.matchMedia = realMatchMedia;
+
+  // ---- 8. 换会话要把刻度一起清掉 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'user/message', seq: 2, time: NOW - 4900, data: { role: 'user', id: 'x1', blocks: [{ type: 'text', text: '新会话里只说了这一句' }] } }
+  ], 2));
+  await tick();
+  eq('新会话只有一句时刻度条收起', rail.hidden, true);
+  eq('旧刻度被清干净', findAll(rail, 'rail-tick').length, 0);
+}
+
+/* ===================== 场景 M：工作过程统一折叠 =====================
+ *
+ * 以前思考和命令是两摊：思考是助手消息里的一层折叠，命令（read / write / edit）
+ * 是流里一堆独立卡片，一轮下来手机上要滑很久。它们本来就是同一件事的两面
+ * （"它想了什么、动了什么"），所以统一收进一张「工作过程」。
+ * 正在跑的那一轮展开，turn/end 一到就收起来 —— 这正是"已结束的回答，过程折起来"。
+ */
+async function scenarioWorkFold() {
+  console.log('\n[场景 M] 工作过程：思考 + 命令统一折叠');
+  buildDom('yes');
+
+  const s1 = { id: 's1', title: '干活', running: true, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha' };
+  routes = {
+    '/api/sessions': () => resp({ items: [s1], groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: [s1], updatedAt: NOW - 1000, running: true }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  const stream = registry['stream'];
+  const ev = (type, seq, data) => es.emit('message', JSON.stringify({ e: 'event', d: { type, seq, time: NOW, data } }));
+
+  // ---- 1. 轮次开始：折叠卡先备好，但还没干活就不挂进流里（不留空卡） ----
+  ev('turn/start', 1, { turn: 1 });
+  await tick();
+  ok('轮次开始先备好工作过程卡', !!appState().work && appState().work.n === 0);
+  eq('还没干活时不占位', findAll(stream, 'work').length, 0);
+
+  // ---- 2. 用户消息不算工作内容 ----
+  ev('user/message', 2, { role: 'user', blocks: [{ type: 'text', text: '帮我改一下' }] });
+  await tick();
+  eq('用户消息不算工作内容', findAll(stream, 'work').length, 0);
+
+  // ---- 3. 思考进折叠卡，正文留在消息里 ----
+  ev('assistant/message', 3, {
+    role: 'assistant',
+    blocks: [{ type: 'reasoning', text: '先看看这个文件' }, { type: 'text', text: '我先读一下文件' }]
+  });
+  await tick();
+  const work = findAll(stream, 'work')[0];
+  ok('有思考后卡片出现', !!work);
+  eq('正在跑的这一轮默认展开', work.open, true);
+  eq('标题写着「工作过程」', work.textContent.indexOf('工作过程') !== -1, true);
+  eq('思考收进工作过程', findAll(work, 'work-reason').length, 1);
+  eq('思考原文在卡里', findAll(work, 'work-reason')[0].textContent.indexOf('先看看这个文件') !== -1, true);
+  const assistants = findAll(stream, 'assistant').filter((n) => !n._classes.has('live'));
+  eq('助手正文留在消息里', assistants[0].textContent.indexOf('我先读一下文件') !== -1, true);
+  eq('助手消息里不再夹着思考', assistants[0].textContent.indexOf('先看看这个文件'), -1);
+  eq('思考不再用嵌套折叠（手机上难点）', findAll(stream, 'reason').length, 0);
+
+  // ---- 4. 命令（工具调用）也进同一张卡 ----
+  ev('tool/call', 4, { callId: 'c1', name: 'read_file', args: '{"path":"a.js"}' });
+  await tick();
+  const work2 = findAll(stream, 'work')[0];
+  eq('命令卡收进工作过程', findAll(work2, 'fold').length, 1);
+  eq('命令卡不是流的直接子节点（收在卡里）',
+    stream.childNodes.filter((n) => n.nodeType === 1 && n._classes.has('tool')).length, 0);
+  eq('两件工作后标题带件数', findAll(work2, 'work-count')[0].textContent, '2 项');
+
+  // ---- 5. 工具结果填回同一张命令卡（不算新的一件工作） ----
+  ev('tool/result', 5, { callId: 'c1', isError: false, blocks: [{ type: 'text', text: '文件内容在这里' }] });
+  await tick();
+  const work3 = findAll(stream, 'work')[0];
+  eq('结果填进原卡片', findAll(work3, 'tool-result')[0].textContent.indexOf('文件内容在这里') !== -1, true);
+  eq('结果不算新的一件工作', findAll(work3, 'work-count')[0].textContent, '2 项');
+
+  // ---- 6. 第二段思考接着往同一张卡里放（不新开一张） ----
+  ev('assistant/message', 6, {
+    role: 'assistant',
+    blocks: [{ type: 'reasoning', text: '现在动手改' }, { type: 'text', text: '改好了' }]
+  });
+  await tick();
+  const work4 = findAll(stream, 'work')[0];
+  eq('同一轮只有一张工作过程卡', findAll(stream, 'work').length, 1);
+  eq('两段思考都在里面', findAll(work4, 'work-reason').length, 2);
+  eq('件数累加', findAll(work4, 'work-count')[0].textContent, '3 项');
+  eq('第二段正文也留在消息里', dump(stream).indexOf('改好了') !== -1, true);
+
+  // ---- 7. 轮次结束：过程折起来 ----
+  ev('turn/end', 7, { turn: 1, reason: 'completed' });
+  await tick();
+  const work5 = findAll(stream, 'work')[0];
+  eq('回答结束后工作过程自动折起', work5.open, false);
+  eq('折起来了但还在（随时能点开）', work5.hidden, false);
+  eq('件数留在标题上（收起来也看得见做了多少）', findAll(work5, 'work-count')[0].textContent, '3 项');
+
+  // ---- 8. 位置：在这一轮的提问之后、回答正文之前 ----
+  const kids = stream.childNodes.filter((n) => n.nodeType === 1);
+  const iDivider = kids.findIndex((n) => n._classes.has('divider'));
+  const iUser = kids.findIndex((n) => n._classes.has('me'));
+  const iWork = kids.findIndex((n) => n._classes.has('work'));
+  const iMsg = kids.findIndex((n) => n._classes.has('assistant'));
+  ok('折叠卡在这一轮的提问之后', iWork > iUser && iWork > iDivider, 'user=' + iUser + ' work=' + iWork);
+  ok('折叠卡排在回答正文之前（先看过程，再看回答）', iWork < iMsg, 'work=' + iWork + ' msg=' + iMsg);
+
+  // ---- 9. 没有工作内容的轮次不留空卡 ----
+  ev('turn/start', 8, { turn: 2 });
+  await tick();
+  ev('assistant/message', 9, { role: 'assistant', blocks: [{ type: 'text', text: '不用动手，直接答' }] });
+  await tick();
+  ev('turn/end', 10, { turn: 2, reason: 'completed' });
+  await tick();
+  eq('没用工具、没思考的轮次不留空卡', findAll(stream, 'work').length, 1);
+  eq('那张卡还是第一轮的', findAll(stream, 'work')[0] === work5, true);
+
+  // ---- 10. 快照重建：历史轮次收起，正在跑的那轮展开 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 20, time: NOW - 9000, data: { turn: 5 } },
+    { type: 'user/message', seq: 21, time: NOW - 8900, data: { role: 'user', blocks: [{ type: 'text', text: '历史那一轮' }] } },
+    { type: 'assistant/message', seq: 22, time: NOW - 8800, data: { role: 'assistant', blocks: [{ type: 'reasoning', text: '历史思考' }, { type: 'text', text: '历史回答' }] } },
+    { type: 'tool/call', seq: 23, time: NOW - 8700, data: { callId: 'h1', name: 'edit_file', args: '{"path":"b.js"}' } },
+    { type: 'turn/end', seq: 24, time: NOW - 8600, data: { turn: 5, reason: 'completed' } },
+    { type: 'turn/start', seq: 25, time: NOW - 8500, data: { turn: 6 } },
+    { type: 'user/message', seq: 26, time: NOW - 8400, data: { role: 'user', blocks: [{ type: 'text', text: '正在跑的那一轮' }] } },
+    { type: 'assistant/message', seq: 27, time: NOW - 8300, data: { role: 'assistant', blocks: [{ type: 'reasoning', text: '正在想的' }, { type: 'text', text: '先说着' }] } }
+  ], 27));
+  await tick();
+  const snapFolds = findAll(stream, 'work');
+  eq('两轮各一张卡', snapFolds.length, 2);
+  eq('历史那一轮收起来', snapFolds[0].open, false);
+  eq('历史思考在里面', findAll(snapFolds[0], 'work-reason')[0].textContent.indexOf('历史思考') !== -1, true);
+  eq('历史命令也在里面', findAll(snapFolds[0], 'tool-args').length, 1);
+  eq('正在跑的那一轮展开', snapFolds[1].open, true);
 }
 
 function summary() {
