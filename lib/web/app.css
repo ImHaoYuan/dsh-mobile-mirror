@@ -382,6 +382,20 @@ a { color:var(--link); }
 .tool-result-head { font-size:12.5px; color:var(--dim); margin-bottom:4px; }
 .tool-result.error .tool-result-head { color:var(--danger-fg); }
 .fold.tool-error { border-color:var(--line-bad); }
+
+/* ---- 工作过程：一轮里的"思考 + 命令"统一收在一张折叠卡里 ----
+   正文（回答本身）留在卡片外面 —— 折叠的是过程，不是回答。
+   正在跑的那一轮展开，turn/end 一到就自己收起来（见 app.js 的 closeWorkFold）。 */
+.work-label { flex:0 0 auto; color:var(--fg-soft); }
+.work-count { flex:0 0 auto; font-size:11.5px; color:var(--dim-3); }
+.work-body { padding:4px 8px 8px; }
+/* 里面的工具卡自己也是折叠卡：压一下外边距，别叠出双份空隙 */
+.work-body > .fold { margin:6px 0; }
+.work-body > .fold:last-child { margin-bottom:0; }
+/* 思考：一节普通文本，不套第二层 <details>（嵌套折叠在手机上很难点） */
+.work-reason { padding:8px 6px 2px; }
+.work-reason-head { font-size:11.5px; color:var(--dim-3); margin-bottom:2px; }
+.work-reason .reason-body { padding:0; max-height:40vh; }
 .standalone { border-style:dashed; }
 
 /* 正在输出 */

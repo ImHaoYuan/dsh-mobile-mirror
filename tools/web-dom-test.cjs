@@ -113,16 +113,26 @@ class El {
   }
   get firstChild() { return this.childNodes.length ? this.childNodes[0] : null; }
   get isConnected() { return connected(this); }
-  get scrollHeight() { return this._scrollHeight === null ? this.childNodes.length * 100 : this._scrollHeight; }
+  get scrollHeight() {
+    if (this._scrollHeight !== null) return this._scrollHeight;
+    // 每个"可见的"直接子节点算 100px。hidden 的节点在真浏览器里不占位，
+    // 刻度条要按消息在流里的位置算比例 —— 把藏起来的节点也算进去就会整体错位。
+    let h = 0;
+    for (const c of this.childNodes) if (c.nodeType === 1 && !c.hidden) h += 100;
+    return h;
+  }
   set scrollHeight(v) { this._scrollHeight = v; }
-  /* 布局量：与 scrollHeight 那套「每个直接子节点 100px」的模型保持一致。
-     刻度条要按消息在流里的位置算比例，没有这两个值就永远算在 0 上。 */
-  get offsetHeight() { return 100; }
+  /* 布局量：与上面那套「每个可见直接子节点 100px」的模型保持一致。 */
+  get offsetHeight() { return this.hidden ? 0 : 100; }
   get offsetTop() {
     const parent = this.parentNode;
     if (!parent) return 0;
-    const i = parent.childNodes.indexOf(this);
-    return i < 0 ? 0 : i * 100;
+    let top = 0;
+    for (const c of parent.childNodes) {
+      if (c === this) return top;
+      if (c.nodeType === 1 && !c.hidden) top += 100;
+    }
+    return 0;
   }
   appendChild(node) {
     if (node.nodeType === 11) {
@@ -465,7 +475,8 @@ async function main() {
   ok('用户消息里的 XSS 只以文本节点存在（未生成 HTML）',
     text.indexOf('<img src=x onerror=alert(1)>') !== -1 && rawHtmlOf(stream).every((h) => h.indexOf('onerror') === -1));
   ok('assistant Markdown 粗体渲染', text.indexOf('<strong>好</strong>') !== -1);
-  ok('reasoning 折叠块存在', countClass(stream, 'reason') === 1);
+  ok('reasoning 收进「工作过程」折叠卡',
+    countClass(stream, 'work-reason') === 1 && countClass(stream, 'reason') === 0);
   ok('tool/call 折叠卡片存在', countClass(stream, 'tool') === 1);
   ok('usage 小字存在', text.indexOf('输入 1.2k') !== -1);
   eq('末尾没有 turn/end → 判定为运行中', registry['chat-sub'].textContent.indexOf('运行中'), 0);
@@ -591,6 +602,7 @@ async function main() {
   await scenarioSubagent();
   await scenarioTurnFailure();
   await scenarioRail();
+  await scenarioWorkFold();
 
   summary();
 }
@@ -2034,6 +2046,138 @@ async function scenarioRail() {
   await tick();
   eq('新会话只有一句时刻度条收起', rail.hidden, true);
   eq('旧刻度被清干净', findAll(rail, 'rail-tick').length, 0);
+}
+
+/* ===================== 场景 M：工作过程统一折叠 =====================
+ *
+ * 以前思考和命令是两摊：思考是助手消息里的一层折叠，命令（read / write / edit）
+ * 是流里一堆独立卡片，一轮下来手机上要滑很久。它们本来就是同一件事的两面
+ * （"它想了什么、动了什么"），所以统一收进一张「工作过程」。
+ * 正在跑的那一轮展开，turn/end 一到就收起来 —— 这正是"已结束的回答，过程折起来"。
+ */
+async function scenarioWorkFold() {
+  console.log('\n[场景 M] 工作过程：思考 + 命令统一折叠');
+  buildDom('yes');
+
+  const s1 = { id: 's1', title: '干活', running: true, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha' };
+  routes = {
+    '/api/sessions': () => resp({ items: [s1], groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: [s1], updatedAt: NOW - 1000, running: true }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  const stream = registry['stream'];
+  const ev = (type, seq, data) => es.emit('message', JSON.stringify({ e: 'event', d: { type, seq, time: NOW, data } }));
+
+  // ---- 1. 轮次开始：折叠卡先备好，但还没干活就不挂进流里（不留空卡） ----
+  ev('turn/start', 1, { turn: 1 });
+  await tick();
+  ok('轮次开始先备好工作过程卡', !!appState().work && appState().work.n === 0);
+  eq('还没干活时不占位', findAll(stream, 'work').length, 0);
+
+  // ---- 2. 用户消息不算工作内容 ----
+  ev('user/message', 2, { role: 'user', blocks: [{ type: 'text', text: '帮我改一下' }] });
+  await tick();
+  eq('用户消息不算工作内容', findAll(stream, 'work').length, 0);
+
+  // ---- 3. 思考进折叠卡，正文留在消息里 ----
+  ev('assistant/message', 3, {
+    role: 'assistant',
+    blocks: [{ type: 'reasoning', text: '先看看这个文件' }, { type: 'text', text: '我先读一下文件' }]
+  });
+  await tick();
+  const work = findAll(stream, 'work')[0];
+  ok('有思考后卡片出现', !!work);
+  eq('正在跑的这一轮默认展开', work.open, true);
+  eq('标题写着「工作过程」', work.textContent.indexOf('工作过程') !== -1, true);
+  eq('思考收进工作过程', findAll(work, 'work-reason').length, 1);
+  eq('思考原文在卡里', findAll(work, 'work-reason')[0].textContent.indexOf('先看看这个文件') !== -1, true);
+  const assistants = findAll(stream, 'assistant').filter((n) => !n._classes.has('live'));
+  eq('助手正文留在消息里', assistants[0].textContent.indexOf('我先读一下文件') !== -1, true);
+  eq('助手消息里不再夹着思考', assistants[0].textContent.indexOf('先看看这个文件'), -1);
+  eq('思考不再用嵌套折叠（手机上难点）', findAll(stream, 'reason').length, 0);
+
+  // ---- 4. 命令（工具调用）也进同一张卡 ----
+  ev('tool/call', 4, { callId: 'c1', name: 'read_file', args: '{"path":"a.js"}' });
+  await tick();
+  const work2 = findAll(stream, 'work')[0];
+  eq('命令卡收进工作过程', findAll(work2, 'fold').length, 1);
+  eq('命令卡不是流的直接子节点（收在卡里）',
+    stream.childNodes.filter((n) => n.nodeType === 1 && n._classes.has('tool')).length, 0);
+  eq('两件工作后标题带件数', findAll(work2, 'work-count')[0].textContent, '2 项');
+
+  // ---- 5. 工具结果填回同一张命令卡（不算新的一件工作） ----
+  ev('tool/result', 5, { callId: 'c1', isError: false, blocks: [{ type: 'text', text: '文件内容在这里' }] });
+  await tick();
+  const work3 = findAll(stream, 'work')[0];
+  eq('结果填进原卡片', findAll(work3, 'tool-result')[0].textContent.indexOf('文件内容在这里') !== -1, true);
+  eq('结果不算新的一件工作', findAll(work3, 'work-count')[0].textContent, '2 项');
+
+  // ---- 6. 第二段思考接着往同一张卡里放（不新开一张） ----
+  ev('assistant/message', 6, {
+    role: 'assistant',
+    blocks: [{ type: 'reasoning', text: '现在动手改' }, { type: 'text', text: '改好了' }]
+  });
+  await tick();
+  const work4 = findAll(stream, 'work')[0];
+  eq('同一轮只有一张工作过程卡', findAll(stream, 'work').length, 1);
+  eq('两段思考都在里面', findAll(work4, 'work-reason').length, 2);
+  eq('件数累加', findAll(work4, 'work-count')[0].textContent, '3 项');
+  eq('第二段正文也留在消息里', dump(stream).indexOf('改好了') !== -1, true);
+
+  // ---- 7. 轮次结束：过程折起来 ----
+  ev('turn/end', 7, { turn: 1, reason: 'completed' });
+  await tick();
+  const work5 = findAll(stream, 'work')[0];
+  eq('回答结束后工作过程自动折起', work5.open, false);
+  eq('折起来了但还在（随时能点开）', work5.hidden, false);
+  eq('件数留在标题上（收起来也看得见做了多少）', findAll(work5, 'work-count')[0].textContent, '3 项');
+
+  // ---- 8. 位置：在这一轮的提问之后、回答正文之前 ----
+  const kids = stream.childNodes.filter((n) => n.nodeType === 1);
+  const iDivider = kids.findIndex((n) => n._classes.has('divider'));
+  const iUser = kids.findIndex((n) => n._classes.has('me'));
+  const iWork = kids.findIndex((n) => n._classes.has('work'));
+  const iMsg = kids.findIndex((n) => n._classes.has('assistant'));
+  ok('折叠卡在这一轮的提问之后', iWork > iUser && iWork > iDivider, 'user=' + iUser + ' work=' + iWork);
+  ok('折叠卡排在回答正文之前（先看过程，再看回答）', iWork < iMsg, 'work=' + iWork + ' msg=' + iMsg);
+
+  // ---- 9. 没有工作内容的轮次不留空卡 ----
+  ev('turn/start', 8, { turn: 2 });
+  await tick();
+  ev('assistant/message', 9, { role: 'assistant', blocks: [{ type: 'text', text: '不用动手，直接答' }] });
+  await tick();
+  ev('turn/end', 10, { turn: 2, reason: 'completed' });
+  await tick();
+  eq('没用工具、没思考的轮次不留空卡', findAll(stream, 'work').length, 1);
+  eq('那张卡还是第一轮的', findAll(stream, 'work')[0] === work5, true);
+
+  // ---- 10. 快照重建：历史轮次收起，正在跑的那轮展开 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 20, time: NOW - 9000, data: { turn: 5 } },
+    { type: 'user/message', seq: 21, time: NOW - 8900, data: { role: 'user', blocks: [{ type: 'text', text: '历史那一轮' }] } },
+    { type: 'assistant/message', seq: 22, time: NOW - 8800, data: { role: 'assistant', blocks: [{ type: 'reasoning', text: '历史思考' }, { type: 'text', text: '历史回答' }] } },
+    { type: 'tool/call', seq: 23, time: NOW - 8700, data: { callId: 'h1', name: 'edit_file', args: '{"path":"b.js"}' } },
+    { type: 'turn/end', seq: 24, time: NOW - 8600, data: { turn: 5, reason: 'completed' } },
+    { type: 'turn/start', seq: 25, time: NOW - 8500, data: { turn: 6 } },
+    { type: 'user/message', seq: 26, time: NOW - 8400, data: { role: 'user', blocks: [{ type: 'text', text: '正在跑的那一轮' }] } },
+    { type: 'assistant/message', seq: 27, time: NOW - 8300, data: { role: 'assistant', blocks: [{ type: 'reasoning', text: '正在想的' }, { type: 'text', text: '先说着' }] } }
+  ], 27));
+  await tick();
+  const snapFolds = findAll(stream, 'work');
+  eq('两轮各一张卡', snapFolds.length, 2);
+  eq('历史那一轮收起来', snapFolds[0].open, false);
+  eq('历史思考在里面', findAll(snapFolds[0], 'work-reason')[0].textContent.indexOf('历史思考') !== -1, true);
+  eq('历史命令也在里面', findAll(snapFolds[0], 'tool-args').length, 1);
+  eq('正在跑的那一轮展开', snapFolds[1].open, true);
 }
 
 function summary() {

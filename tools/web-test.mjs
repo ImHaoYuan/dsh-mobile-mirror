@@ -715,6 +715,21 @@ has('滚动时高亮跟着走', code, 'updateRailActive()')
 has('实时追加消息后重排刻度（防抖）', code, 'function scheduleRail()')
 has('补历史后重排刻度', code, 'el.scrollTop = beforeTop + delta;\n    state.stick = false;\n    buildRail();')
 
+// 工作过程：一轮里的"思考 + 命令"统一折叠
+has('CSS 有工作过程正文区', css, '.work-body {')
+has('CSS 有工作过程里的思考小节', css, '.work-reason {')
+has('CSS 里工作过程的标题用次级前景色', css, '.work-label { flex:0 0 auto; color:var(--fg-soft); }')
+has('思考不再套第二层折叠（手机上难点）', css, '.work-reason .reason-body { padding:0; max-height:40vh; }')
+has('轮次开始备好折叠卡', code, 'function openWorkFold(anchor)')
+has('第一件工作才挂进流里（不留空卡）', code, 'function attachWork()')
+has('轮次结束把过程收起来', code, 'function closeWorkFold()')
+has('记一件工作内容', code, 'function bumpWork()')
+has('思考用普通 div 而不是嵌套 details', code, "box.className = 'work-reason';")
+has('有工作过程卡时思考收进去', code, 'if (opts.workBody) {')
+has('工具调用也收进同一张卡', code, "var intoWork = !!state.work && (type === 'tool/call' || type === 'tool/result');")
+has('助手正文仍留在消息里', code, 'renderBlocksInto(wrap.body, blocks, { workBody: state.work ? state.work.body : null });')
+has('回答结束（turn/end）就收起工作过程', code, 'closeWorkFold();\n    state.activeTurn = null;')
+
 // 转场名与 backdrop-filter 不能落在同一个元素上。
 // 按 CSS View Transitions 规范 §2.1.1，view-transition-name 不是 none 的元素
 // （**任何时候**，不只在转场期间）会形成一个 backdrop root —— 让带 backdrop-filter
