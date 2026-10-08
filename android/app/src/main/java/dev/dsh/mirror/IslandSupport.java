@@ -12,10 +12,14 @@ import org.json.JSONObject;
 /**
  * 小米超级岛（焦点通知）支持。
  *
- * <p>键名与 JSON 结构全部来自真实参考实现，不是推测：
- * 第三方开源项目 ABK（https://github.com/xingguangcuican6666/ABK）的
- * {@code app/src/main/java/com/abk/kernel/utils/NotificationUtils.kt}（418 行）。
- * 详见 {@code docs/apk-plan.md} §A3。
+ * <p><b>这里取的是「接口事实」，不是别人的代码。</b> 两个 extras 的键名、{@code param_v2}
+ * 的字段名与层级，都是 HyperOS 焦点通知的接口本身 —— 任何想上岛的实现都得写成同一套键名，
+ * 写错系统就静默丢弃。这套键名的公开出处是第三方开源项目 ABK
+ * （https://github.com/xingguangcuican6666/ABK，GPL-3.0）的
+ * {@code app/src/main/java/com/abk/kernel/utils/NotificationUtils.kt}：本项目**只核对了
+ * 键名与层级这类事实**，实现是独立编写的 Java，未使用其代码。
+ * 协议整理与逐条出处见 {@code docs/apk-plan.md} §A3，许可声明见仓库根目录
+ * {@code THIRD_PARTY_NOTICES.md}。
  *
  * <p><b>核心约束：超级岛是「通知」的渲染目标，不是界面渲染方式。</b>
  * 所以这里只碰 {@link Notification}，不碰 WebView、不碰网页资源。
@@ -35,8 +39,14 @@ final class IslandSupport {
     /** {@code pics} 里的键名；JSON 的 {@code pic} / {@code picDark} 引用它。 */
     private static final String PIC_KEY = "miui.focus.pic_icon";
 
-    /** 参考实现里进度条"未达到"部分的颜色，逐字照抄。 */
-    private static final String COLOR_PROGRESS_UNREACHED = "#1A000000";
+    /**
+     * 进度环"未达到"那一段的轨道色：半透明黑。
+     *
+     * <p>纯外观取值，本项目自己定的 —— 环只来自 {@code bigIslandArea.progressTextInfo}
+     * 里的确定值进度弧，而 {@link IslandMonitor} 的进度恒为满格，这一段宽度为 0、
+     * 实际不可见。留一个合理值只为字段齐全（字段缺了系统会整条丢弃）。
+     */
+    private static final String COLOR_PROGRESS_UNREACHED = "#24000000";
 
     // ------------------------------------------------------------------
     // JSON
@@ -80,7 +90,8 @@ final class IslandSupport {
      * 0.1.2 补齐全字段后 C 和 E 都出岛了。
      * <b>那些字段不是装饰，是岛渲染的必需输入。</b>
      *
-     * <p>字段名与层级逐条对照参考实现的 {@code NotificationUtils.kt:306-382}，并用脚本核对过：
+     * <p>字段名与层级逐条对照 ABK 的 {@code NotificationUtils.kt:306-382}（只核这类接口事实），
+     * 并用脚本核对过：
      * <b>35 个字段名、36 条树形路径，双向零差异</b>。
      *
      * @return JSON 字符串；构造失败返回 null（调用方应放弃上岛，但通知照发）
@@ -180,23 +191,59 @@ final class IslandSupport {
         }
     }
 
+    /** 截断后缀。3 个 ASCII 点，保持系统侧已习惯的显示宽度。 */
+    private static final String TAIL = "...";
+
     /**
-     * 折叠空白后截断；超出加 {@code ...}。
+     * 折叠空白 + 截断，一趟扫描做完；超长时用 {@code ...} 收尾。
      *
-     * <p>逐字对齐参考实现的 {@code cleanIslandText}：
-     * {@code trim().replace(Regex("\\s+"), " ")}，超长则取 {@code maxLength - 3} 个字符、
-     * <b>去掉尾部空白</b>再加 {@code ...}。
-     * 那个 {@code trimEnd} 不是可选项 —— 少了它会产出 {@code "abc ..."} 这种双空格。
+     * <p>规则：连续空白折成一个空格、首尾空白丢掉；折完不超过 {@code max} 就原样返回；
+     * 否则正文只留 {@code max - 3} 个字符（长度按 UTF-16 计，与系统侧上限同口径），
+     * 去掉截断处的尾随空格，再接 {@code ...}。
+     *
+     * <p>边扫边写、不造中间字符串：省一次分配，也顺带保证切点不会落在代理对中间
+     * （会话标题里的 emoji 不会被劈成半个字符）。空白只有在后面确实还跟着非空白时
+     * 才落笔，所以结果永远不会带尾随空格。
+     *
+     * @param max 含 {@code ...} 在内的上限；小于 1 时按 1 处理
      */
     private static String clip(String s, int max) {
         if (s == null) return "";
-        String cleaned = s.trim().replaceAll("\\s+", " ");
-        if (cleaned.length() <= max) return cleaned;
+        int budget = Math.max(1, max);
 
-        int take = Math.min(Math.max(1, max - 3), cleaned.length());
-        int end = take;
-        while (end > 0 && Character.isWhitespace(cleaned.charAt(end - 1))) end--;
-        return cleaned.substring(0, end) + "...";
+        StringBuilder out = new StringBuilder(Math.min(budget, s.length()));
+        boolean pendingSpace = false;
+        boolean clipped = false;
+
+        for (int i = 0; i < s.length(); ) {
+            int cp = s.codePointAt(i);
+            i += Character.charCount(cp);
+
+            if (Character.isWhitespace(cp)) {
+                pendingSpace = out.length() > 0;
+                continue;
+            }
+            int width = Character.charCount(cp);
+            int need = (pendingSpace ? 1 : 0) + width;
+            if (out.length() + need > budget) {
+                clipped = true;
+                break;
+            }
+            if (pendingSpace) out.append(' ');
+            pendingSpace = false;
+            out.appendCodePoint(cp);
+        }
+        if (!clipped) return out.toString();
+
+        // 超长：正文额度收紧到 budget - TAIL.length()，别切在半个代理对上
+        out.setLength(Math.max(0, budget - TAIL.length()));
+        while (out.length() > 0 && out.charAt(out.length() - 1) == ' ') {
+            out.setLength(out.length() - 1);
+        }
+        if (out.length() > 0 && Character.isHighSurrogate(out.charAt(out.length() - 1))) {
+            out.setLength(out.length() - 1);
+        }
+        return out.append(TAIL).toString();
     }
 
     // ------------------------------------------------------------------

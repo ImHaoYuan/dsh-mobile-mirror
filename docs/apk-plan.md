@@ -433,9 +433,11 @@ sdk.dir=D\:\\AndroidStudio\\SDK
 
 ### A3 —— 小米超级岛（焦点通知）
 
-> 参考实现：[`github.com/xingguangcuican6666/ABK`](https://github.com/xingguangcuican6666/ABK)，
-> 完整实现集中在 `app/src/main/java/com/abk/kernel/utils/NotificationUtils.kt`（418 行）。
-> **下面的键名与结构都来自这份代码，不是推测。**
+> 协议出处：[`github.com/xingguangcuican6666/ABK`](https://github.com/xingguangcuican6666/ABK)（GPL-3.0），
+> 相关实现集中在 `app/src/main/java/com/abk/kernel/utils/NotificationUtils.kt`（418 行）。
+> **下面的键名与结构取自该文件 —— 它们是 HyperOS 焦点通知的接口事实，不是推测**。
+> 本项目只核对这些键名与层级，代码为独立编写的 Java，未使用其代码
+> （声明见仓库根目录 `THIRD_PARTY_NOTICES.md`）。
 
 #### A3.1 结论：不需要原生客户端
 
@@ -448,25 +450,22 @@ sdk.dir=D\:\\AndroidStudio\\SDK
 **它引的 `NotificationCompat` 只是书写方便，可以换成原生 `Notification.Builder`（API 26+）**
 —— 零依赖的约束不受影响。
 
-#### A3.2 四个门槛（必须全过，否则静默放弃）
+#### A3.2 四个门槛（当时反推出来的启发式）
 
-```java
-isLikelyXiaomiDevice()          // Build.MANUFACTURER / BRAND 含 xiaomi|redmi|poco
-&& isSupportIslandSystemProperty()   // 反射读 SystemProperties.getBoolean("persist.sys.feature.island", false)
-&& isOs3FocusProtocol(context)       // Settings.System.getInt(cr, "notification_focus_protocol", 0) == 3
-&& hasMiuiFocusPermission(context)   // 见下
-```
+> ⚠️ **这四条是第三方实现里出现过的启发式，不是官方接口说明**；任何一条误判，都会把
+> 本来能用的岛静默关掉。1.1 起本项目**不再检查它们**（理由见 `IslandSupport.attach` 的注释），
+> 这里只留作协议备查。
 
-权限检查是**运行时查询**，不是向小米申请白名单：
+| # | 判据 | 取值 |
+|---|---|---|
+| ① | 厂商 / 品牌 | `Build.MANUFACTURER`、`Build.BRAND` 含 `xiaomi` / `redmi` / `poco` |
+| ② | 系统属性（非公开 API，需反射读） | `persist.sys.feature.island` 为 true |
+| ③ | 系统设置 | `notification_focus_protocol` 恰为 `3`（即只支持 OS3 协议） |
+| ④ | 焦点通知权限 | 见下 |
 
-```java
-Bundle args = new Bundle();
-args.putString("package", context.getPackageName());
-Bundle r = context.getContentResolver().call(
-        Uri.parse("content://miui.statusbar.notification.public"),
-        "canShowFocus", null, args);
-boolean ok = r != null && r.getBoolean("canShowFocus", false);
-```
+权限是**运行时按包名查询**，不是向小米申请白名单：向 ContentProvider
+`content://miui.statusbar.notification.public` 调 `canShowFocus`，入参带本包名，
+返回的 Bundle 里 `canShowFocus` 为 true 即通过。
 
 > ✅ **这一条解答了之前的疑问**：第三方 App 能否上岛由系统按包名裁定，
 > 不需要开发者资质审核。用户需在 HyperOS 设置里为本 App 打开「焦点通知」。
@@ -522,10 +521,10 @@ JSON 里的 `pic` / `picDark` 填的就是 `pics` 里的那个键名。
 } }
 ```
 
-- 颜色是 `#RRGGBB` 或 `#AARRGGBB`（如 `#1A000000` = 10% 黑）
+- 颜色是 `#RRGGBB` 或 `#AARRGGBB`（如 `#24000000` = 15% 黑）
 - 文本先折叠空白再截断：**title ≤ 24、content ≤ 48、ticker ≤ 32**，超出加 `...`
 
-#### A3.5 我们的适配点（与参考实现的差异）
+#### A3.5 我们的适配点（与那份实现的差异）
 
 参考实现是**编译进度条**（有 0–100%），我们的两个场景**都没有百分比**：
 
@@ -540,9 +539,12 @@ JSON 里的 `pic` / `picDark` 填的就是 `pics` 里的那个键名。
 
 #### A3.6 失败安全（硬要求）
 
-`attachMiuiIsland()` 必须在**任何一步不满足时静默返回**，通知照常以普通形式发出。
-参考实现就是这么做的（`if (!canUseMiuiSuperIsland(context)) return`）。
+挂 extras 这一步**绝不能影响通知本身**：JSON 构造失败、`extras` 为 null、系统不认这套字段，
+结果都只是"这条通知没有岛"，通知照常以普通形式发出。
 **绝不能因为超级岛不可用而丢通知。**
+
+1.1 起也不再预先检查 A3.2 那四条门槛 —— 理由见 `IslandSupport.attach` 的注释：
+门槛是反推的启发式，误判会把本来能用的岛静默关掉；不设门槛最坏只是多挂两个被忽略的 extras。
 
 #### A3.7 施工顺序
 
@@ -591,11 +593,11 @@ JSON 里的 `pic` / `picDark` 填的就是 `pics` 里的那个键名。
 | 视图切换 `setView('list'|'chat')` | `lib/web/app.js:1133` |
 | 已验证的 Gradle/AGP 组合 | `android/build.gradle.kts`（AGP 8.5.2）、`android/gradle/wrapper/gradle-wrapper.properties`（Gradle 8.9） |
 
-### 超级岛（A3）参考实现
+### 超级岛（A3）协议出处
 
 | 事实 | 位置 |
 |---|---|
-| **参考项目** | [`github.com/xingguangcuican6666/ABK`](https://github.com/xingguangcuican6666/ABK)（第三方开源项目，仅作协议参考，**未复制其代码**） |
+| **参考项目** | [`github.com/xingguangcuican6666/ABK`](https://github.com/xingguangcuican6666/ABK)（第三方开源项目，GPL-3.0）。**只取键名与结构这类接口事实，实现为独立编写的 Java，未使用其代码**；声明见 `THIRD_PARTY_NOTICES.md` |
 | 超级岛完整实现（418 行，全仓仅此一处） | 上述仓库的 `app/src/main/java/com/abk/kernel/utils/NotificationUtils.kt` |
 | 四个门槛 `canUseMiuiSuperIsland` | 同上 `:267-272` |
 | 权限查询 `canShowFocus` | 同上 `:295-304` |
@@ -604,5 +606,5 @@ JSON 里的 `pic` / `picDark` 填的就是 `pics` 里的那个键名。
 | JSON 构造 `buildMiuiBuildIslandParams` | 同上 `:306-382` |
 | 文本截断规则 | 同上 `:384-388`（title 24 / content 48 / ticker 32） |
 
-> ⚠️ 参考项目是**别人写的**，只作格式参照。里面的业务逻辑（内核编译进度）
-> 与我们无关，**不要照抄**，只取 extras 键名与 JSON 结构。
+> ⚠️ 参考项目是**别人写的**（GPL-3.0），只作协议事实的对照。里面的业务逻辑（内核编译进度）
+> 与我们无关，**不要引入它的任何代码**，只取 extras 键名与 JSON 结构这类接口事实。

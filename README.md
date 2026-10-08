@@ -339,6 +339,7 @@ dsh-mobile-mirror/
 ├── docs/                   design.md（设计说明）、apk-plan.md（APK 方案与施工记录）
 ├── cordis.patch.yml        DSH bundle patch
 ├── package.json
+├── THIRD_PARTY_NOTICES.md  第三方声明（字体、协议事实出处）
 └── LICENSE
 ```
 
@@ -350,8 +351,10 @@ dsh-mobile-mirror/
 
 - 内嵌字体 **JetBrains Mono**（Regular + Bold），SIL Open Font License 1.1，
   许可证全文见 `lib/web/fonts/OFL.txt`。
-- 小米超级岛的通知 extras 协议参考了开源项目 [ABK](https://github.com/xingguangcuican6666/ABK)，
-  **仅作协议参考，未复制其代码**。
+- 小米超级岛（焦点通知）的 extras 键名与 JSON 结构，取自开源项目
+  [ABK](https://github.com/xingguangcuican6666/ABK)（GPL-3.0）的实现记录 —— 这些是
+  HyperOS 的**接口事实**（写错系统就静默丢弃），不是它的代码。本项目为独立编写的 Java 实现，
+  **未使用其任何代码**；完整声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 - 界面借用了 DeepSeek 网页端的**组件语言**（助手消息不带气泡、代码块头部条等），
   未使用其商标、图标或文案。
 
