@@ -8,7 +8,7 @@
 DSH 现有 webServer 的 host / port / 既有行为一律不动（只额外挂一条**只读、仅回环**的
 JSON 路由给桌面设置面板取地址）。
 
-> 当前版本 **1.1**。
+> 当前版本 **1.2**。**网页侧功能随主机更新，无需重装 APK**（APK 仍是 1.1 / `versionCode 8`）。
 > 仅测试运行DSH Windows桌面端0.2.0-rc.2与HyperOS3
 
 ---
@@ -25,7 +25,11 @@ JSON 路由给桌面设置面板取地址）。
 | 停止当前轮 | 需二次确认 |
 | 新建会话 | 从工作区清单里选，或手输任意绝对路径（一个会话都没有的新文件夹也能开） |
 | 模型 / 模式 | 切换会话的模型（含推理档位）与模式（标准 / PTC / 极简 / 创造 + 自建） |
-| 回答提问 | 手机与桌面谁先答谁生效；桌面 GUI 没开时手机照样能答 |
+| 回答提问 | 手机与桌面谁先答谁生效；桌面 GUI 没开时手机照样能答。手机看着卡片期间**接管等待**（`ask_user_question` 默认只等 120 秒，没人接管时到点宿主会放行模型，之后再作答会变成"迟到回复"：答案被暂存、agent 又跑一轮）；切后台 / 离开聊天页 / 关掉页面立刻放开，不会把 agent 卡住 |
+| 快捷跳转 | 右侧刻度条只标**我自己说过的话**：说过两句以上才出现，点一下跳过去、按住先看那句原话、滚动时高亮当前那句（长会话里回头找自己说的话） |
+| 收起提问卡片 | 卡片紧贴输入框上方，不收起来会一直挤占会话消息；收起后只剩标题 + 还剩几题，换新问题自动展开 |
+| 工作过程折叠 | 一轮里的**思考与命令**（read / write / edit 这些工具调用）收进同一张「工作过程」折叠卡：正在跑时展开、回答结束自动折起，标题上留着件数 |
+| 长内容不截断 | 正文 / 思考上限 100000 字符、工具参数 20000 字符、请求体 1MB —— 长回答与长粘贴不再被截掉 |
 | Markdown | 标题 / 列表 / 表格 / 任务列表 / 引用 / 代码块（带语言名与复制键），手写实现 |
 | 主题 | 深浅两套跟随系统；内嵌 JetBrains Mono（**只用于代码**） |
 | 干净的消息流 | AGENTS.md、运行时上下文、技能目录等**注入内容在宿主侧就被丢掉**，手机上只剩真人说的话 |
@@ -239,19 +243,19 @@ sdk.dir=D\:\\AndroidStudio\\SDK
 ## 开发与测试
 
 ```bash
-npm test     # 一次跑完八套，共 1589 项
+npm test     # 一次跑完八套，共 1777 项
 ```
 
 | 命令 | 覆盖 | 项数 |
 |---|---|---|
 | `node tools/cert-test.mjs` | 证书层（含真实 TLS 握手） | 27 |
 | `node tools/smoke.mjs` | HTTPS + 认证集成 | 32 |
-| `node tools/mirror-test.mjs` | 数据层 + 全部路由（含 P3 / P4 / P5） | 478 |
+| `node tools/mirror-test.mjs` | 数据层 + 全部路由（含 P3 / P4 / P5 / 提问认领） | 521 |
 | `node tools/host-test.mjs` | 入口层：真跑一遍 `apply()`，含桌面面板路由 | 83 |
-| `node tools/web-test.mjs` | 页面静态资源断言 + 纯函数 + 接线 + 客户端 bundle | 369 |
+| `node tools/web-test.mjs` | 页面静态资源断言 + 纯函数 + 接线 + 客户端 bundle | 433 |
 | `node tools/client-test.mjs` | 桌面设置面板：bundle 格式、槽注册、字段名耦合 | 61 |
-| `node tools/web-pure-test.cjs` | `app.js` 导出的纯函数（重点是 Markdown） | 188 |
-| `node tools/web-dom-test.cjs` | 用 fake DOM 真跑一遍页面行为 | 351 |
+| `node tools/web-pure-test.cjs` | `app.js` 导出的纯函数（重点是 Markdown） | 189 |
+| `node tools/web-dom-test.cjs` | 用 fake DOM 真跑一遍页面行为 | 431 |
 
 八套都**不需要启动 DSH**，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
 每套覆盖什么、抓到过什么 bug，见 [docs/design.md](docs/design.md#自测)。

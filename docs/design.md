@@ -49,6 +49,7 @@ DSH 自己的 Web 服务监听 `127.0.0.1:19387`（仅本机）。把它的 `hos
 | `POST /api/preset` | 需登录 + JSON | 切换会话的模式（仅未开跑的会话可换） |
 | `GET /api/questions?id=` | 需登录 | 待回答的提问（给列表页角标用） |
 | `POST /api/answer` | 需登录 + JSON | 回答一个提问 |
+| `POST /api/questions/hold` | 需登录 + JSON | 认领 / 释放这次限时提问的等待（手机看着卡片时别让宿主超时） |
 | `GET /api/questions/stream` | 需登录 | **SSE**：任何会话出现提问都推给手机 |
 
 回环判定看 **socket 的真实来源地址**，不看 Host 头，所以伪造 Host 绕不过去。
@@ -346,9 +347,19 @@ because that is a creation fact."。会话**在还是空白的时候可以换模
 | 400 | `missing-question-id` / `bad-answers` / `empty-answer` / `answer-too-long` | 参数问题 |
 | 404 | `question-not-found` | 已经答过、已被桌面端回答、或已经过期 |
 
-**怎么接上去的。** `userQuestions.answer()` 这条路走不通：`ask_user_question` 是**无超时**的
-（schema 里只有 `questions`，没有 `timeout`），所以 DSH 从不把它登记成"活动中的提问"，
-`answer()` 会直接返回 `false`。改用 Host 侧的 `user-questions/request` waterfall：
+**它是限时提问 —— 这一点决定了整个设计。** 工具 schema 里确实没有 `timeout` 字段，
+但 Host 侧用 `registerTimedAskUser(ctx, timeout = 120)` 把它登记成**限时提问（默认 120 秒）**，
+并把它放进"活动中的提问"表里。于是：
+
+- 有任何回答界面**认领**这次等待（`claims.size > 0`）时，宿主不跑自己的倒计时，
+  钟归认领方管（`TimedQuestionWait.schedule()` 在有认领时直接返回）；
+- **没有任何人认领**时，到点 `close(timeout)`：`askTimed` 返回 `{ pending: true, callId }`，
+  工具把 `pending` 交给模型，问题进入 `continued`。此后作答走的是另一条路 ——
+  `answer()` 把回复 steer 成一条 `user-question-reply` 用户消息（官方文档的说法是
+  "排队到 agent 收下为止"，用户看到的就是**答案被暂存**），并**创建新的用户轮次**
+  （用户看到的就是 **agent 又回答一遍**）。
+
+**怎么接上去的。** 用 Host 侧的 `user-questions/request` waterfall：
 
 ```
 root.on('user-questions/request', answerer, { prepend: true })
@@ -359,12 +370,33 @@ root.on('user-questions/request', answerer, { prepend: true })
   所以这样能插到最前。
 - answerer 会**先同步调用 `next()`**（让桌面端的提问卡片照常出现），再
   `Promise.race([手机答案, 桌面答案])`：手机先答就用手机的，桌面先答就把手机侧的卡片收起来。
+  不走 `userQuestions.answer()` 的原因也在这里：answerer 需要同时保住桌面那条路，
+  并在桌面答完之后把手机侧的卡片收起来。
 - 桌面那条路报错（GUI 没开）而手机还挂着时，继续等手机 —— 这正是这个功能存在的意义。
 - 注册失败不影响任何现有功能：问题照常只在桌面回答，启动日志会明确写出来。
 
+**认领（`POST /api/questions/hold`）。** 手机不认领的话，上面那条"到点 → 暂存 → 又跑一轮"
+的链子就会在"手机上慢慢答"时触发 —— 而这恰恰是手机端的常见用法。所以：
+
+```
+// POST /api/questions/hold  { "questionId": "q-1", "hold": true }
+// → 200 { "ok": true, "held": true, "claimed": true }
+```
+
+- 认领走官方的 `attachWait(agent, callId, signal)`：拿它返回的异步生成器，
+  第一帧就是 `{ remainingMs }`（顺便推给手机），然后一直挂着直到被释放；
+  用 `agent.ctx.get('userQuestions')` 解析服务（提问方就是从那个作用域调用 `askTimed` 的），
+  `root.get` 只作兜底。拿不到服务就不认领，行为同改造前。
+- **只有"聊天页 + 卡片展开 + 页面在前台"三个条件同时成立才认领**；切后台、离开聊天页、
+  收起卡片、卸载页面都立刻放开 —— 否则 agent 会一直等一个没人看的卡片。
+- 兜底：最后一个问题流订阅者断开后留 **3 秒宽限**再释放（手机页面刷新不该丢掉提问）。
+- 认领是否真的生效，以服务端随后推的 `{ "e": "question-hold", "d": { held, remainingMs } }`
+  帧为准；接口返回的 `claimed` 只表示"开始尝试认领"，界面不拿它当结果。
+- 认领期间**不显示倒计时**：钟归手机管，此时显示倒计时只会误导（倒计时归零也不会超时）。
+
 `GET /api/questions/stream` 是一条独立的 SSE（与 `/api/follow` 分开，因为它不绑定某个会话）：
-连上时先补发一遍当前所有待答问题，之后实时推送 `{ "e": "question", … }` 与
-`{ "e": "question-settled", … }`，另有 20 秒一次的心跳注释行。
+连上时先补发一遍当前所有待答问题，之后实时推送 `{ "e": "question", … }`、
+`{ "e": "question-settled", … }` 与 `{ "e": "question-hold", … }`，另有 20 秒一次的心跳注释行。
 
 ---
 
@@ -422,7 +454,7 @@ root.on('user-questions/request', answerer, { prepend: true })
 ## 自测
 
 ```bash
-npm test    # 一次跑完下面八套，共 1589 项
+npm test    # 一次跑完下面八套，共 1777 项
 ```
 
 八套都不需要启动 DSH，使用临时目录里的证书与配置，不碰 `$DSH_HOME`。
@@ -437,7 +469,9 @@ npm test    # 一次跑完下面八套，共 1589 项
   以及写操作——校验、幂等重放优先于节流、节流 429、`enablePrompt=false` 全拒，
   还有 P3 的模型目录缓存、切换模型/模式、提问中心与 answerer 竞速、问题流 SSE，
   以及 P4 的新建会话与内嵌字体（字体那条用**原始字节**比对，`req()` 会按 utf8 转字符串，
-  读坏了也看不出来）、P5 的注入消息过滤（连"缺 `source` 时必须保留"的 fail-safe 方向都钉住了）。
+  读坏了也看不出来）、P5 的注入消息过滤（连"缺 `source` 时必须保留"的 fail-safe 方向都钉住了）、
+  1.2 的长内容上限与限时提问认领（认领时机 / 释放时机 / 宽限期 / 认领实现抛错都各有一组用例，
+  认领实现是**注入的假 attachWait**，不需要真宿主）。
 - `host-test.mjs` 用一个极简的 Cordis 上下文替身**真的调用 `lib/index.js` 的 `apply()`**
   （真的起服务、真的登录），是唯一覆盖入口接线的一套。它按 Cordis 的 waterfall 语义
   手工组合处理器，正面验证"手机作答后 waterfall 拿到的就是手机的答案"，
@@ -453,6 +487,9 @@ npm test    # 一次跑完下面八套，共 1589 项
   `{ ok, value }` 而不是解析结果，把包装对象当帧传下去会让提问帧被静默丢弃。
   场景 F 还**故意**把旧宿主才会发的 `system/message` 灌进长连接，验证"新页面 + 旧宿主"
   这个半更新状态下也不会又冒出一堆英文。
+  1.2 起这个 fake DOM 还能**派发 `visibilitychange` / `pagehide`**（提问认领要靠它们决定
+  放不放开），并按"每个可见直接子节点 100px"给出 `offsetTop` / `scrollHeight`
+  （刻度条要按消息在流里的位置算比例）；场景 L / M 分别真跑一遍刻度条与「工作过程」折叠。
 - `web-test.mjs` 的第 ⑩ 节专门盯 `lib/client.js`（桌面设置面板）：bundle 包裹格式、
   `exports.inject`、槽注册的 id / order / label，以及**它与主机侧路由路径逐字一致**。
   这些都属于"写错了不报错、只会安静地少一页面板或显示『读不到主机信息』"的东西，
@@ -596,6 +633,18 @@ DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / 
 - **超级岛 APK（1.1）**：小米澎湃 OS 超级岛上的常驻状态 —— 后台聚合监控（有会话在跑就
   上岛，跑完显示绿色环 + 「已完成」）、岛上显示当前会话标题、出现提问时岛变色。
   计划与验证记录见 [apk-plan.md](apk-plan.md)，源码在 [`android/`](../android/)。
-- **P7**：二维码配对、桌面内配对页、多网卡地址选择。
+- **P7（1.2）**：网页侧三件事 ——
+  ①**右侧快捷跳转刻度条**：只标"我自己说过的话"，两句以上常驻，点一下跳过去、
+  按住先看原话（助手消息不打刻度，它每轮说一大段，全标等于没标）；
+  ②**提问卡片可收起**：卡片不再一直挤占输入框上方那块地，换新问题自动展开；
+  ③**「工作过程」统一折叠**：一轮里的思考与命令（工具调用）收进同一张折叠卡，
+  正在跑时展开、`turn/end` 一到自动折起。
+  同一版还修了两件事：长内容上限（正文/思考 4000 → 100000 字符、请求体 64KB → 1MB）
+  与**限时提问的认领**（见下）。
+- **限时提问的认领（1.2）**：`ask_user_question` 默认只等 120 秒，没有任何回答界面
+  认领时到点宿主就放行模型，之后再作答会走"迟到回复"——答案被暂存、agent 又跑一轮。
+  手机看着卡片期间用 `ctx.userQuestions.attachWait` 认领，钟归手机管；
+  切后台 / 离开聊天页 / 卸载页面 / 最后一个问题流订阅者断开（留 3 秒宽限）都会放开认领。
+- **P8**：二维码配对、桌面内配对页、多网卡地址选择。
 - **之后可做**：手机贴图（要走 `admitPromptContent` 准入管道）、
   会话重命名（`rename`）、消息队列管理（`updateQueue`）、附件下载端点。
