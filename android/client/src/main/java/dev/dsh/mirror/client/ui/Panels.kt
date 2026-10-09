@@ -37,6 +37,7 @@ import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.net.CreateResult
 import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.net.Workspace
+import dev.dsh.mirror.client.theme.LocalDshFonts
 import dev.dsh.mirror.client.theme.Dsh
 import kotlinx.coroutines.launch
 
@@ -66,7 +67,7 @@ fun DrawerPanel(title: String, onBack: () -> Unit, content: @Composable ColumnSc
         ) {
             // ← 是 U+2190，JetBrains Mono 里有这个字形，不靠设备系统字体兜底
             DshGlyphButton("←", onBack, fontSize = 20f)
-            Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+            Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
         }
         Column(
             modifier = Modifier
@@ -104,7 +105,7 @@ fun PanelOption(label: String, desc: String, enabled: Boolean = true, onClick: (
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        Text(label, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+        Text(label, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
         if (desc.isNotEmpty()) {
             Text(desc, fontSize = 12.5f.sp, lineHeight = 20.sp, color = Dsh.ListDim)
         }
@@ -142,7 +143,7 @@ fun MorePanel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(tDetail, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+                Text(tDetail, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
                 Spacer(Modifier.height(2.dp))
                 Text(tDetailNote, fontSize = 12.5f.sp, lineHeight = 20.sp, color = Dsh.ListDim)
             }

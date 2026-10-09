@@ -1,5 +1,15 @@
 package dev.dsh.mirror.client.ui
 
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import dev.dsh.mirror.ServerPrefs
+import dev.dsh.mirror.client.net.Download
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
 import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -94,6 +104,53 @@ fun ChatScreen(
     LaunchedEffect(model.expired) { if (model.expired) onExpired() }
     BackHandler { onBack() }
 
+    // —— 下载文件（0.10）——
+    // 用户指定的交互：点一次只**问**，再点才真的下；存进系统的「下载」目录。
+    var dl by remember(target.id) { mutableStateOf<Dl?>(null) }
+    val startDownload: (String, String) -> Unit = { path, name ->
+        dl = Dl.Busy(name, 0, -1)
+        scope.launch {
+            val prefs = ServerPrefs(app)
+            var lastPct = -1
+            val res = withContext(Dispatchers.IO) {
+                Download.run(app, prefs, target.id, path) { done, total ->
+                    if (total > 0) {
+                        val pct = (done * 100 / total).toInt()
+                        // 每 1% 才回主线程刷一次，别把进度刷成刷屏
+                        if (pct != lastPct) {
+                            lastPct = pct
+                            scope.launch { dl = Dl.Busy(name, done, total) }
+                        }
+                    }
+                }
+            }
+            dl = when (res) {
+                is Download.Result.Ok -> Dl.Done(res.name, res.uri)
+                is Download.Result.Fail -> Dl.Fail(res.message)
+            }
+        }
+    }
+    val openDownload: (Uri) -> Unit = { uri ->
+        dl = null
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, app.contentResolver.getType(uri) ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            app.startActivity(intent)
+        } catch (_: Exception) {
+            Toast.makeText(app, app.getString(R.string.dl_no_app), Toast.LENGTH_SHORT).show()
+        }
+    }
+    dl?.let { state ->
+        DownloadDialog(
+            state = state,
+            onCancel = { dl = null },
+            onStart = startDownload,
+            onOpen = openDownload,
+        )
+    }
+
     Column(modifier = Modifier.fillMaxSize().background(Dsh.BgPage)) {
         ChatTopBar(model, onBack)
 
@@ -125,7 +182,7 @@ fun ChatScreen(
                 // key 里带上行的类型：一条 turn/end 可能同时产出「工作过程」与「系统提示」两条，
                 // 只按 seq 做 key 会撞（LazyColumn 撞 key 会崩）
                 itemsIndexed(shown, key = { _, r -> "s" + r.seq + r.javaClass.simpleName }) { _, row ->
-                    ChatRowView(row, detail, running = false)
+                    ChatRowView(row, detail, running = false, onFile = { path -> dl = Dl.Ask(path, baseNameOf(path)) })
                 }
                 if (model.loadingOlder) {
                     item(key = "older") {
@@ -221,7 +278,7 @@ private fun ChatTopBar(model: ChatModel, onBack: () -> Unit) {
             Text(
                 model.title.ifEmpty { Sessions.shortPath(model.cwd) },
                 fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold,
                 color = Dsh.ListFg,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -355,6 +412,73 @@ private fun ChatComposer(model: ChatModel, scope: CoroutineScope) {
                 Text("↑", fontSize = 16.sp, color = if (canSend) Color.White else Dsh.Placeholder)
             }
         }
+    }
+}
+
+/** 下载对话框的状态机。 */
+private sealed class Dl {
+    /** 第一次点击：只问，不下。 */
+    class Ask(val path: String, val name: String) : Dl()
+
+    /** 下载中；total 未知时给 -1。 */
+    class Busy(val name: String, val done: Long, val total: Long) : Dl()
+
+    class Done(val name: String, val uri: Uri) : Dl()
+
+    class Fail(val message: String) : Dl()
+}
+
+/** 路径最后一段当文件名（给"是否下载文件（x）？"用）。 */
+private fun baseNameOf(path: String): String =
+    path.substringAfterLast('/').substringAfterLast('\\').ifEmpty { path }
+
+@Composable
+private fun DownloadDialog(
+    state: Dl,
+    onCancel: () -> Unit,
+    onStart: (String, String) -> Unit,
+    onOpen: (Uri) -> Unit,
+) {
+    val title = stringResource(R.string.dl_title)
+    when (state) {
+        is Dl.Ask -> AlertDialog(
+            onDismissRequest = onCancel,
+            title = { Text(title) },
+            text = { Text(stringResource(R.string.dl_ask, state.name)) },
+            confirmButton = { TextButton(onClick = { onStart(state.path, state.name) }) { Text(stringResource(R.string.dl_start)) } },
+            dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.dl_cancel)) } },
+        )
+        is Dl.Busy -> AlertDialog(
+            onDismissRequest = { /* 下载中不让点外面关掉 */ },
+            title = { Text(title) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.dl_running, state.name))
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (state.total > 0) {
+                            stringResource(R.string.dl_progress, (state.done * 100 / state.total).toInt())
+                        } else {
+                            stringResource(R.string.dl_progress_unknown, state.done / 1024)
+                        },
+                    )
+                }
+            },
+            confirmButton = {},
+        )
+        is Dl.Done -> AlertDialog(
+            onDismissRequest = onCancel,
+            title = { Text(title) },
+            text = { Text(stringResource(R.string.dl_done, state.name)) },
+            confirmButton = { TextButton(onClick = { onOpen(state.uri) }) { Text(stringResource(R.string.dl_open)) } },
+            dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.dl_cancel)) } },
+        )
+        is Dl.Fail -> AlertDialog(
+            onDismissRequest = onCancel,
+            title = { Text(title) },
+            text = { Text(state.message) },
+            confirmButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.dl_ok)) } },
+        )
     }
 }
 

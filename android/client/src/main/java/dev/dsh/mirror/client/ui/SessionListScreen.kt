@@ -57,6 +57,7 @@ import dev.dsh.mirror.client.net.SessionRow
 import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.net.SessionsResult
 import dev.dsh.mirror.client.prefs.Collapse
+import dev.dsh.mirror.client.theme.LocalDshFonts
 import dev.dsh.mirror.client.theme.Dsh
 
 /**
@@ -188,7 +189,7 @@ private fun NewSessionRow(onNew: () -> Unit) {
         Text(
             stringResource(R.string.new_title),
             fontSize = 14.5f.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold,
             color = Dsh.ListFg,
         )
     }
@@ -207,7 +208,7 @@ private fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+            Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
             if (sub.isNotEmpty()) Text(sub, fontSize = 12.sp, color = Dsh.ListDim3)
         }
         DshIconButton(R.drawable.ic_refresh, onRefresh, stringResource(R.string.cd_refresh))
@@ -330,7 +331,7 @@ private fun SessionRowView(
                     row.label,
                     fontSize = 15.5f.sp,
                     lineHeight = 21.7f.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold,
                     color = Dsh.ListFg,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -386,7 +387,7 @@ private fun EmptyState(title: String, note: String) {
         modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 80.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+        Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
         Spacer(Modifier.height(6.dp))
         Text(
             note,

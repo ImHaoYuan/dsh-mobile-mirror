@@ -38,6 +38,14 @@ class ChatTarget(
  */
 class WorkStep(val name: String, val label: String, val detail: String, val isError: Boolean)
 
+/**
+ * 电脑端挂在回复结尾的一个文件（`deliverables/presented`）。
+ *
+ * @param path 电脑上的绝对路径，点一下交给下载流程。
+ * @param description 电脑端显示的那句说明（可能为空）。
+ */
+class Deliverable(val path: String, val description: String)
+
 /** 会话页里的一行。 */
 sealed class ChatRow {
     abstract val seq: Int
@@ -67,6 +75,13 @@ sealed class ChatRow {
      * 但**工作过程要留着** —— 折成一行「工作过程 · N 步」，点了能看它刚才在干什么。
      */
     class Work(override val seq: Int, val steps: List<WorkStep>, val thinkChars: Int) : ChatRow()
+
+    /**
+     * 「文件」卡：电脑端把这一轮产出的文件挂在回复结尾（`present` 工具 → `deliverables/presented`）。
+     *
+     * 与电脑端放在**同一个位置**（事件所在处，也就是那条回复之后），不是钉在屏幕底部。
+     */
+    class Files(override val seq: Int, val files: List<Deliverable>) : ChatRow()
 
     /** 系统提示行（本轮出错、被中断等）。 */
     class Notice(override val seq: Int, val text: String, val isError: Boolean) : ChatRow()
@@ -174,6 +189,13 @@ class ChatModel(
     private val workAcc = ArrayList<WorkStep>()
     /** 只有思考、没有正文的那些消息的思考字数，攒着并进工作过程。 */
     private var workThink = 0
+    /**
+     * 这一轮 [deliverables/presented] 带来的文件，攒着**等这一轮说完**再挂出去。
+     *
+     * <p>present 是工具调用，事件顺序上在总结文字**之前**；电脑端是特意把它挂到回复最末尾的。
+     * 直接按事件顺序渲染的话，文件卡会跑到总结上面去（用户报的就是这个）。
+     */
+    private val filesAcc = ArrayList<Deliverable>()
 
     fun connect(scope: CoroutineScope) {
         if (job != null) return
@@ -225,6 +247,8 @@ class ChatModel(
                         note(ev, live = false)
                         older.addAll(rowsOf(ev, live = false))
                     }
+                    // 这一页最后一轮的文件卡别漏（它的总结可能在更早的一页里）
+                    older.addAll(takeFiles(before))
                     rows = older + rows
                     hasMore = r.hasMore
                     status = ""
@@ -339,6 +363,8 @@ class ChatModel(
                 out.addAll(rowsOf(ev, live = false))
             }
         }
+        // 快照窗口的最后一轮如果有文件卡，别漏在窗口边界上
+        out.addAll(takeFiles(lastSeq))
         rows = out
         // 水位跟着快照走（不是清零）：清成 -1 会让快照里已有的 seq 之后被重复接受
         // 快照里没有"在不在跑"这个字段，靠最后一条 turn/start 与 turn/end 谁更靠后来判断
@@ -399,6 +425,7 @@ class ChatModel(
     }
 
     private fun clearLive() {
+        filesAcc.clear()
         liveTextByIndex.clear()
         liveToolsByIndex.clear()
         liveText = ""
@@ -452,7 +479,7 @@ class ChatModel(
                 val text = textOf(blocks)
                 val think = thinkCharsOf(blocks)
                 val work = drainWork()
-                if (text.isEmpty()) {
+                val base = if (text.isEmpty()) {
                     // 与网页端 1.2.1 的修正一致：约 68% 的助手消息只有思考 + 命令、没有正文，
                     // 这类整条不渲染（否则满屏空气泡）—— 但**工作过程要留下**，折成一行。
                     workThink += think
@@ -471,6 +498,8 @@ class ChatModel(
                     workThink = 0
                     listOf(row)
                 }
+                // 文件卡挂在**这一轮的最末尾**（电脑端也是：总结写完才挂文件）
+                base + takeFiles(seq)
             }
             "tool/call" -> {
                 val name = data.optString("name").ifEmpty { app.getString(R.string.chat_tool) }
@@ -494,6 +523,17 @@ class ChatModel(
                     emptyList()
                 }
             }
+            // 电脑端「把文件挂在回复结尾」用的就是这个事件 —— 先攒着，等这一轮说完再挂
+            "deliverables/presented" -> {
+                val arr = data.optJSONArray("files")
+                for (i in 0 until (arr?.length() ?: 0)) {
+                    val o = arr?.optJSONObject(i) ?: continue
+                    val p = o.optString("path").trim()
+                    if (p.isEmpty()) continue
+                    filesAcc.add(Deliverable(p, o.optString("description").trim()))
+                }
+                emptyList()
+            }
             "turn/end" -> {
                 val out = ArrayList<ChatRow>(2)
                 val work = drainWork()
@@ -514,10 +554,20 @@ class ChatModel(
                     }
                     if (label.isNotEmpty()) out.add(ChatRow.Notice(seq, label, false))
                 }
+                // 兜底：这一轮没有落库的助手消息时，文件卡也得挂出去
+                out.addAll(takeFiles(seq))
                 out
             }
             else -> emptyList()
         }
+    }
+
+    /** 攒下的文件取走，变成「文件」卡（挂在当前这一轮最后）。 */
+    private fun takeFiles(seq: Int): List<ChatRow> {
+        if (filesAcc.isEmpty()) return emptyList()
+        val row = ChatRow.Files(seq, ArrayList(filesAcc))
+        filesAcc.clear()
+        return listOf(row)
     }
 
     /** 攒下的工作过程取走并清空。 */

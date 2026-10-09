@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.dsh.mirror.client.R
+import dev.dsh.mirror.client.theme.LocalDshFonts
 import dev.dsh.mirror.client.theme.Dsh
 import dev.dsh.mirror.client.theme.DshFontStore
 import dev.dsh.mirror.client.theme.FontChoice
@@ -219,7 +220,7 @@ private fun SlotSection(
     removeLabel: String,
 ) {
     Spacer(Modifier.height(14.dp))
-    Text(title, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+    Text(title, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
     Text(note, fontSize = 12.sp, lineHeight = 18.sp, color = Dsh.ListDim3)
 
     Spacer(Modifier.height(8.dp))
@@ -317,7 +318,7 @@ fun LicensePanel(onBack: () -> Unit) {
                 runCatching { app.assets.open(path).bufferedReader().use { it.readText() } }
                     .getOrDefault("（读不到 " + path + "）")
             }
-            Text(name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+            Text(name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
             Spacer(Modifier.height(4.dp))
             Text(text, fontSize = 11.sp, lineHeight = 16.sp, color = Dsh.ListDim)
             Spacer(Modifier.height(16.dp))

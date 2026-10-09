@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,12 +42,13 @@ import dev.dsh.mirror.client.theme.LocalDshFonts
  * 这里只做纯文本 + 围栏代码块（等宽 + 代码底色）。
  */
 @Composable
-fun ChatRowView(row: ChatRow, detail: Boolean, running: Boolean) {
+fun ChatRowView(row: ChatRow, detail: Boolean, running: Boolean, onFile: ((String) -> Unit)? = null) {
     when (row) {
         is ChatRow.User -> UserRow(row)
-        is ChatRow.Assistant -> AssistantRow(row, detail, running)
+        is ChatRow.Assistant -> AssistantRow(row, detail, running, onFile)
         is ChatRow.Work -> WorkRow(row, detail, running)
         is ChatRow.Notice -> NoticeRow(row)
+        is ChatRow.Files -> FilesRow(row, onFile)
     }
 }
 
@@ -66,19 +68,25 @@ private fun UserRow(row: ChatRow.User) {
                 .padding(horizontal = 12.dp, vertical = 9.dp),
         ) {
             // 与网页端一致：用户气泡里的正文也走 Markdown（同一个 renderMarkdown 入口）
+            // 用户自己发的话里没有"电脑上的文件"，所以不给下载动作
             MarkdownView(row.text)
         }
     }
 }
 
 @Composable
-private fun AssistantRow(row: ChatRow.Assistant, detail: Boolean, running: Boolean) {
+private fun AssistantRow(
+    row: ChatRow.Assistant,
+    detail: Boolean,
+    running: Boolean,
+    onFile: ((String) -> Unit)? = null,
+) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         if (row.work.isNotEmpty() || row.thinkChars > 0) {
             WorkBlock(row.thinkChars, row.work, detail, running)
             Spacer(Modifier.size(6.dp))
         }
-        MarkdownView(row.text)
+        MarkdownView(row.text, onFile = onFile)
         if (row.interrupted) {
             Spacer(Modifier.size(4.dp))
             Text(
@@ -108,7 +116,11 @@ private fun WorkRow(row: ChatRow.Work, detail: Boolean, running: Boolean) {
  */
 @Composable
 internal fun WorkBlock(thinkChars: Int, steps: List<WorkStep>, detail: Boolean, running: Boolean) {
-    var open by remember { mutableStateOf(false) }
+    // 展开状态**跟随设置**：开关打开就默认展开（用户要的正是这个），关着就默认收起。
+    // 只 remember 一次是不够的 —— 在会话里现开开关时，已经渲染出来的卡片不会变，
+    // 那正是"开关看着像坏了"的原因。
+    var open by remember { mutableStateOf(detail) }
+    LaunchedEffect(detail) { open = detail }
     val tRun = stringResource(R.string.chat_work_running)
     val tDone = stringResource(R.string.chat_work_done)
     val tSteps = if (steps.isEmpty()) "" else stringResource(R.string.chat_work_steps, steps.size)
@@ -182,6 +194,65 @@ private fun FoldMark(open: Boolean) {
         if (open) rotate(90f) { drawPath(path, Dsh.ListDim3) } else drawPath(path, Dsh.ListDim3)
     }
 }
+
+@Composable
+private fun FilesRow(row: ChatRow.Files, onFile: ((String) -> Unit)?) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Text(
+            stringResource(R.string.files_title),
+            fontSize = 12.5.sp,
+            color = Dsh.ListDim3,
+            fontFamily = LocalDshFonts.current.ui,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        row.files.forEach { f ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Dsh.Chip)
+                    .clickable(enabled = onFile != null) { onFile?.invoke(f.path) }
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        fileNameOf(f.path),
+                        fontSize = 13.5.sp,
+                        color = Dsh.ListFg,
+                        fontFamily = LocalDshFonts.current.ui,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (f.description.isNotEmpty()) {
+                        Spacer(Modifier.size(2.dp))
+                        Text(
+                            f.description,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                            color = Dsh.ListDim,
+                            fontFamily = LocalDshFonts.current.ui,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    stringResource(R.string.files_download),
+                    fontSize = 12.5.sp,
+                    color = Dsh.Brand,
+                    fontFamily = LocalDshFonts.current.ui,
+                )
+            }
+        }
+    }
+}
+
+/** 路径最后一段当文件名（电脑端卡片上显示的也是文件名）。 */
+private fun fileNameOf(path: String): String =
+    path.substringAfterLast('/').substringAfterLast('\\').ifEmpty { path }
 
 @Composable
 private fun NoticeRow(row: ChatRow.Notice) {

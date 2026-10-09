@@ -76,11 +76,16 @@ import kotlinx.coroutines.delay
 
 /** Markdown 正文。source 变了才重新解析（流式那条路走的是纯文本，不经过这里）。 */
 @Composable
-internal fun MarkdownView(source: String, modifier: Modifier = Modifier) {
+internal fun MarkdownView(
+    source: String,
+    modifier: Modifier = Modifier,
+    /** 文件芯片被点时的动作。给 null 就退回旧行为（复制路径）。 */
+    onFile: ((String) -> Unit)? = null,
+) {
     val blocks = remember(source) { parseMarkdown(source) }
     if (blocks.isEmpty()) return
     val body = LocalDshFonts.current.body
-    val ctx = mdCtx()
+    val ctx = mdCtx(onFile)
 
     Column(modifier = modifier) {
         blocks.forEachIndexed { i, block ->
@@ -127,7 +132,7 @@ private fun BlockView(b: MdBlock, body: FontFamily, ctx: MdCtx) {
             } * 1.4f).sp,
             fontWeight = FontWeight.W700,
             color = if (b.level >= 4) Dsh.FgSoft else Dsh.ListFg,
-            fontFamily = body,
+            fontFamily = ctx.bodyBold,
         )
 
         is MdBlock.Para -> Text(
@@ -332,7 +337,7 @@ private fun TableView(b: MdBlock.Table, body: FontFamily, ctx: MdCtx) {
     if (cols == 0) return
 
     val cellStyle = TextStyle(fontSize = CellFont, lineHeight = CellLine, fontFamily = body)
-    val headerStyle = cellStyle.copy(fontWeight = FontWeight.W700, color = Dsh.FgStrong)
+    val headerStyle = cellStyle.copy(fontWeight = FontWeight.W700, fontFamily = ctx.bodyBold, color = Dsh.FgStrong)
     val padH = 9.dp
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
@@ -427,7 +432,10 @@ private fun Cell(
 ) {
     Box(modifier = Modifier.width(width).background(if (header) Dsh.Chip else Color.Transparent)) {
         Text(
-            text = inline(nodes, ctx, if (header) SpanStyle(fontWeight = FontWeight.W700, color = Dsh.FgStrong) else null),
+            text = inline(
+                nodes, ctx,
+                if (header) SpanStyle(fontWeight = FontWeight.W700, fontFamily = ctx.bodyBold, color = Dsh.FgStrong) else null,
+            ),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 9.dp, vertical = 6.dp),
             fontSize = CellFont,
             lineHeight = CellLine,
@@ -450,19 +458,32 @@ private fun Cell(
  * 做成一个上下文对象是因为行内构建必须是**普通函数**（表格要先量文字宽度才能定列宽，
  * 量宽发生在 composable 之外），而字体与资源只能在 composable 里取。
  */
-private class MdCtx(val mono: FontFamily, val imgLabel: String, val onFile: (String) -> Unit)
+private class MdCtx(
+    val mono: FontFamily,
+    /** 正文的粗体族：链式字体族自带不了粗体字面，加粗的块与行内节点都得显式用它。 */
+    val bodyBold: FontFamily,
+    val imgLabel: String,
+    val onFile: (String) -> Unit,
+)
 
 @Composable
-private fun mdCtx(): MdCtx {
+private fun mdCtx(onFile: ((String) -> Unit)? = null): MdCtx {
     val mono = LocalDshFonts.current.mono
+    // CompositionLocal 只能在 composable 里读，remember 的 lambda 里读不到 —— 先取出来
+    val bodyBold = LocalDshFonts.current.bodyBold
     val imgLabel = stringResource(R.string.md_image)
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val copied = stringResource(R.string.md_path_copied)
-    return remember(mono, imgLabel, copied, clipboard, context) {
-        MdCtx(mono, imgLabel) { path ->
-            clipboard.setText(AnnotatedString(path))
-            Toast.makeText(context, copied + "：" + path, Toast.LENGTH_SHORT).show()
+    return remember(mono, bodyBold, imgLabel, copied, clipboard, context, onFile) {
+        MdCtx(mono, bodyBold, imgLabel) { path ->
+            // 会话页给了下载动作就走下载；其它地方（比如设置里的预览）保持"复制路径"
+            if (onFile != null) {
+                onFile(path)
+            } else {
+                clipboard.setText(AnnotatedString(path))
+                Toast.makeText(context, copied + "：" + path, Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }
@@ -498,7 +519,8 @@ private fun androidx.compose.ui.text.AnnotatedString.Builder.appendInline(
                 append("\u00A0")
             }
             is MdInline.Strong -> appendInline(
-                n.kids, ctx, style.merge(SpanStyle(fontWeight = FontWeight.W700, color = Dsh.FgStrong)),
+                n.kids, ctx,
+                style.merge(SpanStyle(fontWeight = FontWeight.W700, fontFamily = ctx.bodyBold, color = Dsh.FgStrong)),
             )
             is MdInline.Em -> appendInline(
                 n.kids, ctx, style.merge(SpanStyle(fontStyle = FontStyle.Italic, color = Dsh.FgSoft)),
@@ -506,7 +528,14 @@ private fun androidx.compose.ui.text.AnnotatedString.Builder.appendInline(
             is MdInline.StrongEm -> appendInline(
                 n.kids,
                 ctx,
-                style.merge(SpanStyle(fontWeight = FontWeight.W700, fontStyle = FontStyle.Italic, color = Dsh.FgStrong)),
+                style.merge(
+                    SpanStyle(
+                        fontWeight = FontWeight.W700,
+                        fontFamily = ctx.bodyBold,
+                        fontStyle = FontStyle.Italic,
+                        color = Dsh.FgStrong,
+                    ),
+                ),
             )
             is MdInline.Del -> appendInline(
                 n.kids, ctx, style.merge(SpanStyle(textDecoration = TextDecoration.LineThrough, color = Dsh.Dim2)),

@@ -51,6 +51,7 @@ DSH 自己的 Web 服务监听 `127.0.0.1:19387`（仅本机）。把它的 `hos
 | `POST /api/answer` | 需登录 + JSON | 回答一个提问 |
 | `POST /api/questions/hold` | 需登录 + JSON | 认领 / 释放这次限时提问的等待（手机看着卡片时别让宿主超时） |
 | `GET /api/questions/stream` | 需登录 | **SSE**：任何会话出现提问都推给手机 |
+| `GET/HEAD /api/file?id=&path=` | 需登录 | **下载工作区里的文件**（只读，见下） |
 
 回环判定看 **socket 的真实来源地址**，不看 Host 头，所以伪造 Host 绕不过去。
 鉴权在"会话服务是否就绪"之前 —— 未登录者拿到的是 401，不会因为 503 而得知服务状态。
@@ -58,6 +59,25 @@ DSH 自己的 Web 服务监听 `127.0.0.1:19387`（仅本机）。把它的 `hos
 ---
 
 ## 镜像协议
+
+### `GET/HEAD /api/file`
+
+把**工作区目录里**的文件发给手机（桌面端每次编译都会贴出文件，手机要能拿到本地）。
+**只读**操作：不改变宿主状态，所以**不受 `enablePrompt`（只读模式）约束**。
+
+| 情况 | 结果 |
+|---|---|
+| 绝对路径 | 直接用 |
+| 相对路径 | 按 `id=` 那个会话的 cwd 解析（**只认会话 id**，不信请求里带的基准路径）；缺 id → 400 |
+| 允许的根 | **登记工作区 ∪ 所有会话的 cwd**（与 `normalizeWorkspaces` 同口径），根与目标都取 `realpathSync` 后比较（防目录联接） |
+| 落在根之外 | 403 `outside-workspace` |
+| 目录 / 不存在 | 404 `not-a-file` / `file-not-found` |
+| 超过 **1 GB** | 413 `file-too-large`（不做截断：截一半的文件比报错更糟） |
+| 缺 `path` | 400 `missing-path` |
+
+响应带 `Content-Type`（按扩展名）、`Content-Disposition`（ASCII 回退名 + `filename*=UTF-8''…`，
+中文名不变问号）、`Accept-Ranges: bytes`，支持单段 **Range**（206；不合法 416）与 **HEAD** ——
+42 MB 的 APK 断点续传用得上。
 
 ### `GET /api/sessions`
 
@@ -681,6 +701,23 @@ DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / 
   答案被暂存、agent 又跑一轮。手机看着卡片期间用 `ctx.userQuestions.attachWait` 认领，
   宿主就不再自己计时；切后台 / 离开聊天页 / 卸载页面 / 最后一个问题流订阅者断开
   （留 3 秒宽限）都会放开认领。默认的 `legacy` 模式没有限时等待，认领是空操作。
+- **P9（1.3）**：**文件下载端点** `GET/HEAD /api/file`（见「路由与认证边界」与「镜像协议」）——
+  手机端每次看到电脑贴出的文件都能点一下存到本地。范围限**工作区目录内**、单文件 ≤ **1 GB**、
+  支持 Range/HEAD、软链接按真实路径复核；**只读**，所以只读模式下也能用。
+  配套的安卓客户端 0.10：点文件芯片**先问再下**，存进系统的「下载」目录
+  （`MediaStore.Downloads`，API 29+ **不需要存储权限**），完成后可以直接「打开」。
+  同一版还补上**电脑端那种「文件」卡**：`projectEvent` 为 `deliverables/presented`
+  （`present` 工具产生，`data.files = [{path, description}]`）加了显式分支 —— 它原来落到
+  `default` 分支的「有界浅拷贝」，嵌套数组只报形状，`files` 被压成 `[array]`，路径全丢。
+  现在只下发 `files`（条数 20 / 路径 512 / 说明 200 封顶，空清单整条不下发），
+  手机端渲染「文件」卡（0.10.2 起改到**这一轮的最末尾** —— `present` 是工具调用，事件顺序上在
+  总结文字之前，电脑端也是特意挂到末尾的；手机端现在先攒进 `filesAcc`，等该轮 `assistant/message`
+  到了再作为最后一行发出）。插件版本 **1.3.2**。
+- **翻页参数修正（1.3.2）**：宿主 `sessionController.page` 的 `throughSeq` 是**会话头部游标**，
+  不是「当前视图最早那条」—— 官方用法是 `{ throughSeq: snapshot.cursor, beforeSeq: page.records[0].seq }`，
+  且 `throughSeq === -1` 表示会话头。1.3.1 及以前把两者都传成 `beforeSeq`，语义错了：
+  大会话上读窗口又大又慢，手机侧等超时，界面显示「连不上电脑」（用户报的「往上翻就断」）。
+  现在传 `throughSeq: -1`，单测钉住 `throughSeq / beforeSeq / maxMessages` 三个参数。
 - **P8**：二维码配对、桌面内配对页、多网卡地址选择。
 - **之后可做**：手机贴图（要走 `admitPromptContent` 准入管道）、
-  会话重命名（`rename`）、消息队列管理（`updateQueue`）、附件下载端点。
+  会话重命名（`rename`）、消息队列管理（`updateQueue`）。

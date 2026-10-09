@@ -26,11 +26,26 @@ data class FontPrefs(
     val mono: FontSlot = FontSlot(),
 )
 
-/** 三档最终产物：Compose 直接可用的字体族。 */
-data class FontSet(val ui: FontFamily, val body: FontFamily, val mono: FontFamily) {
+/**
+ * 三档最终产物：Compose 直接可用的字体族。
+ *
+ * <p>粗体**单独一档**：链式字体族（{@code CustomFallbackBuilder}）只有一个字面，
+ * 自带不了粗体字面，而 Android 的合成粗体在它上面不生效 —— 所以粗体必须由调用点显式选用。
+ */
+data class FontSet(
+    val ui: FontFamily,
+    val uiBold: FontFamily,
+    val body: FontFamily,
+    val bodyBold: FontFamily,
+    val mono: FontFamily,
+) {
     companion object {
         /** CompositionLocal 的兜底值：不碰 Context，纯静态。 */
-        val Fallback = FontSet(FontFamily.SansSerif, FontFamily.SansSerif, FontFamily.Monospace)
+        val Fallback = FontSet(
+            FontFamily.SansSerif, FontFamily.SansSerif,
+            FontFamily.SansSerif, FontFamily.SansSerif,
+            FontFamily.Monospace,
+        )
     }
 }
 
@@ -50,38 +65,63 @@ val LocalDshFonts = staticCompositionLocalOf { FontSet.Fallback }
  * {@code Font.Builder(Resources, int)}、{@code Font.Builder(File)}。所以不需要任何版本分支，
  * 也不需要反射去够那些在旧 SDK 里才公开的重载。
  *
- * <p>代价：链式字体族只有一个字面，**粗体是 Android 合成的**。等宽档是纯拉丁场景，
- * 走 {@code FontFamily(Font(...))} 的多字面，那里是**真字重**。
+ * <p>代价：链式字体族只有一个字面，而 **Android 的合成粗体在这条链上不生效** ——
+ * 用户报的「Markdown 粗体看不出来」就是这个。所以每档都额外造了一个**粗体字面**
+ * （{@code tools/make-bold-font.py}：得意黑静态轮廓外扩、思源黑体可变字体实例化到 700），
+ * 把正常链与粗体链包成双字面 FontFamily，Compose 按字重自己挑。
  */
 object DshFonts {
 
-    fun build(ctx: Context, prefs: FontPrefs): FontSet = FontSet(
+    fun build(ctx: Context, prefs: FontPrefs): FontSet {
         // 界面：拉丁 JetBrains Mono，中文得意黑
-        ui = chain(ctx, prefs.ui, R.font.smiley_sans_oblique),
+        val ui = chain(ctx, prefs.ui, R.font.smiley_sans_oblique, R.font.dsh_hei_bold)
         // 正文：拉丁 JetBrains Mono，中文思源黑体
-        body = chain(ctx, prefs.body, R.font.noto_sans_sc),
-        mono = mono(ctx, prefs.mono),
-    )
+        val body = chain(ctx, prefs.body, R.font.noto_sans_sc, R.font.dsh_sans_bold)
+        return FontSet(ui.normal, ui.bold, body.normal, body.bold, mono(ctx, prefs.mono))
+    }
 
-    /** 拉丁打底 + 中文兜底 + 系统兜底。 */
-    private fun chain(ctx: Context, slot: FontSlot, builtinCjk: Int): FontFamily {
+    /** 一档字体的正常与粗体两条族。 */
+    private class Chain(val normal: FontFamily, val bold: FontFamily)
+
+    /**
+     * 拉丁打底 + 中文兜底 + 系统兜底，正常与粗体各拼一条。
+     *
+     * <p>为什么要显式给粗体族：这条链是 {@code CustomFallbackBuilder} 拼出来的**单个字面**，
+     * 合成粗体在自定义族上不生效 —— 用户报的「Markdown 粗体看不出来」就是它。
+     * Compose 1.7 没有 {@code Font(typeface, weight)} 重载，粗体只能由调用点显式换族。
+     */
+    private fun chain(ctx: Context, slot: FontSlot, builtinCjk: Int, builtinCjkBold: Int): Chain {
         when (slot.choice) {
             // 「系统」直接交给 Compose 的 SansSerif：系统字体自带全套语种回落，
             // 再套一层自建链只会把系统的回落顺序弄丢
-            FontChoice.System -> return FontFamily.SansSerif
-            FontChoice.Custom -> customFamily(ctx, slot.file)?.let { return chainOf(listOf(it)) }
+            FontChoice.System -> return Chain(FontFamily.SansSerif, FontFamily.SansSerif)
+            // 用户导入的字体只有一个字面，运行时造不出粗体 —— 粗体退回同一条
+            FontChoice.Custom -> {
+                val one = chainOf(listOfNotNull(customFamily(ctx, slot.file))) ?: return Chain(
+                    FontFamily.SansSerif, FontFamily.SansSerif,
+                )
+                val fam = FontFamily(one)
+                return Chain(fam, fam)
+            }
             FontChoice.Builtin -> Unit
         }
-        val builtin = listOfNotNull(resFamily(ctx, R.font.jbm_regular), resFamily(ctx, builtinCjk))
-        return if (builtin.isEmpty()) FontFamily.SansSerif else chainOf(builtin)
+        val normal = chainOf(listOfNotNull(resFamily(ctx, R.font.jbm_regular), resFamily(ctx, builtinCjk)))
+        val bold = chainOf(listOfNotNull(resFamily(ctx, R.font.jbm_bold), resFamily(ctx, builtinCjkBold)))
+        val n = normal?.let { FontFamily(it) } ?: FontFamily.SansSerif
+        val b = bold?.let { FontFamily(it) } ?: n
+        return Chain(n, b)
     }
 
-    private fun chainOf(families: List<PlatformFontFamily>): FontFamily = runCatching {
-        val builder = Typeface.CustomFallbackBuilder(families.first())
-        for (i in 1 until families.size) builder.addCustomFallback(families[i])
-        builder.setSystemFallback("sans-serif")
-        FontFamily(builder.build())
-    }.getOrDefault(FontFamily.SansSerif)
+    /** 拼一条「拉丁打底 + 中文兜底 + 系统兜底」的链，返回底层 Typeface。 */
+    private fun chainOf(families: List<PlatformFontFamily>): Typeface? {
+        if (families.isEmpty()) return null
+        return runCatching {
+            val builder = Typeface.CustomFallbackBuilder(families.first())
+            for (i in 1 until families.size) builder.addCustomFallback(families[i])
+            builder.setSystemFallback("sans-serif")
+            builder.build()
+        }.getOrNull()
+    }
 
     private fun resFamily(ctx: Context, id: Int): PlatformFontFamily? = runCatching {
         PlatformFontFamily.Builder(PlatformFont.Builder(ctx.resources, id).build()).build()

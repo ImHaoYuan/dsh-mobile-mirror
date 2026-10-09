@@ -87,6 +87,35 @@ eq('正文兜底：content 是裸字符串',
 eq('正文兜底：都没有则为空数组，不炸',
   projectEvent({ type: 'user/message', seq: 1, time: 1, data: { nothing: 1 } }).data.blocks.length, 0)
 
+const presented = projectEvent({
+  type: 'deliverables/presented', seq: 9, time: 1,
+  data: {
+    turn: 2,
+    files: [
+      { path: 'D:\\a\\x.apk', description: '安装包' },
+      { path: '   ' },
+      'junk',
+      null,
+    ],
+  },
+})
+eq('presented 下发文件清单', presented.data.files.length, 1)
+eq('presented 保留路径', presented.data.files[0].path, 'D:\\a\\x.apk')
+eq('presented 保留说明', presented.data.files[0].description, '安装包')
+eq('presented 不再走未知事件分支', presented.unknown, undefined)
+eq('presented 空清单整条不下发',
+  projectEvent({ type: 'deliverables/presented', seq: 9, time: 1, data: { files: [] } }), null)
+eq('presented 条数封顶 20',
+  projectEvent({
+    type: 'deliverables/presented', seq: 9, time: 1,
+    data: { files: Array.from({ length: 50 }, (_, i) => ({ path: '/x/' + i })) },
+  }).data.files.length, 20)
+eq('presented 路径超长截断',
+  projectEvent({
+    type: 'deliverables/presented', seq: 9, time: 1,
+    data: { files: [{ path: 'a'.repeat(900) }] },
+  }).data.files[0].path.length, 512)
+
 const headerEvent = projectEvent({
   type: 'request/header', seq: 2, time: 20,
   data: { turn: 1, reason: 'user', header: { config: { model: 'm', provider: 'p' }, tools: [{}, {}, {}] } },
@@ -407,6 +436,8 @@ const RAW_EVENTS = [
 ]
 
 let followRequest = null
+// 翻页请求原样留一份：throughSeq / beforeSeq 传错会让手机端"往上翻就断"
+let pageRequest = null
 let promptCalls = []
 let promptSignals = []
 let cancelCalls = []
@@ -496,7 +527,8 @@ function fakeController() {
       return { sessionId: 'session-new-1', agentPreset: request.agentPreset || 'standard' }
     },
     async page(request) {
-      return { records: [{ type: 'event', event: { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '更早' }] } } }], hasMore: false, _echo: request }
+      pageRequest = request
+      return { records: [{ type: 'event', event: { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '更早' }] } } }], hasMore: false }
     },
     follow(request, signal) {
       followRequest = request
@@ -1658,6 +1690,89 @@ check('路径穿越拿不到配置',
   traversalFont.status !== 200 && !traversalFont.text.includes('passwordHash'),
   `${traversalFont.status} ${traversalFont.text.slice(0, 40)}`)
 
+
+// ==================== 二·五、下载文件（0.10）—— 主服务关闭前测 ====================
+console.log('\n———— 下载文件 ————')
+{
+  // 自己造一个临时工作区，并把 registry / controller 换成指向它的替身
+  // （deps 是普通对象，路由每次调用都现读，所以换完立即生效）
+  const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-dl-'))
+  fs.mkdirSync(path.join(WS, 'out'))
+  const payload = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('假装是个 APK', 'utf8'), Buffer.alloc(300, 0x78)])
+  const apk = path.join(WS, 'out', 'dsh-mobile-mirror-client-0.10.apk')
+  fs.writeFileSync(apk, payload)
+  fs.writeFileSync(path.join(WS, 'note.txt'), '你好')
+
+  const origList = fakeRegistry.list
+  const origController = deps.controller
+  fakeRegistry.list = () => [{ id: 'ws-dl', path: WS, title: '下载测试' }]
+  deps.controller = {
+    async list() {
+      return {
+        items: [{
+          sessionId: 'sess-dl', running: false, updatedAt: 1, cwd: WS, blank: false,
+          projections: { values: { title: '下载测试' } },
+        }],
+      }
+    },
+  }
+
+  const rel = 'out/dsh-mobile-mirror-client-0.10.apk'
+  const ok = await reqRaw(`/api/file?id=sess-dl&path=${encodeURIComponent(rel)}`, { headers: { Cookie: cookie } })
+  eq('相对路径 → 200', ok.status, 200)
+  eq('字节一字不差', ok.buf.equals(payload), true)
+  eq('按扩展名给 MIME', ok.headers['content-type'], 'application/vnd.android.package-archive')
+  check('声明为附件并带文件名', /attachment; filename="dsh-mobile-mirror-client-0\.10\.apk"/.test(String(ok.headers['content-disposition'])), String(ok.headers['content-disposition']))
+  eq('声明支持 Range', ok.headers['accept-ranges'], 'bytes')
+
+  const abs = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie } })
+  eq('绝对路径 → 200', abs.status, 200)
+  eq('绝对路径字节正确', abs.buf.equals(payload), true)
+
+  const head = await req(`/api/file?path=${encodeURIComponent(apk)}`, { method: 'HEAD', headers: { Cookie: cookie } })
+  eq('HEAD → 200', head.status, 200)
+  eq('HEAD 给长度', head.headers['content-length'], String(payload.length))
+
+  const part = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie, Range: 'bytes=2-9' } })
+  eq('Range → 206', part.status, 206)
+  eq('Range 字节正确', part.buf.equals(payload.subarray(2, 10)), true)
+  eq('Range 头正确', part.headers['content-range'], `bytes 2-9/${payload.length}`)
+
+  const tail = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie, Range: 'bytes=-4' } })
+  eq('后缀 Range → 206', tail.status, 206)
+  eq('后缀 Range 取到末尾 4 字节', tail.buf.equals(payload.subarray(payload.length - 4)), true)
+
+  const bad = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie, Range: 'bytes=99999-' } })
+  eq('越界 Range → 416', bad.status, 416)
+
+  const outside = await reqRaw(`/api/file?path=${encodeURIComponent(path.join(WS, '..', 'outside.txt'))}`, { headers: { Cookie: cookie } })
+  eq('工作区之外 → 403', outside.status, 403)
+  const outsideBody = (() => { try { return JSON.parse(outside.buf.toString('utf8')) } catch { return {} } })()
+  eq('越界错误码', outsideBody.error, 'outside-workspace')
+
+  const trav = await reqRaw(`/api/file?id=sess-dl&path=${encodeURIComponent('../../../../Windows/win.ini')}`, { headers: { Cookie: cookie } })
+  eq('相对路径往上越界 → 403', trav.status, 403)
+
+  const missing = await reqRaw(`/api/file?path=${encodeURIComponent(path.join(WS, 'nope.txt'))}`, { headers: { Cookie: cookie } })
+  eq('文件不存在 → 404', missing.status, 404)
+
+  const dir = await reqRaw(`/api/file?path=${encodeURIComponent(WS)}`, { headers: { Cookie: cookie } })
+  eq('目录 → 404', dir.status, 404)
+
+  const noPath = await reqRaw('/api/file', { headers: { Cookie: cookie } })
+  eq('缺 path → 400', noPath.status, 400)
+
+  const noId = await reqRaw(`/api/file?path=${encodeURIComponent(rel)}`, { headers: { Cookie: cookie } })
+  eq('相对路径缺会话 id → 400', noId.status, 400)
+
+  const txt = await reqRaw(`/api/file?id=sess-dl&path=${encodeURIComponent('note.txt')}`, { headers: { Cookie: cookie } })
+  eq('文本文件内容正确', txt.buf.toString('utf8'), '你好')
+  eq('文本 MIME 带 charset', txt.headers['content-type'], 'text/plain; charset=utf-8')
+
+  fakeRegistry.list = origList
+  deps.controller = origController
+  fs.rmSync(WS, { recursive: true, force: true })
+}
 await mirror.close()
 
 // ==================== 三·六、只读模式（enablePrompt=false） ====================
@@ -1756,6 +1871,12 @@ const listed = await listSessions(controller, new AbortController().signal)
 eq('listSessions 排序', listed[0].id, 'sess-2')
 const paged = await pageBack(controller, SESSION_ID, 5, 20, new AbortController().signal)
 eq('pageBack 投影', paged.records[0].data.blocks[0].text, '更早')
+// 翻页参数必须对：throughSeq 是会话头（-1），beforeSeq 才是"当前最早那条"。
+// 1.3.1 把两者传成同一个值，大会话上手机侧超时 → "连不上电脑"。
+eq('pageBack 的 throughSeq 是会话头 -1', pageRequest.throughSeq, -1)
+eq('pageBack 的 beforeSeq 是当前最早那条', pageRequest.beforeSeq, 5)
+await pageBack(controller, SESSION_ID, 5, 999, new AbortController().signal)
+eq('pageBack 把 maxMessages 夹到 200', pageRequest.maxMessages, 200)
 
 const iterator = openFollow(controller, SESSION_ID, { maxMessages: 999 }, new AbortController().signal)
 const first = await iterator[Symbol.asyncIterator]().next()

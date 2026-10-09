@@ -71,7 +71,7 @@
     <string name="more_repair_note">重新配对会清掉保存的地址、证书指纹、登录票根和记住的账号密码，下次要重新登录。</string>
     <string name="more_fonts">字体设置</string>
     <string name="settings_detail">显示详细工作过程</string>
-    <string name="settings_detail_note">打开后，会话里的「工作过程」会显示工具名与完整参数（含代码）；关闭时只显示每一步的简短说明。</string>
+    <string name="settings_detail_note">打开后，「工作过程」默认展开，并显示工具名与完整参数（含代码）；关闭时默认收起，只显示每一步的简短说明。</string>
     <string name="more_licenses">开源许可</string>
 
     <!-- 字体 -->
@@ -127,6 +127,19 @@
     <string name="chat_running">运行中…</string>
     <string name="chat_readonly">只读 · 发送与停止在 0.8 接上</string>
     <string name="chat_think">思考 %1$d 字</string>
+    <string name="files_title">文件</string>
+    <string name="files_download">下载</string>
+    <string name="dl_title">下载文件</string>
+    <string name="dl_ask">是否下载文件（%1$s）？\n\n会保存到系统的「下载」目录。</string>
+    <string name="dl_start">开始下载</string>
+    <string name="dl_cancel">取消</string>
+    <string name="dl_running">正在下载 %1$s</string>
+    <string name="dl_progress">已完成 %1$d%%</string>
+    <string name="dl_progress_unknown">已下载 %1$d KB</string>
+    <string name="dl_done">已保存到系统的「下载」目录：%1$s</string>
+    <string name="dl_open">打开</string>
+    <string name="dl_ok">知道了</string>
+    <string name="dl_no_app">没有能打开这个文件的应用</string>
     <string name="chat_work_running">工作中</string>
     <string name="chat_work_done">工作过程</string>
     <string name="chat_work_steps">%1$d 步</string>
