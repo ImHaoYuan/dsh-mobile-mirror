@@ -1871,10 +1871,11 @@ const listed = await listSessions(controller, new AbortController().signal)
 eq('listSessions 排序', listed[0].id, 'sess-2')
 const paged = await pageBack(controller, SESSION_ID, 5, 20, new AbortController().signal)
 eq('pageBack 投影', paged.records[0].data.blocks[0].text, '更早')
-// 翻页参数必须对：throughSeq 是会话头（-1），beforeSeq 才是"当前最早那条"。
-// 1.3.1 把两者传成同一个值，大会话上手机侧超时 → "连不上电脑"。
-eq('pageBack 的 throughSeq 是会话头 -1', pageRequest.throughSeq, -1)
+// 翻页参数必须对：宿主 paginate() 里 end = min(throughSeq + 1, beforeSeq)，throughSeq 是**上界**。
+// 1.3.2 曾传 -1（当成"会话头"）→ end = 0 → 空页 + hasMore=false，界面"翻页什么都不出"。
+eq('pageBack 的 throughSeq 是上界（当前最早那条）', pageRequest.throughSeq, 5)
 eq('pageBack 的 beforeSeq 是当前最早那条', pageRequest.beforeSeq, 5)
+eq('pageBack 的 throughSeq 与 beforeSeq 相同', pageRequest.throughSeq, pageRequest.beforeSeq)
 await pageBack(controller, SESSION_ID, 5, 999, new AbortController().signal)
 eq('pageBack 把 maxMessages 夹到 200', pageRequest.maxMessages, 200)
 

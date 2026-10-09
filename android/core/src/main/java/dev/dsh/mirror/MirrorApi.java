@@ -35,6 +35,15 @@ import javax.net.ssl.X509TrustManager;
 public final class MirrorApi {
 
     private static final int TIMEOUT_MS = 6000;
+
+    /**
+     * 翻页（{@code /api/page}）的读取超时。
+     *
+     * <p>宿主是**现场读整个会话日志再往前扫**的，大会话上超过 6 秒很常见 —— 用默认超时
+     * 会让「往上翻」被收敛成 {@code code <= 0}，界面上就是「连不上电脑」。
+     * 连接超时仍用 {@link #TIMEOUT_MS}：连不上就是连不上，等 30 秒没有意义。
+     */
+    public static final int PAGE_TIMEOUT_MS = 30000;
     private static final int MAX_BODY = 512 * 1024;
 
     /** 一次请求的结果。{@code code <= 0} 表示连接或握手失败。 */
@@ -86,6 +95,11 @@ public final class MirrorApi {
         return request(ctx, "GET", path, null, null, cookie);
     }
 
+    /** 同 {@link #get(Context, String, String)}，但读取超时可指定（翻页用 {@link #PAGE_TIMEOUT_MS}）。 */
+    public static Reply get(Context ctx, String path, String cookie, int readTimeoutMs) {
+        return request(ctx, "GET", path, null, null, cookie, readTimeoutMs);
+    }
+
     /**
      * POST 一份表单（{@code application/x-www-form-urlencoded}），目前只用于登录。
      *
@@ -106,6 +120,17 @@ public final class MirrorApi {
      */
     public static Reply request(Context ctx, String method, String path,
                                 String contentType, String body, String cookie) {
+        return request(ctx, method, path, contentType, body, cookie, TIMEOUT_MS);
+    }
+
+    /**
+     * 通用请求，读取超时可指定。
+     *
+     * <p>{@code readTimeoutMs} 只作用于**读取**；连接超时恒为 {@link #TIMEOUT_MS}。
+     */
+    public static Reply request(Context ctx, String method, String path,
+                                String contentType, String body, String cookie,
+                                int readTimeoutMs) {
         ServerPrefs prefs = new ServerPrefs(ctx);
         if (!prefs.isConfigured()) return new Reply(-1, "", "", "");
 
@@ -124,7 +149,7 @@ public final class MirrorApi {
             }
 
             conn.setConnectTimeout(TIMEOUT_MS);
-            conn.setReadTimeout(TIMEOUT_MS);
+            conn.setReadTimeout(readTimeoutMs);
             conn.setInstanceFollowRedirects(false);
             conn.setRequestMethod(method);
             conn.setRequestProperty("Accept", "application/json");

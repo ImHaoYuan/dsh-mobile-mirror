@@ -1,6 +1,7 @@
 package dev.dsh.mirror.client.net
 
 import android.content.Context
+import dev.dsh.mirror.MirrorApi
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.TimeZone
@@ -36,6 +37,9 @@ sealed class SendOutcome {
  *
  * <p><b>首屏不走这里</b>：{@code /api/page} 的 `before` 是**必填**（缺了 400 missing-before），
  * 所以首屏只能靠 `/api/follow` 的第一帧 snapshot。这个接口只用来**往上翻更早的历史**。
+ *
+ * <p><b>读取超时单独放宽</b>（{@link MirrorApi#PAGE_TIMEOUT_MS}）：宿主是现场读整个会话日志
+ * 再往前扫的，大会话上超过默认 6 秒很常见。
  */
 object Session {
 
@@ -49,7 +53,7 @@ object Session {
      */
     suspend fun page(ctx: Context, sessionId: String, before: Int, max: Int = PAGE): PageOutcome {
         val path = "/api/page?id=" + enc(sessionId) + "&before=" + before + "&max=" + max
-        return when (val r = MirrorSession.fetch(ctx, path)) {
+        return when (val r = MirrorSession.fetch(ctx, path, MirrorApi.PAGE_TIMEOUT_MS)) {
             is Fetch.Ok -> {
                 val o = try { JSONObject(r.body) } catch (_: Throwable) { return PageOutcome.Unreachable }
                 val arr = o.optJSONArray("records")

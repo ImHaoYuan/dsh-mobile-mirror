@@ -713,11 +713,14 @@ DSH 的宿主插件模块按 URL 缓存，`hmr` 服务只暴露 `watchConfig` / 
   手机端渲染「文件」卡（0.10.2 起改到**这一轮的最末尾** —— `present` 是工具调用，事件顺序上在
   总结文字之前，电脑端也是特意挂到末尾的；手机端现在先攒进 `filesAcc`，等该轮 `assistant/message`
   到了再作为最后一行发出）。插件版本 **1.3.2**。
-- **翻页参数修正（1.3.2）**：宿主 `sessionController.page` 的 `throughSeq` 是**会话头部游标**，
-  不是「当前视图最早那条」—— 官方用法是 `{ throughSeq: snapshot.cursor, beforeSeq: page.records[0].seq }`，
-  且 `throughSeq === -1` 表示会话头。1.3.1 及以前把两者都传成 `beforeSeq`，语义错了：
-  大会话上读窗口又大又慢，手机侧等超时，界面显示「连不上电脑」（用户报的「往上翻就断」）。
-  现在传 `throughSeq: -1`，单测钉住 `throughSeq / beforeSeq / maxMessages` 三个参数。
+- **翻页参数（1.3.3 定稿）**：宿主 `paginate()` 里
+  `end = min(throughSeq + 1, beforeSeq ?? throughSeq + 1)` —— **`throughSeq` 是读取上界**。
+  传 `beforeSeq` 时 `end = beforeSeq`，正好是「严格早于当前最早那条」的那一页。
+  1.3.2 曾把它传成 `-1`（误以为 `-1` 表示会话头；校验其实只保证 `throughSeq >= -1`）：
+  `end = min(0, beforeSeq) = 0` → `slice(cut, 0)` 恒为空、`hasMore` 恒为 false，
+  手机端表现为「往上翻不报错，也永远不出内容」。1.3.1 的「连不上电脑」另有其因 ——
+  客户端 `MirrorApi.TIMEOUT_MS = 6000`（连接与读取共用）对大会话不够；现已在客户端把
+  `/api/page` 的读取超时放宽到 30 秒（连接仍 6 秒）。单测钉住 `throughSeq == beforeSeq` 与 `maxMessages` 夹到 200。
 - **P8**：二维码配对、桌面内配对页、多网卡地址选择。
 - **之后可做**：手机贴图（要走 `admitPromptContent` 准入管道）、
   会话重命名（`rename`）、消息队列管理（`updateQueue`）。

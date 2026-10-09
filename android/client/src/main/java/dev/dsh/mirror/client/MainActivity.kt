@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.sp
 import dev.dsh.mirror.ServerPrefs
@@ -152,6 +153,9 @@ private fun HomeWithDrawer(
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    // 抽屉与面板都是「覆盖层」，不该让底下的输入框继续持有焦点 —— 否则输入法不收，
+    // 抽屉开着、键盘也开着（用户报的 bug）。所有会盖住首页的动作都先 clearFocus()。
+    val focus = LocalFocusManager.current
     var reloadKey by remember { mutableStateOf(0) }
     var page by remember { mutableStateOf(DrawerPage.Sessions) }
     // 开源许可既可以从「更多」进、也可以从「字体」进：返回要回**来的那一层**，不能一律回「更多」
@@ -177,6 +181,9 @@ private fun HomeWithDrawer(
             }
         }
     }
+
+    // 切抽屉页（设置 / 字体 / 许可 / 新建）同样要收键盘：首页的输入框还在底下活着
+    LaunchedEffect(page) { focus.clearFocus() }
 
     // 抽屉一关就复位到会话列表：下次打开还是列表，不会停在半路的设置页
     LaunchedEffect(drawerState.currentValue) {
@@ -210,6 +217,7 @@ private fun HomeWithDrawer(
                             onExpired = onExpired,
                             onOpenSession = { row ->
                                 // 进会话页：抽屉先关上（否则返回时它还开着），会话页盖在最上层
+                                focus.clearFocus()
                                 chat = ChatTarget(row.id, row.title, row.cwd, row.preset, row.running)
                                 scope.launch { drawerState.close() }
                             },
@@ -276,7 +284,11 @@ private fun HomeWithDrawer(
         ) {
             HomeScreen(
                 app = app,
-                onOpenDrawer = { scope.launch { drawerState.open() } },
+                // 先收键盘再开抽屉：ModalNavigationDrawer 不会自己夺焦，输入框不收焦点输入法就不走
+            onOpenDrawer = {
+                focus.clearFocus()
+                scope.launch { drawerState.open() }
+            },
                 // 真发第一步：建会话（宿主 /api/session **不吃 prompt**，所以必须两步）。
                 // 拿到 id 后进会话页，并把这句话当 initialPrompt 交给它 —— 会话页拿到第一帧快照后再发，
                 // 这样乐观回显与宿主的权威回显落在同一个地方。

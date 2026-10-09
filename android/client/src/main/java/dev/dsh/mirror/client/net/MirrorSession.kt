@@ -100,13 +100,28 @@ object MirrorSession {
      * <p>只重试<b>一次</b>：重登成功后仍然 401，说明密码已经变了（或电脑上重置了会话），
      * 再循环只会把服务端的登录节流喂满。
      */
-    suspend fun fetch(ctx: Context, path: String): Fetch = withContext(Dispatchers.IO) {
-        var r = MirrorApi.get(ctx, path, ServerPrefs(ctx).cookie())
+    suspend fun fetch(ctx: Context, path: String): Fetch = fetch(ctx, path, 0)
+
+    /**
+     * 同 {@link #fetch(Context, String)}，但可以指定**读取**超时。
+     *
+     * <p>只给翻页用：宿主 {@code /api/page} 要现场读整个会话日志再往前扫，大会话上超过
+     * 默认的 6 秒很常见 —— 超时会被收敛成 {@code Unreachable}，界面上就是「连不上电脑」。
+     * {@code readTimeoutMs <= 0} 表示用 {@code MirrorApi} 的默认值。
+     */
+    suspend fun fetch(ctx: Context, path: String, readTimeoutMs: Int): Fetch = withContext(Dispatchers.IO) {
+        fun once(): MirrorApi.Reply = if (readTimeoutMs > 0) {
+            MirrorApi.get(ctx, path, ServerPrefs(ctx).cookie(), readTimeoutMs)
+        } else {
+            MirrorApi.get(ctx, path, ServerPrefs(ctx).cookie())
+        }
+
+        var r = once()
 
         if (r.unauthorized()) {
             val cred = SecretVault.load(ctx)
             if (cred != null && login(ctx, cred.first, cred.second) == LoginResult.Ok) {
-                r = MirrorApi.get(ctx, path, ServerPrefs(ctx).cookie())
+                r = once()
             }
         }
 

@@ -65,18 +65,30 @@ val LocalDshFonts = staticCompositionLocalOf { FontSet.Fallback }
  * {@code Font.Builder(Resources, int)}、{@code Font.Builder(File)}。所以不需要任何版本分支，
  * 也不需要反射去够那些在旧 SDK 里才公开的重载。
  *
- * <p>代价：链式字体族只有一个字面，而 **Android 的合成粗体在这条链上不生效** ——
- * 用户报的「Markdown 粗体看不出来」就是这个。所以每档都额外造了一个**粗体字面**
- * （{@code tools/make-bold-font.py}：得意黑静态轮廓外扩、思源黑体可变字体实例化到 700），
- * 把正常链与粗体链包成双字面 FontFamily，Compose 按字重自己挑。
+ * <p>**粗体从哪来**：链式字体族只有一个字面，而 **Android 的合成粗体在这条链上不生效** ——
+ * 用户报的「Markdown 粗体看不出来」就是这个。所以每档的粗体必须是一条指向**真粗体字面**的链；
+ * Compose 1.7 又没有 {@code Font(typeface, weight)} 重载，只能由调用点显式换族
+ * （{@code FontSet.uiBold} / {@code bodyBold}）。两条真粗体的来源不同：
+ * <ul>
+ *   <li>拉丁：JBM 自带 Regular / Bold 两个字面，直接用。</li>
+ *   <li>中文：**思源黑体是可变字体**（{@code wght 100–900}），用
+ *       {@code Font.Builder.setFontVariationSettings("'wght' 700")} 现取一个真 700 —— 不额外占体积。
+ *       顺带把正常档钉在 400：它的默认实例是 {@code wght=100}（Thin），不钉就偏细。</li>
+ *   <li>得意黑（界面档的中文）**只有一个字面**，造不出真粗体。0.10.2 试过轮廓外扩硬造，
+ *       笔画直接糊成一团（用户反馈），0.10.3 放弃：界面档的粗体与正常是同一个字面，
+ *       回到 0.10.1 的观感。</li>
+ * </ul>
  */
 object DshFonts {
 
     fun build(ctx: Context, prefs: FontPrefs): FontSet {
-        // 界面：拉丁 JetBrains Mono，中文得意黑
-        val ui = chain(ctx, prefs.ui, R.font.smiley_sans_oblique, R.font.dsh_hei_bold)
-        // 正文：拉丁 JetBrains Mono，中文思源黑体
-        val body = chain(ctx, prefs.body, R.font.noto_sans_sc, R.font.dsh_sans_bold)
+        // 界面：拉丁 JetBrains Mono，中文得意黑（单字面，粗体也只能是它 —— 见类注释）
+        val ui = chain(ctx, prefs.ui, R.font.smiley_sans_oblique, R.font.smiley_sans_oblique)
+        // 正文：拉丁 JetBrains Mono，中文思源黑体（可变字体：400 正常 / 700 真粗体）
+        val body = chain(
+            ctx, prefs.body, R.font.noto_sans_sc, R.font.noto_sans_sc,
+            wght = 400, boldWght = 700,
+        )
         return FontSet(ui.normal, ui.bold, body.normal, body.bold, mono(ctx, prefs.mono))
     }
 
@@ -89,8 +101,18 @@ object DshFonts {
      * <p>为什么要显式给粗体族：这条链是 {@code CustomFallbackBuilder} 拼出来的**单个字面**，
      * 合成粗体在自定义族上不生效 —— 用户报的「Markdown 粗体看不出来」就是它。
      * Compose 1.7 没有 {@code Font(typeface, weight)} 重载，粗体只能由调用点显式换族。
+     *
+     * @param wght 中文正常档的 {@code wght} 轴（可变字体才有意义，静态字体传 null）。
+     * @param boldWght 中文粗体档的 {@code wght} 轴。
      */
-    private fun chain(ctx: Context, slot: FontSlot, builtinCjk: Int, builtinCjkBold: Int): Chain {
+    private fun chain(
+        ctx: Context,
+        slot: FontSlot,
+        builtinCjk: Int,
+        builtinCjkBold: Int,
+        wght: Int? = null,
+        boldWght: Int? = null,
+    ): Chain {
         when (slot.choice) {
             // 「系统」直接交给 Compose 的 SansSerif：系统字体自带全套语种回落，
             // 再套一层自建链只会把系统的回落顺序弄丢
@@ -105,8 +127,12 @@ object DshFonts {
             }
             FontChoice.Builtin -> Unit
         }
-        val normal = chainOf(listOfNotNull(resFamily(ctx, R.font.jbm_regular), resFamily(ctx, builtinCjk)))
-        val bold = chainOf(listOfNotNull(resFamily(ctx, R.font.jbm_bold), resFamily(ctx, builtinCjkBold)))
+        val normal = chainOf(
+            listOfNotNull(resFamily(ctx, R.font.jbm_regular), resFamily(ctx, builtinCjk, wght)),
+        )
+        val bold = chainOf(
+            listOfNotNull(resFamily(ctx, R.font.jbm_bold), resFamily(ctx, builtinCjkBold, boldWght)),
+        )
         val n = normal?.let { FontFamily(it) } ?: FontFamily.SansSerif
         val b = bold?.let { FontFamily(it) } ?: n
         return Chain(n, b)
@@ -123,9 +149,21 @@ object DshFonts {
         }.getOrNull()
     }
 
-    private fun resFamily(ctx: Context, id: Int): PlatformFontFamily? = runCatching {
-        PlatformFontFamily.Builder(PlatformFont.Builder(ctx.resources, id).build()).build()
-    }.getOrNull()
+    /**
+     * 把一个字体资源包成平台字体族。
+     *
+     * <p>{@code wght} 非空时用 {@code Font.Builder.setFontVariationSettings} 取**可变字体的某个字重**：
+     * 思源黑体的默认实例是 {@code wght=100}（Thin），不指定就偏细；真粗体也只能这么取
+     * （造一个静态字面要多花 14 MB）。静态字体传 null，走原样。
+     */
+    private fun resFamily(ctx: Context, id: Int, wght: Int? = null): PlatformFontFamily? {
+        val font = runCatching {
+            val b = PlatformFont.Builder(ctx.resources, id)
+            if (wght != null) b.setFontVariationSettings("'wght' " + wght)
+            b.build()
+        }.getOrNull() ?: return null
+        return runCatching { PlatformFontFamily.Builder(font).build() }.getOrNull()
+    }
 
     private fun customFamily(ctx: Context, name: String?): PlatformFontFamily? {
         val f = customFile(ctx, name) ?: return null

@@ -24,8 +24,10 @@ android {
         //   0.1.1 定位静默失败 → 0.1.2 确认必须给全字段 JSON → 0.1.3 定下外观配方
         //   → 0.1.4 接进 MirrorService（状态绑定）→ 0.1.5 岛上显示会话标题
         //   → 1.0 超级岛第 2 步收官 → **1.1 清掉验证脚手架、准备开源发布**
-        versionCode = 8
-        versionName = "1.1"
+        //   → **1.1.1 跟随 :core 重建**：平台层多了「按请求指定读取超时」的重载（供原生客户端翻页），
+        //     外壳行为与 1.1 完全一致，只是 dex 变了，所以跟着出一版。
+        versionCode = 9
+        versionName = "1.1.1"
 
         // app_name 刻意**不**写在 strings.xml 里 —— 那里写会和这里的 resValue 冲突
         // （重复资源，aapt2 直接报错）。manifest 的 android:label 引用它。

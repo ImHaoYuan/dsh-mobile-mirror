@@ -234,26 +234,39 @@ class ChatModel(
         }
     }
 
-    /** 往上翻一页更早的历史。 */
+    /**
+     * 往上翻一页更早的历史。
+     *
+     * <p>三条容易踩的坑，都在这儿挡住：
+     * ① **只收更早的**（{@code seq < before}）—— 宿主理论上不会回重叠，但真重叠了就是
+     * 两行撞同一个 key，LazyColumn 会直接崩；网页端 `app.js` 的 `loadOlder` 也是这么筛的。
+     * ② **服务端没给新东西就停**（{@code hasMore = false}）—— 否则会拿着同一个 before 反复重试。
+     * ③ 读取超时用 {@link Session#page} 里放宽过的 30 秒，不是默认的 6 秒。
+     */
     fun loadOlder(scope: CoroutineScope) {
         if (loadingOlder || !hasMore || firstSeq == Int.MAX_VALUE) return
         val before = firstSeq
         loadingOlder = true
+        status = app.getString(R.string.chat_loading_older)
         scope.launch {
             when (val r = Session.page(app, sessionId, before)) {
                 is PageOutcome.Ok -> {
-                    val older = ArrayList<ChatRow>(r.records.size)
-                    for (ev in r.records) {
+                    val fresh = r.records.filter { it.optInt("seq", 0) in 1 until before }
+                    val older = ArrayList<ChatRow>(fresh.size)
+                    for (ev in fresh) {
                         note(ev, live = false)
                         older.addAll(rowsOf(ev, live = false))
                     }
                     // 这一页最后一轮的文件卡别漏（它的总结可能在更早的一页里）
                     older.addAll(takeFiles(before))
                     rows = older + rows
-                    hasMore = r.hasMore
+                    hasMore = r.hasMore && fresh.isNotEmpty()
                     status = ""
                 }
-                PageOutcome.Expired -> expired = true
+                PageOutcome.Expired -> {
+                    status = ""
+                    expired = true
+                }
                 is PageOutcome.Failed -> status = app.getString(R.string.chat_page_failed, r.code)
                 PageOutcome.Unreachable -> status = app.getString(R.string.chat_unreachable)
             }

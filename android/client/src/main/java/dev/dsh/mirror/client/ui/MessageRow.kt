@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,6 +41,11 @@ import dev.dsh.mirror.client.theme.LocalDshFonts
  * <p>版式取自网页端 `app.css` 浅色那套：我发的话是右侧浅蓝气泡（`--me:#e8efff`）、
  * 助手回复左侧无气泡、思考与工具折成一行暗色摘要。**Markdown 与完整的「工作过程」折叠卡是 M4/M5**，
  * 这里只做纯文本 + 围栏代码块（等宽 + 代码底色）。
+ *
+ * <p><b>0.10.4：不要再给消息行挂长按菜单。</b>0.10.3 试过「长按行里的留白 → 复制整条消息」，
+ * 结果与系统选择直接打架：两个弹层同时冒出来；行级 `pointerInput` 还会吃掉点击，导致
+ * **点别处关不掉系统的选择工具条**。现在只有 {@link SelectionContainer}，长按就是纯系统行为。
+ * 代价是选择范围跨不过段落（一条消息在渲染上是多个 `Text`），要跨段得另想办法。
  */
 @Composable
 fun ChatRowView(row: ChatRow, detail: Boolean, running: Boolean, onFile: ((String) -> Unit)? = null) {
@@ -69,7 +75,8 @@ private fun UserRow(row: ChatRow.User) {
         ) {
             // 与网页端一致：用户气泡里的正文也走 Markdown（同一个 renderMarkdown 入口）
             // 用户自己发的话里没有"电脑上的文件"，所以不给下载动作
-            MarkdownView(row.text)
+            // SelectionContainer = 系统那套：长按出两个手柄 + 浮动工具条，拖手柄选任意范围
+            SelectionContainer { MarkdownView(row.text) }
         }
     }
 }
@@ -86,7 +93,8 @@ private fun AssistantRow(
             WorkBlock(row.thinkChars, row.work, detail, running)
             Spacer(Modifier.size(6.dp))
         }
-        MarkdownView(row.text, onFile = onFile)
+        // 正文可选中（系统手势 + 手柄 + 工具条）
+        SelectionContainer { MarkdownView(row.text, onFile = onFile) }
         if (row.interrupted) {
             Spacer(Modifier.size(4.dp))
             Text(
