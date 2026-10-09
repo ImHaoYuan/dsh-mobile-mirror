@@ -1,5 +1,8 @@
 package dev.dsh.mirror;
 
+// 本类住在 :core 里，R 是 :core 自己的（android.nonTransitiveRClass=true）。
+import dev.dsh.mirror.core.R;
+
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;

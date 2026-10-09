@@ -17,7 +17,7 @@ import java.util.Locale;
  * 读得到 —— 这正是这条路可行的前提。代价是 Cookie 有 30 天有效期，
  * 失效后由 {@link IslandMonitor} 在岛上显示「登录失效」，把静默失败变成看得见的。
  */
-final class ServerPrefs {
+public final class ServerPrefs {
 
     private static final String FILE = "dsh_mirror";
     private static final String KEY_HOST = "host";
@@ -25,41 +25,41 @@ final class ServerPrefs {
     private static final String KEY_FP = "cert_fingerprint";
     private static final String KEY_COOKIE = "session_cookie";
 
-    static final int DEFAULT_PORT = 19388;
+    public static final int DEFAULT_PORT = 19388;
 
     private final SharedPreferences prefs;
 
-    ServerPrefs(Context ctx) {
+    public ServerPrefs(Context ctx) {
         this.prefs = ctx.getApplicationContext().getSharedPreferences(FILE, Context.MODE_PRIVATE);
     }
 
-    boolean isConfigured() {
+    public boolean isConfigured() {
         return !host().isEmpty();
     }
 
-    String host() {
+    public String host() {
         return prefs.getString(KEY_HOST, "");
     }
 
-    int port() {
+    public int port() {
         return prefs.getInt(KEY_PORT, DEFAULT_PORT);
     }
 
     /** 形如 https://192.168.1.5:19388，无尾斜杠。 */
-    String baseUrl() {
+    public String baseUrl() {
         return "https://" + host() + ":" + port();
     }
 
-    void save(String host, int port) {
+    public void save(String host, int port) {
         prefs.edit().putString(KEY_HOST, host).putInt(KEY_PORT, port).apply();
     }
 
     /** 小写十六进制，无分隔符。空字符串表示尚未建立信任。 */
-    String fingerprint() {
+    public String fingerprint() {
         return prefs.getString(KEY_FP, "");
     }
 
-    void saveFingerprint(String hex) {
+    public void saveFingerprint(String hex) {
         prefs.edit().putString(KEY_FP, hex == null ? "" : hex).apply();
     }
 
@@ -69,15 +69,15 @@ final class ServerPrefs {
      * <p>由 MainActivity 从 {@code CookieManager} 抄来。服务侧直接把它塞进
      * {@code Cookie} 请求头，不解析、不重组 —— 服务端认的是原串。
      */
-    String cookie() {
+    public String cookie() {
         return prefs.getString(KEY_COOKIE, "");
     }
 
-    void saveCookie(String cookie) {
+    public void saveCookie(String cookie) {
         prefs.edit().putString(KEY_COOKIE, cookie == null ? "" : cookie).apply();
     }
 
-    void clear() {
+    public void clear() {
         prefs.edit().clear().apply();
     }
 
@@ -92,7 +92,7 @@ final class ServerPrefs {
      *   [fe80::1]:19388          （IPv6 字面量）
      *   １０.０.０.１：１９３８８             （全角，中文输入法下很常见）
      */
-    static String[] normalize(String raw) {
+    public static String[] normalize(String raw) {
         if (raw == null) return null;
         String s = toHalfWidth(raw).trim();
         if (s.isEmpty()) return null;
@@ -189,7 +189,7 @@ final class ServerPrefs {
      *
      * 全角字符与半角肉眼难辨，把码位打出来用户才能自己定位是哪个字符不对。
      */
-    static String describeNonAscii(String s) {
+    public static String describeNonAscii(String s) {
         if (s == null) return "";
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < s.length(); i++) {

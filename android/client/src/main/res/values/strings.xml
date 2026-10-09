@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name 刻意不在这里定义：由 build.gradle.kts 用 resValue 注入。 -->
+
+    <string name="boot_checking">正在连接…</string>
+    <string name="net_unreachable">连不上电脑</string>
+    <string name="action_repair">重新配对</string>
+
+    <!-- 配对 -->
+    <string name="pair_title">连接电脑</string>
+    <string name="pair_intro">输入电脑上插件显示的地址。</string>
+    <string name="pair_field_hint">192.168.1.5:19388</string>
+    <string name="pair_connect">连接</string>
+    <string name="pair_testing">正在测试连接…</string>
+    <string name="pair_err_empty">请填写地址</string>
+    <string name="pair_err_format">地址格式不对，应形如 192.168.1.5:19388</string>
+    <string name="pair_err_unreachable">连不上。请确认手机与电脑在同一 Wi-Fi，且地址正确</string>
+    <string name="pair_cert_title">确认证书指纹</string>
+    <string name="pair_cert_intro">此确认只需一次，之后不再询问。请与电脑上插件显示的指纹逐段比对，一致才继续：</string>
+    <string name="pair_cert_changed">（地址已变更）</string>
+    <string name="pair_cert_trust">指纹一致，记住并继续</string>
+    <string name="pair_cert_cancel">取消</string>
+    <string name="pair_mismatch_title">证书与记录不符</string>
+    <string name="pair_mismatch_intro">电脑上记录的指纹是：</string>
+    <string name="pair_mismatch_now">这次拿到的是：</string>
+    <string name="pair_mismatch_hint">如果电脑上重新生成过证书（例如局域网 IP 变了），需要重新配对。</string>
+
+    <!-- 登录 -->
+    <string name="login_title">登录</string>
+    <string name="login_user">账号</string>
+    <string name="login_pass">密码</string>
+    <string name="login_submit">登录</string>
+    <string name="login_busy">正在登录…</string>
+    <string name="login_err_bad">账号或密码不对</string>
+    <string name="login_err_locked">尝试过于频繁，请 %1$d 秒后重试</string>
+    <string name="login_err_missing">请填写账号和密码</string>
+    <string name="login_err_unconfigured">电脑上还没设置账号密码。请先在电脑上打开插件的设置页设置一次。</string>
+    <string name="login_err_unreachable">连不上电脑。请确认手机与电脑在同一 Wi-Fi，且电脑上的 DSH 正在运行</string>
+    <string name="login_saved_hint">已记住账号密码，下次会自动登录</string>
+
+    <!-- 会话列表 -->
+    <string name="list_title">DSH镜像</string>
+    <string name="list_loading">正在载入会话…</string>
+    <string name="list_broken">服务端返回的数据看不懂，可能是插件与客户端版本不一致</string>
+    <string name="list_retry">重试</string>
+    <string name="list_empty_title">还没有会话</string>
+    <string name="list_empty_note">在电脑上开一段对话，这里就会出现它的镜像。</string>
+    <string name="list_chat_later">会话页在下一步（M3）实现</string>
+    <string name="tag_ask">待回答</string>
+    <string name="tag_sub">子智能体</string>
+    <string name="tag_on">运行中</string>
+    <string name="tag_no_agent">无 agent</string>
+    <string name="tag_blank">空白</string>
+
+    <!-- 新建会话 -->
+    <string name="new_title">新建会话</string>
+    <string name="new_pick">选一个文件夹，新会话就在那里开始。</string>
+    <string name="new_none">还没找到任何文件夹，下面手输一个绝对路径也行。</string>
+    <string name="new_other">其他路径…（必须是绝对路径）</string>
+    <string name="new_path_hint">D:\\项目\\新文件夹</string>
+    <string name="new_create">在这个文件夹新建</string>
+    <string name="new_need_path">先填一个文件夹路径</string>
+    <string name="new_creating">正在新建…</string>
+    <string name="new_created">已新建会话</string>
+
+    <!-- ⋯ 面板 -->
+    <string name="more_title">更多</string>
+    <string name="more_repair_note">重新配对会清掉保存的地址、证书指纹、登录票根和记住的账号密码，下次要重新登录。</string>
+</resources>

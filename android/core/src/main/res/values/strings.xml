@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知与超级岛用到的文案。两个 App 共用，所以放在 :core 而不是某个 App 里。 -->
+<resources>
+    <string name="notif_channel_service">后台连接</string>
+    <string name="notif_channel_service_desc">保持与电脑的连接，便于随时收发</string>
+    <string name="notif_service_title">DSH 镜像</string>
+    <string name="notif_service_text">正在保持连接</string>
+
+    <!-- 超级岛：岛右边显示的文字，按状态切换。 -->
+    <string name="island_state_waiting">等你回答</string>
+    <string name="island_state_running">运行中</string>
+    <string name="island_state_done">已完成</string>
+    <string name="island_state_expired">登录失效</string>
+
+    <!-- 通知栏正文，同样跟状态走 -->
+    <string name="island_notif_waiting">有会话在等你回答</string>
+    <string name="island_notif_running">有会话正在运行</string>
+    <string name="island_notif_done">会话已完成</string>
+    <string name="island_notif_expired">登录态失效，打开 App 重新登录即可恢复</string>
+</resources>

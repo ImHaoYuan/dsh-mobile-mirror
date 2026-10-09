@@ -40,9 +40,16 @@ android/.gradle/
 android/.cxx/
 android/build/
 android/app/build/
+android/core/build/
+android/client/build/
 android/app/release/
 android/.idea/
 android/.kotlin/
 
 # 插件交付包（构建产物，见 README「构建 APK」）
 out/
+
+# ===========================================================================
+# 参考截图（DeepSeek 安卓端参考图，仅本机留存，不进版本库）
+# ===========================================================================
+screenshots/

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- app_name 刻意不在这里定义：由 build.gradle.kts 用 resValue 注入。 -->
+    <!-- 通知与超级岛的文案已搬到 :core（两个 App 共用）：android/core/src/main/res/values/strings.xml -->
 
     <string name="setup_title">连接设置</string>
     <string name="setup_intro">输入电脑上插件显示的地址。</string>
@@ -17,23 +18,4 @@
     <string name="cert_message">此确认只需一次，之后不再询问。\n\n请与电脑上插件显示的指纹逐段比对，一致才继续：</string>
     <string name="cert_trust">指纹一致，记住并继续</string>
     <string name="cert_cancel">取消</string>
-
-    <string name="notif_channel_service">后台连接</string>
-    <string name="notif_channel_service_desc">保持与电脑的连接，便于随时收发</string>
-    <string name="notif_service_title">DSH 镜像</string>
-    <string name="notif_service_text">正在保持连接</string>
-
-    <!-- 第 2 步：真实上岛。岛右边显示的文字，按状态切换。 -->
-    <string name="island_state_waiting">等你回答</string>
-    <string name="island_state_running">运行中</string>
-    <string name="island_state_done">已完成</string>
-    <string name="island_state_expired">登录失效</string>
-
-    <!-- 通知栏正文，同样跟状态走 -->
-    <string name="island_notif_waiting">有会话在等你回答</string>
-    <string name="island_notif_running">有会话正在运行</string>
-    <string name="island_notif_done">会话已完成</string>
-    <string name="island_notif_expired">登录态失效，打开 App 重新登录即可恢复</string>
-
-
 </resources>

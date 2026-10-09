@@ -1,5 +1,8 @@
 package dev.dsh.mirror;
 
+// 本类住在 :core 里，R 是 :core 自己的（android.nonTransitiveRClass=true）。
+import dev.dsh.mirror.core.R;
+
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -106,7 +109,12 @@ public class MirrorService extends Service {
     private Notification buildNotification() {
         IslandMonitor.Snapshot s = snapshot;
 
-        Intent open = new Intent(this, MainActivity.class);
+        // 按包名解析入口 Activity，**不写死 MainActivity.class** —— 这个类在 :core 里，
+        // 而两个 App（WebView 外壳 / 原生客户端）各有自己的入口 Activity。
+        Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (open == null) {
+            open = new Intent(Intent.ACTION_MAIN).setPackage(getPackageName());
+        }
         open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         PendingIntent pi = PendingIntent.getActivity(
                 this, 0, open,
@@ -127,8 +135,10 @@ public class MirrorService extends Service {
         IslandSupport.Opts o = s.toOpts(this);
         if (o != null) {
             String json = IslandSupport.buildParamJsonEx(o);
-            // 岛图标用全彩的 launcher 图标 —— 真机验证过它能完整显示
-            IslandSupport.attach(this, n, json, R.mipmap.ic_launcher);
+            // 岛图标用全彩的 launcher 图标 —— 真机验证过它能完整显示。
+            // 资源 id 从 ApplicationInfo 取，不写 R.mipmap.*：那是各 App 自己的图标
+            // （外壳版是蓝底，原生版是黑底）。
+            IslandSupport.attach(this, n, json, getApplicationInfo().icon);
         }
         return n;
     }

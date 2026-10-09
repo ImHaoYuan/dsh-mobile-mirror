@@ -13,12 +13,12 @@ import javax.net.ssl.X509TrustManager;
  * 为什么不装系统 CA：装 CA 是<b>系统级</b>信任 —— 所有 App 都信，系统还会常驻一条
  * "网络可能受到监控"。指纹固定把信任限制在本 App 内。见 docs/apk-plan.md §6.3。
  */
-final class CertPinner {
+public final class CertPinner {
 
     private CertPinner() {}
 
     /** 证书 DER 的 SHA-256，小写十六进制、无分隔符。失败返回空串。 */
-    static String fingerprint(X509Certificate cert) {
+    public static String fingerprint(X509Certificate cert) {
         if (cert == null) return "";
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -35,14 +35,14 @@ final class CertPinner {
     }
 
     /** 与已记录的指纹比对。未记录指纹时返回 false。 */
-    static boolean matches(String pinned, X509Certificate cert) {
+    public static boolean matches(String pinned, X509Certificate cert) {
         if (pinned == null || pinned.isEmpty()) return false;
         String actual = fingerprint(cert);
         return !actual.isEmpty() && actual.equalsIgnoreCase(pinned);
     }
 
     /** 界面展示用：AA:BB:CC:… 大写、按字节分隔。 */
-    static String pretty(String hex) {
+    public static String pretty(String hex) {
         if (hex == null || hex.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < hex.length(); i += 2) {
@@ -60,7 +60,7 @@ final class CertPinner {
      *
      * 注意这里只接受入参指纹，<b>不持有 Context</b>，避免长期引用泄漏。
      */
-    static X509TrustManager trustManager(final String pinnedFingerprint) {
+    public static X509TrustManager trustManager(final String pinnedFingerprint) {
         return new X509TrustManager() {
             @Override
             public void checkClientTrusted(X509Certificate[] chain, String authType) {

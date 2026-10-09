@@ -49,5 +49,8 @@ android {
     }
 }
 
-// 刻意不写 dependencies {} —— 本模块零第三方依赖。
-// WebView、通知、前台服务、HTTPS 全部走 Android 原生 API。
+dependencies {
+    // 只依赖本仓库自己的 :core —— 仍然零第三方依赖。
+    // 共享的是平台层（证书固定 / 地址 / 原生 HTTP / 前台服务 / 超级岛），界面仍全在网页侧。
+    implementation(project(":core"))
+}
