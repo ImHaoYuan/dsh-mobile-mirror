@@ -575,6 +575,54 @@ return { events: events.slice(cut, end), hasMore: cut > 0 };
 > 现在只有 `SelectionContainer`，长按就是纯系统行为。代价：选择范围跨不过段落
 >（一条消息在渲染上是多个 `Text`），要跨段得另想办法。
 
+### 4.19 提问卡与 `hold` 认领（**0.11 已实现**）
+
+M5 的第一块。宿主一次 `ask_user_question` 可以带**多道题**，而 `/api/answer` 要求
+**一次交齐**（`validateAnswers`：`answers.length` 必须等于题目数），所以卡片是按「一次提问」
+为单位提交的，不是按单道题。
+
+**为什么单独一条流**：提问**不在会话事件流里** —— 宿主把它走 `user-questions/request` waterfall
+（`ctx.userQuestions.ask()`），`/api/follow` 上看不到。插件单独开了 `GET /api/questions/stream`
+（SSE）：连上先补一份**当前挂着的全部**，之后推 `question` / `question-settled` 两种帧。
+客户端为它常开一条流（`net/Questions.kt`），连接、心跳、401 自动重登、退避全部复用 `/api/follow`
+那套 `Sse`（0.11 顺手把它抽成了 `net/Sse.kt`）。
+
+**形态：底部弹出的卡片**（用户 0.10.4 时选的，不是在消息流里插一行）。
+
+| 元素 | 规格 |
+|---|---|
+| 卡片 | 贴底、上圆角 20dp、`heightIn(max = 520.dp)` 可滚，`BgPage` 底 |
+| 遮罩 | 黑 32% 全屏，点一下 = 稍后再答（提问不丢，底部留胶囊） |
+| 标题行 | 「需要你回答」（16sp SemiBold 界面档）+ 右侧「稍后」 |
+| 多题提示 | 还有别的提问等着时：「还有 N 个问题等着」 |
+| 题头 | `header` 非空时画一个小胶囊（`Sel` 底 / `AccentFg` 字） |
+| 选项 | 一整行：左边**画出来的**指示器（单选圆 / 多选方 + 对勾），选中 `Sel` 底；`description` 12.5sp 三级灰 |
+| 自定义 | 多行 `BasicTextField`（46–120dp），样式同底部输入框 |
+| 提交 | `DshPrimaryButton`；**每道题**要么选了、要么写了才可点 |
+| 胶囊 | 卡片关掉后留「有 N 个问题待回答」，点一下叫回来 |
+
+**`hold` 认领**：卡片一开就 `POST /api/questions/hold {hold:true}`，宿主不再跑它自己的 120 秒
+倒计时（手机上作答就永远是「时答」）；关卡片 / 点遮罩 / `ON_STOP`（退到后台）立刻 `hold:false`，
+宿主按原 deadline 决定 —— 不会把 agent 卡住。释放是**即发即忘**，走 `QuestionHub` 自带的 IO
+作用域：`rememberCoroutineScope()` 在组合离开时就取消了，那一下根本发不出去。
+
+**会话列表角标**：服务端的 `SessionRow.pendingQuestion` 要等下一次刷新才更新，所以列表行改成
+`row.pendingQuestion || questions.countFor(id) > 0` —— 那条流一推，角标立刻亮。
+
+**取舍**：
+
+- 消息流里**不插「已答」行**：提问不在事件流里，本地塞一行要自己编 seq，重连快照一来就会重复或错位；
+  agent 的续写就是反馈。
+- 别的会话来的提问只做**角标**，不弹卡片（用户选的）。系统通知与超级岛留到 M6。
+- 卡片是**派生状态**（`pending.firstOrNull { it.id !in dismissed }`），所以新提问会自动弹；
+  点掉的那些记在每会话一份 `dismissed` 里。
+- 不用 `ModalBottomSheet`：它是独立窗口，卡片里那个多行输入框与输入法 / `adjustResize` 在它上面
+  容易错位。自己画「遮罩 + 贴底卡片」放在同一个窗口里，`adjustResize` 直接就能用。
+
+**为什么解析要绕过 `org.json`**：Android 单测跑在桩 `android.jar` 上，`org.json` 的方法一律抛
+`Method … not mocked`。所以解析规则吃一个 `FieldReader` 接口（`net/Questions.kt`），生产路径套
+`JsonReader`，单测给一张 Map —— **字段名写在 `parseBatch` 里**，所以仍然是被测到的；
+`JsonReader` 只剩转发。同一原因，`errorMessage` 也拆成了「取 message」+「纯拼文案」。
 ## 5. 里程碑
 
 | 阶段 | 内容 | 状态 |
@@ -588,7 +636,7 @@ return { events: events.slice(cut, end), hasMore: cut > 0 };
 | **0.6** | 抽屉四级页（新建会话 / 更多 / 字体 / 开源许可 全部搬进抽屉）+ 首页真输入框（含文件夹选择，方案 §4.7） | ✅ 已完成（2026-10-09，**0.6** → 修正 **0.6.1** → 图标/动画 **0.6.2**） |
 | M3 | 会话页（`/api/page` 首屏 + `/api/follow` SSE 三类帧、seq 排序、断线重连、切后台补齐）+ 发送（`requestId` 幂等 + 300ms 节流）/ 停止（两段式确认） | 待做 |
 | M4 | Markdown 渲染器（与网页端 `renderMarkdown` 逐条一致）+ 代码块语言名/复制 | ✅ 已完成（2026-10-09，**0.9**，单测 9/9） |
-| M5 | 工作过程折叠 / 提问卡（含 `hold` 认领）/ 模型与模式 / 右侧刻度条 / 浅色主题 | 待做 |
+| M5 | 工作过程折叠 / 提问卡（含 `hold` 认领）/ 模型与模式 / 右侧刻度条 / 浅色主题 | 进行中：**提问卡 + `hold` 认领 ✅（0.11）**；其余待做 |
 | M6 | 通知 + 超级岛接入（复用 `:core`）+ release 打包（**要开 R8**）+ 真机验收 | 待做 |
 
 ### 5.1 Markdown 的对齐口径
@@ -1014,8 +1062,31 @@ package `dev.dsh.mirror.client`，label `DSH镜像原生`。新类 `SecretVault`
 | 外壳改了什么 | `:app` 自身只动 `versionCode`/`versionName`；`:core` 的 `MirrorApi` 是**纯增**（26 增 1 改，改的那行只是把 `setReadTimeout(TIMEOUT_MS)` 变成传参，6 参路径仍传 `TIMEOUT_MS`）—— **行为与 1.1 一致**，只是 dex 变了，所以跟着出一版 |
 | 未验证 | 真机：长按只剩系统选择工具条、**点别处能关掉**；以及 0.10.3 那一批（正文真粗体 / 正文不再偏细 / 得意黑不再糊 / 往上翻能加载出历史 / 键盘收起） |
 
+## 7.22 0.11 验收证据（提问卡 + `hold` 认领，2026-10-09）
+
+M5 的第一块。用户 0.10.4 时拍板的形态是**底部弹出的卡片**（不是消息流里插一行），
+`hold` 认领语义也一并同意。本轮**只动 `:client`**。
+
+| 项 | 结果 |
+|---|---|
+| 插件单测 | **556 / 556**（本轮插件零改动，只是复跑确认） |
+| 客户端单测 | **28 / 28**（11 原有 + **17 新增**：帧解析 6、提交判据 5、组装与下发形状 3、错误文案 2、1 个多选兜底） |
+| 客户端 APK | 44,558,733 B（42.49 MB），`versionCode=23` / `versionName=0.11`，标签仍是「DSH镜像原生」 |
+| 客户端交付 | `out/native-client/dsh-mobile-mirror-client-0.11.apk`，SHA256 `444BFC163B19FE1FA6E4D880A6F5A6804044CA74B6D58D5BDB1692026C4ED20D` |
+| **外壳** | `app-debug.apk` **仍是 72,186 B / SHA256 `0A4E2424…`** —— 与 1.1.1 **逐字节相同**（本轮没碰 `:core`，§4.18 那次的外壳重建没有反复） |
+| 干净构建 | `BUILD SUCCESSFUL`，173 tasks（`:app:assembleRelease` + `:app:assembleDebug` + `:client:assembleDebug` + `:client:testDebugUnitTest`） |
+| `out/` 整理 | 根目录只剩 `out/web-shell/`（10 个外壳 APK）与 `out/native-client/`（23 个原生 APK）；以后产物各归各的目录 |
+| 未验证 | 真机：提问卡会不会自动弹、多题一次交齐、自定义答案、提交后卡片消失、关掉后的胶囊能叫回来、`hold` 期间电脑端倒计时是否真的停、退到后台是否释放、会话列表角标是否立刻亮 |
+
+**为什么新增的 17 个单测不能直接吃 JSON**：Android 单测的 `android.jar` 是桩，
+`org.json.JSONObject.optString` 直接抛 `Method optString in org.json.JSONObject not mocked`
+（实测）。所以解析规则改吃 `FieldReader`，单测给一张 Map；字段名留在 `parseBatch` 里，仍被覆盖。
 ## 8. 待办
 
+- [x] **0.11：提问卡（底部弹出）+ `hold` 认领 + 会话列表实时角标**（2026-10-09，见 §4.19 / §7.22）
+- [ ] **0.11 待真机确认**：提问卡自动弹出、一次提问里多道题一次交齐、自定义答案、提交后卡片消失、关掉后胶囊能叫回来、`hold` 期间电脑端倒计时是否真的停、退到后台是否释放、会话列表角标是否立刻亮
+- [ ] 0.11 已知取舍：消息流里不插「已答」行（agent 的续写就是反馈）；别的会话来的提问只做角标（通知/超级岛留 M6）；`org.json` 在单测里是桩，解析规则走 `FieldReader`
+- [ ] 0.12 候选：模型 / 模式胶囊（`/api/models` + `/api/model` + `/api/presets` + `/api/preset`）；0.13 工作过程完整折叠；0.14 右侧刻度条；之后 M6（通知 + 超级岛 + R8 打包）
 - [x] 0.9：Markdown 渲染与网页端逐条一致（2026-10-09）
 - [ ] 0.9 待真机确认：标题层级与间距、表格横向滚动、代码块头部条与复制键、任务列表勾选框、链接点击、图片占位
 - [ ] 0.9 已知取舍：行内代码无描边/padding；图片只占位；表格按内容宽度（非 width:100%）

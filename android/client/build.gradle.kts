@@ -30,8 +30,9 @@ android {
         // 修版 0.10.2：假粗体字面 + 文件卡挪到一轮末尾 + throughSeq 翻页参数（这一版的字体是错的）
         // 0.10.3：删掉假粗体，正文改可变字体真 400/700；翻页超时与参数修复；输入法收起；长按选中
         // 修版 0.10.4：去掉自加的长按「复制整条消息」—— 它和系统选择弹层打架、还让选择工具条点不掉
-        versionCode = 22
-        versionName = "0.10.4"
+        // 0.11：提问卡（M5 第一块）—— 底部弹出的卡片 + /api/questions/stream + hold 认领
+        versionCode = 23
+        versionName = "0.11"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
         resValue("string", "app_name", "DSH镜像原生")

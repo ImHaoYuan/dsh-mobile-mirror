@@ -73,6 +73,8 @@ import dev.dsh.mirror.client.theme.Dsh
 fun SessionListScreen(
     app: Context,
     username: String,
+    /** 待答提问中心：服务端的 `pendingQuestion` 要等下一次刷新，这里能立刻变。 */
+    questions: QuestionHub,
     reloadKey: Int,
     onRefresh: () -> Unit,
     onNew: () -> Unit,
@@ -160,6 +162,7 @@ fun SessionListScreen(
                     items(Sessions.orderWithChildren(g.items), key = { it.id }) { row ->
                         SessionRowView(
                             row = row,
+                            ask = row.pendingQuestion || questions.countFor(row.id) > 0,
                             tAsk = tTagAsk,
                             tSub = tTagSub,
                             tOn = tTagOn,
@@ -281,6 +284,8 @@ private data class RowTag(val text: String, val fg: Color, val border: Color, va
 @Composable
 private fun SessionRowView(
     row: SessionRow,
+    /** 有提问等着我回答（服务端标记，或本地那条流刚推来的）。 */
+    ask: Boolean,
     tAsk: String,
     tSub: String,
     tOn: String,
@@ -295,7 +300,7 @@ private fun SessionRowView(
 
     val tags = ArrayList<RowTag>(3)
     // 「待回答」放最前：它是唯一"需要你动手"的状态
-    if (row.pendingQuestion) tags.add(RowTag(tAsk, Dsh.AccentFg, Dsh.LineAsk, Dsh.Sel))
+    if (ask) tags.add(RowTag(tAsk, Dsh.AccentFg, Dsh.LineAsk, Dsh.Sel))
     if (child) tags.add(RowTag(tSub, Dsh.ListFg, Dsh.ListLine2, Dsh.Chip))
     if (row.running) tags.add(RowTag(tOn, Dsh.Ok, Dsh.LineOk, Dsh.OkBg))
     if (!row.agentAvailable) tags.add(RowTag(tNoAgent, Dsh.ListDim, Dsh.ListLine, Color.Transparent))

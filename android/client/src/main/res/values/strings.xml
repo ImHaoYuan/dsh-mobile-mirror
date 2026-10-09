@@ -154,6 +154,17 @@
     <string name="chat_interrupted">本轮被中断</string>
     <string name="chat_empty">这个会话还没有可显示的内容</string>
     <string name="chat_back">返回</string>
+    <!-- 提问卡（0.11）：宿主一次提问可能带多道题，答案必须一次交齐 -->
+    <string name="ask_title">需要你回答</string>
+    <string name="ask_later">稍后</string>
+    <string name="ask_more">还有 %1$d 个问题等着</string>
+    <string name="ask_submit">提交</string>
+    <string name="ask_submitting">提交中…</string>
+    <string name="ask_need_answer">每道题都要选一个选项，或者写一句自己的答案</string>
+    <string name="ask_custom_hint">也可以自己写一个答案…</string>
+    <string name="ask_custom_only">输入你的答案…</string>
+    <string name="ask_pill">有 %1$d 个问题待回答</string>
+    <string name="ask_reconnecting">提问通道断开，正在重连（第 %1$d 次）</string>
     <string name="cd_refresh">刷新</string>
     <string name="cd_more">更多</string>
     <string name="cd_menu">打开侧栏</string>

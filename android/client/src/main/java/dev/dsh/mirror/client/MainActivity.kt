@@ -40,8 +40,10 @@ import dev.dsh.mirror.client.theme.Dsh
 import dev.dsh.mirror.client.theme.DshFontStore
 import dev.dsh.mirror.client.theme.DshFonts
 import dev.dsh.mirror.client.theme.DshMirrorTheme
+import dev.dsh.mirror.client.ui.AskOverlay
 import dev.dsh.mirror.client.ui.ChatScreen
 import dev.dsh.mirror.client.ui.ChatTarget
+import dev.dsh.mirror.client.ui.QuestionHub
 import dev.dsh.mirror.client.prefs.UiPrefs
 import dev.dsh.mirror.client.ui.FontPanel
 import dev.dsh.mirror.client.ui.HomeScreen
@@ -168,6 +170,11 @@ private fun HomeWithDrawer(
     var creating by remember { mutableStateOf(false) }
     // 「显示详细工作过程」：设置面板改、会话页读，所以状态放在共同父级
     var detail by remember { mutableStateOf(UiPrefs.detailWork(app)) }
+    // 待答提问（0.11）：全局一条流管所有会话 —— 会话列表要角标、会话页要弹卡片。
+    // 放在这里是因为首页+抽屉+会话页都活在同一个组合里，实例只有一个。
+    val questions = remember { QuestionHub(app) }
+    LaunchedEffect(Unit) { questions.connect(scope) }
+    LaunchedEffect(questions.expired) { if (questions.expired) onExpired() }
 
     // 返回键分层：先回上一层，已经在会话列表那一层才关抽屉
     BackHandler(enabled = drawerState.isOpen) {
@@ -210,6 +217,7 @@ private fun HomeWithDrawer(
                         SessionListScreen(
                             app = app,
                             username = username,
+                            questions = questions,
                             reloadKey = reloadKey,
                             onRefresh = { reloadKey += 1 },
                             onNew = { page = DrawerPage.New },
@@ -327,6 +335,9 @@ private fun HomeWithDrawer(
                     onExpired()
                 },
             )
+            // 提问卡盖在会话页**之上**（Box 里后画的就是上层），所以它内部那个
+            // fillMaxSize 能连输入框一起罩住；没有待答提问时它不画遮罩、也不吃点击。
+            AskOverlay(hub = questions, sessionId = open.id)
         }
     }
 
