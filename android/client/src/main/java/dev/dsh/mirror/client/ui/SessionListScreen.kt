@@ -1,15 +1,18 @@
 package dev.dsh.mirror.client.ui
 
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,13 +29,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import dev.dsh.mirror.client.R
+import dev.dsh.mirror.client.net.ArchiveResult
 import dev.dsh.mirror.client.net.SessionGroup
 import dev.dsh.mirror.client.net.SessionRow
 import dev.dsh.mirror.client.net.Sessions
@@ -59,6 +66,7 @@ import dev.dsh.mirror.client.net.SessionsResult
 import dev.dsh.mirror.client.prefs.Collapse
 import dev.dsh.mirror.client.theme.LocalDshFonts
 import dev.dsh.mirror.client.theme.Dsh
+import kotlinx.coroutines.launch
 
 /**
  * 会话列表（M2）。
@@ -83,6 +91,7 @@ fun SessionListScreen(
     onOpenSession: (SessionRow) -> Unit,
 ) {
     val collapse = remember { Collapse(app) }
+    val scope = rememberCoroutineScope()
     val collapsed = remember { mutableStateMapOf<String, Boolean>() }
     var groups by remember { mutableStateOf<List<SessionGroup>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
@@ -123,6 +132,49 @@ fun SessionListScreen(
     // 回到前台且距上次成功刷新超过 10 秒就自动刷一次（网页端 visibilitychange 的同义实现）
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         if (loadedOnce && System.currentTimeMillis() - lastAt > 10_000) onRefresh()
+    }
+
+    // —— 长按删除（归档）——
+    // 只放行空白会话：那种会话没有任何工作在跑，归档一定成功；也正好挡住"长按误删
+    // 正在聊的会话"。归档是**软删除** —— 会话文件还在磁盘上，电脑端「已归档」里找得回来，
+    // 所以桌面端对静止会话也是不弹确认直接提交的；这里仍弹一次，因为手机上没有"撤销"入口。
+    var pending by remember { mutableStateOf<SessionRow?>(null) }
+    var deleting by remember { mutableStateOf(false) }
+    val tBlankOnly = stringResource(R.string.del_blank_only)
+    val tDelTitle = stringResource(R.string.del_title)
+    val tDelNote = stringResource(R.string.del_note)
+    val tDelConfirm = stringResource(R.string.del_confirm)
+    val tDelCancel = stringResource(R.string.del_cancel)
+
+    fun askDelete(row: SessionRow) {
+        if (!row.blank) {
+            Toast.makeText(app, tBlankOnly, Toast.LENGTH_SHORT).show()
+            return
+        }
+        pending = row
+    }
+
+    fun doDelete(row: SessionRow) {
+        if (deleting) return
+        deleting = true
+        scope.launch {
+            val r = Sessions.archive(app, row.id)
+            deleting = false
+            pending = null
+            when (r) {
+                is ArchiveResult.Ok -> {
+                    // 本地立刻摘掉，不等下一次刷新 —— 否则行会在屏幕上多留几秒，
+                    // 看着像"点了没反应"。空掉的分组一并收走（服务端也是这么分组的）。
+                    groups = groups.mapNotNull { g ->
+                        val items = g.items.filter { it.id != row.id }
+                        if (items.isEmpty()) null else g.copy(items = items)
+                    }
+                }
+                is ArchiveResult.Rejected -> Toast.makeText(app, r.message, Toast.LENGTH_LONG).show()
+                ArchiveResult.Expired -> onExpired()
+                ArchiveResult.Unreachable -> Toast.makeText(app, tUnreachable, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     fun isCollapsed(key: String): Boolean = collapsed[key] ?: collapse.isCollapsed(key)
@@ -169,11 +221,26 @@ fun SessionListScreen(
                             tNoAgent = tTagNoAgent,
                             tBlank = tTagBlank,
                             onClick = { onOpenSession(row) },
+                            onLongClick = { askDelete(row) },
                         )
                     }
                 }
             }
         }
+    }
+
+    pending?.let { row ->
+        AlertDialog(
+            onDismissRequest = { if (!deleting) pending = null },
+            title = { Text(tDelTitle) },
+            text = { Text(tDelNote) },
+            confirmButton = {
+                TextButton(onClick = { doDelete(row) }, enabled = !deleting) { Text(tDelConfirm) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pending = null }, enabled = !deleting) { Text(tDelCancel) }
+            },
+        )
     }
 }
 
@@ -281,6 +348,7 @@ private fun Dot(on: Boolean) {
 
 private data class RowTag(val text: String, val fg: Color, val border: Color, val bg: Color)
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionRowView(
     row: SessionRow,
@@ -292,6 +360,8 @@ private fun SessionRowView(
     tNoAgent: String,
     tBlank: String,
     onClick: () -> Unit,
+    /** 长按：只有空白会话会被真的删掉，其余给一句提示（判断在调用方）。 */
+    onLongClick: () -> Unit,
 ) {
     val child = row.isChild
     // 子会话：内容左移 15dp（圆点正好落在引导线上），引导线画在整行的 15..17dp 处
@@ -324,7 +394,7 @@ private fun SessionRowView(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 56.dp)
-                .clickable(onClick = onClick)
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
                 .padding(start = startPad, end = 20.dp, top = 12.dp, bottom = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(11.dp),
             verticalAlignment = Alignment.Top,

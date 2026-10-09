@@ -54,6 +54,12 @@
     <string name="tag_on">运行中</string>
     <string name="tag_no_agent">无 agent</string>
     <string name="tag_blank">空白</string>
+    <!-- 长按删除（归档）：只有空白会话能删 -->
+    <string name="del_title">删除这个空白会话？</string>
+    <string name="del_note">它会从列表里消失。会话文件还在电脑上，电脑端的「已归档」里找得回来。</string>
+    <string name="del_confirm">删除</string>
+    <string name="del_cancel">取消</string>
+    <string name="del_blank_only">只有空白会话能长按删除</string>
 
     <!-- 新建会话 -->
     <string name="new_title">新建会话</string>
@@ -64,7 +70,6 @@
     <string name="new_create">在这个文件夹新建</string>
     <string name="new_need_path">先填一个文件夹路径</string>
     <string name="new_creating">正在新建…</string>
-    <string name="new_created">已新建会话</string>
 
     <!-- ⋯ 面板 -->
     <string name="more_title">设置</string>
@@ -165,6 +170,19 @@
     <string name="ask_custom_only">输入你的答案…</string>
     <string name="ask_pill">有 %1$d 个问题待回答</string>
     <string name="ask_reconnecting">提问通道断开，正在重连（第 %1$d 次）</string>
+    <!-- 模型 / 模式选择卡（0.12） -->
+    <string name="model_title">模型与模式</string>
+    <string name="model_close">关闭</string>
+    <string name="model_loading">正在读取模型目录…</string>
+    <string name="model_retry">重试</string>
+    <string name="model_section_model">模型</string>
+    <string name="model_section_failed">读不到的 provider</string>
+    <string name="model_section_preset">模式</string>
+    <string name="model_preset_locked">这个会话已经跑过至少一轮，模式不能再改了（DSH 的规则）</string>
+    <string name="model_preset_none">这台电脑上还没有可用的模式</string>
+    <string name="model_switched">已切换为 %1$s</string>
+    <string name="model_capsule">模型</string>
+    <string name="model_preset_default">默认模式</string>
     <string name="cd_refresh">刷新</string>
     <string name="cd_more">更多</string>
     <string name="cd_menu">打开侧栏</string>

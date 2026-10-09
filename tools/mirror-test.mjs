@@ -22,8 +22,9 @@ import {
   normalizeModelCatalog, createCatalogCache, loadModelCatalog, loadPresetRoster,
   validateModelSwitch, switchModel, validatePresetSwitch, switchPreset,
   validateAnswers, createQuestionHub, createQuestionAnswerer, MAX_ANSWER_CHARS,
-  // P4：新建会话
+  // P4：新建会话 / 归档
   normalizeWorkspaces, listRegisteredWorkspaces, validateSessionCreate, createSession,
+  archiveSession, archivedSessionIdsOf,
   // P5：隐藏系统消息
   isInjectedUserMessage, stripInjectedBlocks,
 } from '../lib/mirror.js'
@@ -589,13 +590,23 @@ const fakeAgents = {
  * 伪造 workspaceRegistry（list() 是**同步**的，形状对齐 app.asar 1090460）。
  * 故意包含一个和已有会话重复的目录（D:\a）：合并后应该只剩一条，且以登记表那条为准。
  */
+let archiveCalls = []
+/** 注入一次归档失败（测 404 / 409 两条错误分支）。用完置回 null。 */
+let archiveFailure = null
 const fakeRegistry = {
+  // 归档集合：宿主把它放在 workspaceRegistry 上，controller.list() 看不到。
+  archivedSessionIds: [],
   list() {
     return [
       { id: 'ws-1', path: 'D:\\proj\\alpha', title: 'alpha 项目' },
       { id: 'ws-2', path: 'D:\\proj\\empty', title: '' },
       { id: 'ws-3', path: 'D:\\a', title: '会话里也有的目录' },
     ]
+  },
+  async archiveSession(sessionId) {
+    archiveCalls.push(sessionId)
+    if (archiveFailure) throw archiveFailure
+    if (!this.archivedSessionIds.includes(sessionId)) this.archivedSessionIds.push(sessionId)
   },
 }
 
@@ -1060,6 +1071,12 @@ eq('模式清单：条数', presetsPure.length, 5)
 eq('模式清单：内置模式补上中文名', presetsPure.find((p) => p.id === 'cordis').label, '创造模式')
 eq('模式清单：自建模式用自己的名字', presetsPure.find((p) => p.id === 'custom-one').label, '我的模式')
 eq('模式清单：服务缺失时返回空数组', (await loadPresetRoster(null)).length, 0)
+// 「没有」一律是 JSON null，不是空串、也不是缺字段。客户端那边 org.json 的 optString
+// 会把 JSON null 变成**字符串 "null"**（0.12 就是因此每行底下写着 null），所以这条形状
+// 得钉死：要么改这里，要么客户端改解析，不能悄悄换一种"没有"的表示法。
+eq('模式清单：没有描述的行是 JSON null', presetsPure.find((p) => p.id === 'ptc').description, null)
+eq('模式清单：没有 broken 的行是 JSON null', presetsPure.find((p) => p.id === 'ptc').broken, null)
+eq('模式清单：有描述就原样带出', presetsPure.find((p) => p.id === 'custom-one').description, '自己写的')
 
 const presetAgent = { id: 'sess-1', ctx: {}, session: {} }
 const presetPure = await switchPreset(fakePresets, { get: () => presetAgent }, { sessionId: 'sess-1', preset: 'ptc' })
@@ -1690,6 +1707,78 @@ check('路径穿越拿不到配置',
   traversalFont.status !== 200 && !traversalFont.text.includes('passwordHash'),
   `${traversalFont.status} ${traversalFont.text.slice(0, 40)}`)
 
+
+// ==================== 二·四、归档会话（0.12.1） ====================
+console.log('\n———— 归档会话 ————')
+{
+  // 纯函数：读归档集合
+  eq('读不到 registry → 空集', archivedSessionIdsOf(null).size, 0)
+  eq('registry 没这个属性 → 空集', archivedSessionIdsOf({}).size, 0)
+  eq('registry 抛错 → 空集',
+    archivedSessionIdsOf({ get archivedSessionIds() { throw new Error('坏了') } }).size, 0)
+  check('读到归档集合', archivedSessionIdsOf({ archivedSessionIds: ['a', 'b'] }).has('b'))
+
+  // 纯函数：archiveSession 的错误映射
+  const noWs = await archiveSession(null, 'x')
+  eq('工作区服务缺失 → 503', noWs.status, 503)
+  eq('工作区服务缺失错误码', noWs.error, 'workspace-service-unavailable')
+  eq('没有 archiveSession 方法也算缺失', (await archiveSession({ list() {} }, 'x')).status, 503)
+  eq('空 id → 400', (await archiveSession(fakeRegistry, '   ')).status, 400)
+  eq('空 id 错误码', (await archiveSession(fakeRegistry, '   ')).error, 'missing-session-id')
+
+  archiveFailure = Object.assign(new Error('no such session'), { name: 'WorkspaceUnknownSessionError' })
+  const gone = await archiveSession(fakeRegistry, 'sess-x')
+  eq('会话不存在 → 404', gone.status, 404)
+  eq('会话不存在错误码', gone.error, 'session-not-found')
+
+  archiveFailure = Object.assign(new Error('还有活在跑'), {
+    name: 'WorkspaceActiveSessionError', activity: [{ kind: 'turn', name: '第 3 轮' }],
+  })
+  const busy = await archiveSession(fakeRegistry, 'sess-x')
+  eq('有活在跑 → 409', busy.status, 409)
+  eq('有活在跑错误码', busy.error, 'session-active')
+  eq('把在跑的东西带出来', busy.activity[0].name, '第 3 轮')
+
+  // 宿主可能从 Remote 层抛（那时只有 code），两条路都要认
+  archiveFailure = Object.assign(new Error('remote'), { code: 'session/not-found' })
+  eq('认 Remote 的 code 也算不存在', (await archiveSession(fakeRegistry, 'sess-x')).status, 404)
+  archiveFailure = Object.assign(new Error('别的坏了'), { code: 'boom' })
+  eq('其它异常 → 502', (await archiveSession(fakeRegistry, 'sess-x')).status, 502)
+  archiveFailure = null
+
+  // 路由：成功 + 列表里真的少一行
+  const before = await req('/api/sessions', { headers: { Cookie: cookie } })
+  const beforeIds = before.body.items.map((i) => i.id)
+  check('归档前列表里有 sess-2', beforeIds.includes('sess-2'))
+
+  const ok = await req('/api/session/archive', {
+    method: 'POST', headers: { Cookie: cookie }, json: { sessionId: 'sess-2' },
+  })
+  eq('归档 → 200', ok.status, 200)
+  eq('归档返回 archived', ok.body.archived, true)
+  eq('归档打到宿主', archiveCalls[archiveCalls.length - 1], 'sess-2')
+
+  const after = await req('/api/sessions', { headers: { Cookie: cookie } })
+  eq('归档后列表里没有它', after.body.items.some((i) => i.id === 'sess-2'), false)
+  eq('只少了那一条', after.body.items.length, beforeIds.length - 1)
+  eq('分组里也没有了',
+    after.body.groups.every((g) => g.items.every((s) => s.id !== 'sess-2')), true)
+  eq('别人的行还在', after.body.items.some((i) => i.id === SESSION_ID), true)
+
+  // 复原，免得影响后面的用例
+  fakeRegistry.archivedSessionIds = []
+
+  // 路由：入参 / 权限闸门
+  eq('没有 sessionId → 400',
+    (await req('/api/session/archive', { method: 'POST', headers: { Cookie: cookie }, json: {} })).status, 400)
+  eq('未登录归档 → 401',
+    (await req('/api/session/archive', { method: 'POST', json: { sessionId: 'sess-2' } })).status, 401)
+  eq('归档用表单类型 → 415（CSRF 闸门）',
+    (await req('/api/session/archive', {
+      method: 'POST', headers: { Cookie: cookie }, body: { sessionId: 'sess-2' },
+      contentType: 'application/x-www-form-urlencoded',
+    })).status, 415)
+}
 
 // ==================== 二·五、下载文件（0.10）—— 主服务关闭前测 ====================
 console.log('\n———— 下载文件 ————')

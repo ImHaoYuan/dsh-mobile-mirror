@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -35,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.net.CreateResult
+import dev.dsh.mirror.client.net.ModelPick
+import dev.dsh.mirror.client.net.Models
 import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.net.Workspace
 import dev.dsh.mirror.client.theme.LocalDshFonts
@@ -161,16 +164,25 @@ fun MorePanel(
 /**
  * 新建会话。
  *
- * <p>刻意**不做模式选择器**（与网页端一致）：新建出来的会话是 blank 的，进去以后头部那枚
- * 模式芯片本来就能点，没必要在建的时候先问一遍。
+ * <p>0.12 起这里也带**模型 / 模式**。原先的「进来再点芯片」不够用了：从首页发首句那条路
+ * 建完会话就立刻发消息，**首句一发出去模式就锁死**（宿主 `agent-preset/locked`），
+ * 所以必须在建之前选。
  *
  * <p>文件夹清单拉不到也**不影响新建** —— 下面永远有手输绝对路径那一行。
  */
 @Composable
 fun NewSessionPanel(
     app: Context,
+    /** 模型目录缓存（0.12）。 */
+    hub: ModelHub,
+    /** 建会话前先记着的模型 / 模式：状态与卡片都在 MainActivity（抽屉里画卡片只能盖住抽屉那一栏）。 */
+    pickModel: ModelPick,
+    presetId: String,
+    sheetOpen: Boolean,
+    onOpenSheet: () -> Unit,
     onBack: () -> Unit,
-    onCreated: (String) -> Unit,
+    /** 建好了：`(sessionId, 用的目录)` —— 宿主直接进这个会话（0.12.1 起不再只 toast）。 */
+    onCreated: (String, String?) -> Unit,
     onExpired: () -> Unit,
 ) {
     var workspaces by remember { mutableStateOf<List<Workspace>?>(null) }
@@ -188,6 +200,10 @@ fun NewSessionPanel(
     val tNeedPath = stringResource(R.string.new_need_path)
     val tCreating = stringResource(R.string.new_creating)
     val tUnreachable = stringResource(R.string.login_err_unreachable)
+    val tCapsule = stringResource(R.string.model_capsule)
+    val tPresetDefault = stringResource(R.string.model_preset_default)
+    /** 模式 id → 中文名（清单还没拉到时退回 id 本身）。 */
+    val presetLabels = hub.presets.associate { it.id to it.label }
 
     LaunchedEffect(Unit) { workspaces = Sessions.workspaces(app) }
 
@@ -196,8 +212,12 @@ fun NewSessionPanel(
         busy = true
         error = ""
         scope.launch {
-            when (val r = Sessions.create(app, workspaceId, cwd)) {
-                is CreateResult.Ok -> onCreated(r.sessionId)
+            when (val r = Sessions.create(app, workspaceId, cwd, presetId.ifEmpty { null })) {
+                is CreateResult.Ok -> {
+                    // 建完立刻定模型：`/api/session` 不吃模型，而建完这里就交给会话页了
+                    if (pickModel.model.isNotEmpty()) Models.select(app, r.sessionId, pickModel)
+                    onCreated(r.sessionId, cwd)
+                }
                 is CreateResult.Rejected -> {
                     error = r.message
                     busy = false
@@ -215,6 +235,26 @@ fun NewSessionPanel(
     }
 
     DrawerPanel(tTitle, onBack) {
+        // 模型 / 模式（0.12）：见函数头注释 —— 建会话时就要带过去
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ModelCapsule(
+                text = ModelLogic.capsuleText(hub.catalog, pickModel, tCapsule),
+                open = sheetOpen,
+                onClick = onOpenSheet,
+            )
+            ModelCapsule(
+                text = ModelLogic.presetText(presetLabels, presetId, tPresetDefault),
+                open = sheetOpen,
+                onClick = onOpenSheet,
+            )
+        }
+
         val rows = workspaces
         when {
             rows == null -> PanelNote(tPick)

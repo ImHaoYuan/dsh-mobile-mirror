@@ -115,10 +115,12 @@ Namespace 'dev.dsh.mirror.native' is not a valid Java package name
 - 助手：**通栏无气泡**，正文 14sp/22sp
 - 思考/工具：收进「工作过程」折叠卡（网页端语义，见 README）
 
-### 4.3 模型 / 模式选择
+### 4.3 模型 / 模式选择（**0.12 已实现**，见 §4.20）
 
-输入条上方一颗胶囊（显示当前模型 + 推理档位），点开底部弹层，内含：模型（含推理档位）/ 模式 / 新建会话路径。
+输入条上方一颗胶囊（显示当前模型 + 推理档位），点开底部弹层，内含：模型（含推理档位）/ 模式。
 触发键照 DSH 的 `wq12jW_trigger`：高 28px、圆角 8px、13px、chevron 展开时旋转 180°、`transition .12s`。
+
+（草案里的「新建会话路径」没有并进这张卡：手机端选路径在首页文件夹行与「新建会话」页，不重复一遍。）
 
 ### 4.4 首页与抽屉（参考截图实测）—— **0.4 已实现**
 
@@ -623,6 +625,113 @@ M5 的第一块。宿主一次 `ask_user_question` 可以带**多道题**，而 
 `Method … not mocked`。所以解析规则吃一个 `FieldReader` 接口（`net/Questions.kt`），生产路径套
 `JsonReader`，单测给一张 Map —— **字段名写在 `parseBatch` 里**，所以仍然是被测到的；
 `JsonReader` 只剩转发。同一原因，`errorMessage` 也拆成了「取 message」+「纯拼文案」。
+### 4.20 模型 / 模式胶囊（**0.12 已实现**）
+
+M5 的第二块，§4.3 草案落地。**插件零改动** —— 四个接口 1.3.x 就有。
+
+| 接口 | 形状 / 语义 |
+|---|---|
+| `GET /api/models` | `{catalog:{default:{provider,model,reasoningEffort}, groups:[{id,name,models:[{id,name,description,efforts:[{id,name,description}],defaultEffort}]}], failures:[{id,name,message}]}}`；插件侧 60 秒 TTL 缓存。**注意两件事**（0.12.1 就是踩了这两条）：① 目录在 `catalog` 键**里面**，要剥一层壳；② 档位是**拍平**的 —— 插件 `normalizeModelCatalog` 把上游的 `reasoning.efforts` / `reasoning.defaultEffort` 提到了模型自己身上 |
+| `POST /api/model` | `{sessionId, provider, model, reasoningEffort?}` → `{selected}`；**会话级**、对**下一次请求**生效，正在跑的轮次不受影响，所以不加锁 |
+| `GET /api/presets` | `{presets:[{id,label,description,broken}]}`（**不需要控制器**，只读模式也能看） |
+| `POST /api/preset` | `{sessionId, preset}` → `{selected,label}`；**409 `preset-locked`** —— 会话只要跑过一轮就锁死；`preset-invalid` / `agent-not-live` / `preset-not-found` 同理 |
+
+**当前值从哪来**：模型取快照 `projections.modelSelection.next`（顶层与 `request/header` 都推不动它），
+长连接期间跟 `model/selection` 事件，都没有就退回 `catalog.default`。模式取 `projections.agentPreset`
+（0.7 起就在跟），锁定信号是会话行的 `blank`（与网页端 `canSwitchPreset = !(row && row.blank === false)` 同款）。
+
+| 元素 | 规格 |
+|---|---|
+| 胶囊 | 输入条**上方**：会话页两颗（「模型 · 档位」「模式」），`Chip` 底、圆角 8dp、13sp、高 28dp；chevron 展开转 180°、`tween(120)` |
+| 卡片 | 复用 0.11 的「遮罩 + 贴底卡片」：上圆角 20dp、`heightIn(max = 560.dp)` 可滚、`BgPage` 底 |
+| 模型 | 按 provider 分组（组名 12sp 三级灰）；行内 14.5sp 名字 + 12.5sp 描述；当前项 `Sel` 底 + 画出来的对勾 |
+| 档位 | **只在当前选中的那个模型下面展开**一排小胶囊（每个模型都铺会长到没法用，与网页端 `modelOption` 同款判断） |
+| 模式 | `label` + `description`；`broken` 非空的行红字显示原因并置灰 |
+| `failures` | 底部单列「读不到的 provider」，不挡选别的 |
+| 反馈 | 成功在卡片底部显示「已切换为 X」；失败显示服务端原话（`preset-locked` 时把整段模式置灰） |
+
+**点一个模型带哪个档位**（`ModelLogic.effortFor`）：点**正在用的**那个就沿用当前档位（用户可能刚调过），
+点别的用那个模型自己的 `defaultEffort` —— 不沿用，否则会把 A 模型的档位塞给 B。
+
+**建会话时就要选**：`/api/session` **不吃模型**，只吃 `agentPreset`。首页输入条与抽屉里的「新建会话」
+共用**同一份** pre-session 状态（`ModelHub` + `preModel` / `prePreset`），卡片画在 MainActivity 的根 `Box`
+那一层 —— 画在抽屉里只能盖住抽屉那一栏，画在首页里则盖不住抽屉。建完会话立刻补一发 `POST /api/model` 再交给会话页。
+
+**取舍**：
+
+- 选模型 / 档位**不关卡片**（档位就在模型下面展开，换完要能接着调）；换模式是决定性动作，成功即关。
+- 目录在客户端也缓存一份（`ModelHub`，进程内一次）：插件侧虽有 60 秒 TTL，但每个 provider 都要一次上游往返。
+- `/api/models` 要控制器就绪（没就绪回 503），所以**不在构造时拉** —— 首次进页面 / 首次点开时拉，失败留「重试」。
+- 建会话后那次 `POST /api/model` 失败**不提示**：会话页胶囊显示的是宿主实际在用的模型，一眼能看出没生效。
+
+### 4.21 三处修正 + 长按删除空白会话（**0.12.1 已实现**）
+
+0.12 装机后用户报了四件事：三件是 bug、一件是间距，外加一个新需求。
+
+#### 4.21.1 三个 bug（都是「接口 200 但界面不对」）
+
+| # | 现象 | 根因 |
+|---|---|---|
+| ① | 模式每一行下面都写着字面的 `null` | 插件对「没有」一律写 **JSON null**（`loadPresetRoster` 的 `description` / `broken`），而 `JsonReader.str` 用的 `org.json` 的 `optString` 对 JSON null 返回的是**字符串 `"null"`**，不是空串。改成 `if (o.isNull(name)) "" else o.optString(name)` |
+| ② | 卡片里一个模型都没有 → 「选不了模型」 | `Models.catalog` 把**根对象** `{catalog:{…}}` 直接喂给了 `parseCatalog`，而它要的是里面那个 `catalog`。根上没有 `groups` / `default`，解析出一个**空目录**。剥壳抽成 `Models.catalogOf`，这样**能被单测钉住** |
+| ③ | （还没暴露出来）档位行永远是空的 | 插件把上游的 `reasoning.efforts` / `reasoning.defaultEffort` **拍平**到了 `models[].efforts` / `models[].defaultEffort`，客户端按嵌套形状找，永远找不到 |
+
+**为什么三个都没被 0.12 的单测挡住**：0.12 的 `ModelTest` 照抄的是**上游 DSH 的形状**，不是**我们插件的输出形状** —— 实现和测试一起错了，所以对得上。夹具已改成插件真实形状（`catalog` 外壳 + 拍平档位），并补三条：外壳必须剥、`null` 字段退化成空串、拍平档位解析。
+
+> `JsonReader.str` 那半边**碰不了 `org.json`**（Android 单测跑在桩 `android.jar` 上，方法一律 not mocked），所以它由**两侧合围**：客户端 `ModelTest` 钉「解析规则把 null 当空串」，插件 `mirror-test` 钉「没有描述的行发出去就是 JSON null」。两边任一改动，另一边会红。
+
+#### 4.21.2 首页胶囊上下间隔不等
+
+输入条是 `height(52.dp)` 的盒子、底边就是它的下沿；而 `FolderRow` 自带 `top = 8.dp`。
+所以胶囊行 `vertical = 2.dp` 时，**上间隔 2dp、下间隔 2 + 8 = 10dp**。改成 `top = 10 / bottom = 2` → 上下都是 10dp。
+（抽屉里那行是 `vertical = 6`，本来就对称，没动。）
+
+#### 4.21.3 长按删除空白会话（插件 **1.3.4**）
+
+DSH **没有真删会话的接口**。桌面端自己那个「从列表里去掉」用的就是**归档**：
+
+> 对静止的 Session，Archive **不经确认对话框直接提交**，并保留 Session 的记账位置。
+> 仍有工作在跑的 Session 是唯一会先询问的情形。
+> —— `@deepseek-ai/dsh-client-ui-workspace/README.zh.md`
+
+宿主接口 `ctx.workspaceRegistry.archiveSession(sessionId, {stopActivity?})`：
+
+| 情况 | 宿主行为 |
+|---|---|
+| 已经归档过 | 直接成功，不写盘、不询问 |
+| 会话既不在活的、也不在持久化的里面 | `WorkspaceUnknownSessionError` |
+| 还有工作在跑、且没给 `stopActivity` | `WorkspaceActiveSessionError`，带 `activity` 名单（在跑的是什么） |
+
+**插件侧**（`lib/mirror.js` 的 `archiveSession` / `archivedSessionIdsOf`）：
+
+| 接口 | 形状 |
+|---|---|
+| `POST /api/session/archive` | `{sessionId}` → `{archived:true}`；404 `session-not-found` / 409 `session-active`（带 `activity`）/ 503 `workspace-service-unavailable` / 400 `missing-session-id` |
+| `GET /api/sessions` | **减掉 `archivedSessionIds`** —— 宿主的 `controller.list()` 不知道归档这件事（桌面侧栏自己过滤），不减的话手机上删了行还在 |
+
+**不传 `stopActivity`**：手机上要删的只有空白会话，那种会话不可能有工作在跑；真碰上有活的，把名单原话交给用户，比悄悄把 agent 打断更合适。插件早就 inject 了 `workspaceRegistry`（`lib/index.js`），所以这次**没碰 `:core`、也没碰外壳**。
+
+**客户端侧**：会话列表行长按（`combinedClickable`）→ 只放行 `blank` 行，非空白行给一句 toast
+「只有空白会话能长按删除」→ 确认框 → 归档成功后**本地立刻摘掉那一行**（空掉的分组一并收走），不等下一次刷新。
+桌面端对静止会话不弹确认，这里仍弹一次：**手机上没有「撤销」入口**，只有电脑端的「已归档」里找得回来。
+
+#### 4.21.4 新建会话后直接进会话
+
+`NewSessionPanel.onCreated` 从 `() -> Unit` 改成 `(sessionId, cwd) -> Unit`，建完**直接打开那个会话**
+（顶栏先显示目录名，宿主的标题投影到了再换）。以前只 toast + 回列表，看着像「点了没反应」——
+用户连点了 4 次，`~/.dsh/sessions` 里 17 秒多了 4 个空白会话。
+
+#### 4.21.5 「电脑上没有这个会话」不是 bug
+
+用户报「手机建了『未命名会话』，电脑上没有」。查证：
+
+- 手机建的那个会话**真的落盘了**：`~/.dsh/sessions/<cwd 编码>/session-89a7f411-…/session.v4.jsonl.zstd` 里就是
+  `{"type":"session","version":4,"id":"…","cwd":"D:\\VibeCoding\\Plugin","agentPreset":"ptc"}`，只有这一条记录（纯空白）。
+- 桌面端**刻意隐藏**空白会话：`dsh-client-ui-workspace/README.zh.md` 写着「当前空会话仍显示「新会话」，
+  **其他空会话仍隐藏**」。
+
+所以电脑上看不见是设计如此；等它跑完第一句话、有了标题就会出现在电脑上。
+
 ## 5. 里程碑
 
 | 阶段 | 内容 | 状态 |
@@ -636,7 +745,7 @@ M5 的第一块。宿主一次 `ask_user_question` 可以带**多道题**，而 
 | **0.6** | 抽屉四级页（新建会话 / 更多 / 字体 / 开源许可 全部搬进抽屉）+ 首页真输入框（含文件夹选择，方案 §4.7） | ✅ 已完成（2026-10-09，**0.6** → 修正 **0.6.1** → 图标/动画 **0.6.2**） |
 | M3 | 会话页（`/api/page` 首屏 + `/api/follow` SSE 三类帧、seq 排序、断线重连、切后台补齐）+ 发送（`requestId` 幂等 + 300ms 节流）/ 停止（两段式确认） | 待做 |
 | M4 | Markdown 渲染器（与网页端 `renderMarkdown` 逐条一致）+ 代码块语言名/复制 | ✅ 已完成（2026-10-09，**0.9**，单测 9/9） |
-| M5 | 工作过程折叠 / 提问卡（含 `hold` 认领）/ 模型与模式 / 右侧刻度条 / 浅色主题 | 进行中：**提问卡 + `hold` 认领 ✅（0.11）**；其余待做 |
+| M5 | 工作过程折叠 / 提问卡（含 `hold` 认领）/ 模型与模式 / 右侧刻度条 / 浅色主题 | 进行中：**提问卡 + `hold` 认领 ✅（0.11）**、**模型与模式 ✅（0.12 → 修 bug + 长按删除 ✅ 0.12.1）**；工作过程完整折叠 / 右侧刻度条待做 |
 | M6 | 通知 + 超级岛接入（复用 `:core`）+ release 打包（**要开 R8**）+ 真机验收 | 待做 |
 
 ### 5.1 Markdown 的对齐口径
@@ -1081,12 +1190,52 @@ M5 的第一块。用户 0.10.4 时拍板的形态是**底部弹出的卡片**�
 **为什么新增的 17 个单测不能直接吃 JSON**：Android 单测的 `android.jar` 是桩，
 `org.json.JSONObject.optString` 直接抛 `Method optString in org.json.JSONObject not mocked`
 （实测）。所以解析规则改吃 `FieldReader`，单测给一张 Map；字段名留在 `parseBatch` 里，仍被覆盖。
+## 7.23 0.12 验收证据（模型 / 模式胶囊，2026-10-09）
+
+M5 的第二块，§4.3 草案落地。**插件零改动**（四个接口 1.3.x 就有），本轮只动 `:client`。
+
+| 项 | 结果 |
+|---|---|
+| 插件单测 | **556 / 556**（本轮插件零改动，复跑确认） |
+| 客户端单测 | **42 / 42**（11 Markdown + 17 提问 + **14 新增**：目录解析 4、模式清单 2、当前选择 1、胶囊文案 3、档位归属 2、模式名 1、错误文案 1） |
+| 客户端 APK | 44,678,345 B（42.61 MB），`versionCode=24` / `versionName=0.12`，标签仍是「DSH镜像原生」 |
+| 客户端交付 | `out/native-client/dsh-mobile-mirror-client-0.12.apk`，SHA256 `7F307516AACDB6964F292DCD162FD1C5E9939D2130B74C1D8113DCB63464C116` |
+| **外壳** | `app-debug.apk` **仍是 72,186 B / SHA256 `0A4E2424…`** —— 与 1.1.1 **逐字节相同**（本轮没碰 `:core`） |
+| 干净构建 | `BUILD SUCCESSFUL`，173 tasks |
+| 未验证 | 真机：胶囊显示当前模型与档位、点开卡片、换模型立刻作用于下一轮、档位只在当前模型下展开、换模式、跑过一轮后模式整段置灰、建会话时带上模式与模型 |
+
+**为什么把 `FieldReader` 从 `Questions.kt` 挪出来**：0.12 的目录解析要处理**嵌套对象**（`default` / `reasoning`），
+所以在 `net/FieldReader.kt` 里补了 `obj()` 并把它变成独立文件；`errorText` / `messageOf` 也顺势提成顶层的
+`httpErrorText` / `jsonMessage`（两边都在用）。单测那个 Map 假体同样从 `AskTest.kt` 挪进 `TestJson.kt`。
+## 7.24 0.12.1 验收证据（三处修正 + 长按删除空白会话，2026-10-09）
+
+用户 0.12 装机后的四条反馈（诊断见 §4.21）。**本轮插件首次改动**（1.3.3 → **1.3.4**：加归档接口 + 会话列表过滤归档）。
+
+| 项 | 结果 |
+|---|---|
+| 插件单测 | **586 / 586**（556 → **+30**：归档 27 条 + 模式清单形状 3 条） |
+| 客户端单测 | **44 / 44**（11 Markdown + 17 提问 + **16 模型**；比 0.12 多 2 条 —— 外壳必须剥、`null` 字段退化成空串） |
+| 干净构建 | `BUILD SUCCESSFUL`，173 tasks |
+| 客户端 APK | 44,712,805 B（42.64 MB），`versionCode=25` / `versionName=0.12.1`，标签仍是「DSH镜像原生」 |
+| 客户端交付 | `out/native-client/dsh-mobile-mirror-client-0.12.1.apk`，SHA256 `B905F4164332B0A30B65F9CE1B2F333B6EEC3793CFDB8317E96AAC8F5E72827C` |
+| **外壳** | `app-debug.apk` **仍是 72,186 B / SHA256 `0A4E2424…`** —— 与 1.1.1 **逐字节相同**（插件只动 `lib/`，`:core` / `:app` 一个字没碰） |
+| 插件版本 | `package.json` 1.3.3 → **1.3.4** |
+| **未验证** | 真机项见 §8；**长按删除必须先重启 DSH**（宿主侧改动）—— 没重启时 `POST /api/session/archive` 落到旧插件的兜底，回 `text/plain` 的 404，界面会显示「删除失败（HTTP 404）」 |
+
+**这一轮最该记住的教训**：0.12 的单测**照抄了上游 DSH 的形状，而不是我们插件的输出形状**，于是实现和测试一起错，三个 bug 全绿通过。夹具改成插件真实形状后，同样的三条断言立刻能抓住。
+
 ## 8. 待办
 
 - [x] **0.11：提问卡（底部弹出）+ `hold` 认领 + 会话列表实时角标**（2026-10-09，见 §4.19 / §7.22）
 - [ ] **0.11 待真机确认**：提问卡自动弹出、一次提问里多道题一次交齐、自定义答案、提交后卡片消失、关掉后胶囊能叫回来、`hold` 期间电脑端倒计时是否真的停、退到后台是否释放、会话列表角标是否立刻亮
 - [ ] 0.11 已知取舍：消息流里不插「已答」行（agent 的续写就是反馈）；别的会话来的提问只做角标（通知/超级岛留 M6）；`org.json` 在单测里是桩，解析规则走 `FieldReader`
-- [ ] 0.12 候选：模型 / 模式胶囊（`/api/models` + `/api/model` + `/api/presets` + `/api/preset`）；0.13 工作过程完整折叠；0.14 右侧刻度条；之后 M6（通知 + 超级岛 + R8 打包）
+- [x] **0.12：模型 / 模式胶囊**（`/api/models` + `/api/model` + `/api/presets` + `/api/preset`，2026-10-09，见 §4.20 / §7.23）
+- [x] ~~0.12 待真机确认~~：**用户装机后报了三个 bug + 一处间距**（见 §4.21）—— 那一版的模型 / 模式其实完全没工作：目录没剥壳解析成空、档位键找错、模式描述显示字面 `null`
+- [ ] 0.12 已知取舍：选模型/档位不关卡片（换模式才关）；`/api/models` 未就绪时留「重试」；建会话后补的那发 `POST /api/model` 失败不提示
+- [x] **0.12.1：修三处（JSON null / 目录没剥壳 / 档位拍平）+ 首页胶囊间距 + 长按删除空白会话 + 新建会话直接进会话**（插件 **1.3.4**，2026-10-09，见 §4.21 / §7.24）
+- [ ] **0.12.1 待真机确认**：胶囊里模型与档位都在、模式名下面不再有 `null`、换模型作用于下一轮、档位只在当前模型下展开、跑过一轮后模式整段置灰；首页胶囊上下间隔一致；长按空白会话能删（**插件要先重启到 1.3.4**）、非空白行给一句提示；抽屉里新建会话后直接进会话
+- [ ] 0.12.1 已知取舍：归档是**软删除**（手机上没有「已归档」入口，只能去电脑端找回来）；新建会话直接进会话后抽屉保持打开（返回时看到的是列表）
+- [ ] 0.13 候选：工作过程完整折叠；0.14 右侧刻度条；之后 M6（通知 + 超级岛 + R8 打包）
 - [x] 0.9：Markdown 渲染与网页端逐条一致（2026-10-09）
 - [ ] 0.9 待真机确认：标题层级与间距、表格横向滚动、代码块头部条与复制键、任务列表勾选框、链接点击、图片占位
 - [ ] 0.9 已知取舍：行内代码无描边/padding；图片只占位；表格按内容宽度（非 width:100%）

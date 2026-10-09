@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.net.Follow
 import dev.dsh.mirror.client.net.FollowFrame
+import dev.dsh.mirror.client.net.ModelPick
 import dev.dsh.mirror.client.net.PageOutcome
 import dev.dsh.mirror.client.net.SendOutcome
 import dev.dsh.mirror.client.net.Session
@@ -27,6 +28,8 @@ class ChatTarget(
     val running: Boolean,
     /** 首页新建会话时带过来的第一句话：连上（拿到第一帧 snapshot）之后再发。 */
     val initialPrompt: String? = null,
+    /** 这个会话还没跑过任何轮次 —— 只有这种会话能改模式（DSH 的 `agent-preset/locked` 规则）。 */
+    val blank: Boolean = true,
 )
 
 /**
@@ -112,6 +115,15 @@ class ChatModel(
         private set
     var model by mutableStateOf<String?>(null)
         private set
+    /** 当前模型的 provider（0.12：胶囊显示与切换都要它）。 */
+    var provider by mutableStateOf("")
+        private set
+    /** 推理档位；空 = 用该模型的默认档。 */
+    var reasoningEffort by mutableStateOf("")
+        private set
+
+    /** 界面用的当前选择（`model` 还没拿到时是空的，由目录默认值兜底）。 */
+    val pick: ModelPick get() = ModelPick(provider, model.orEmpty(), reasoningEffort)
 
     var rows by mutableStateOf<List<ChatRow>>(emptyList())
         private set
@@ -354,9 +366,12 @@ class ChatModel(
     private fun applySnapshot(d: JSONObject) {
         val header = d.optJSONObject("header") ?: JSONObject()
         header.optString("cwd").takeIf { it.isNotEmpty() }?.let { cwd = it }
-        val proj = d.optJSONObject("projections")?.optString("agentPreset").orEmpty()
+        val projections = d.optJSONObject("projections")
+        val proj = projections?.optString("agentPreset").orEmpty()
         val ap = proj.ifEmpty { header.optString("agentPreset") }
         if (ap.isNotEmpty()) preset = ap
+        // 当前模型只在投影里 —— 头部的值和事件都推不动它（网页端 selectionOf 同款来源）
+        projections?.optJSONObject("modelSelection")?.optJSONObject("next")?.let { applyPick(it) }
 
         hasMore = d.optBoolean("hasMore", false)
         val out = ArrayList<ChatRow>()
@@ -464,9 +479,33 @@ class ChatModel(
                 if (status == app.getString(R.string.chat_stopped)) status = ""
             }
             "agent-preset/selected" -> data.optString("agentPreset").takeIf { it.isNotEmpty() }?.let { preset = it }
-            "model/selection", "request/header" -> data.optString("model").takeIf { it.isNotEmpty() }?.let { model = it }
+            // 换模型：长连接期间靠这条立刻更新胶囊（与投影 modelSelection.next 同源）
+            "model/selection" -> applyPick(data)
+            // request/header 只保证有 model（provider / 档位不一定在），当兜底
+            "request/header" -> data.optString("model").takeIf { it.isNotEmpty() }?.let { model = it }
             else -> { }
         }
+    }
+
+    /** 一次「当前模型」的更新：`model/selection` 事件与投影 `modelSelection.next` 形状一样。 */
+    private fun applyPick(d: JSONObject) {
+        val m = d.optString("model")
+        if (m.isEmpty()) return
+        model = m
+        provider = d.optString("provider")
+        reasoningEffort = d.optString("reasoningEffort")
+    }
+
+    /** 切换成功后立刻反映到界面 —— 不等宿主把 `model/selection` 事件推回来。 */
+    fun setPick(p: ModelPick) {
+        provider = p.provider
+        model = p.model
+        reasoningEffort = p.effort
+    }
+
+    /** 同上，切模式（叫 apply* 不叫 set* —— `var preset` 自己就生成了 `setPreset`，会撞签名）。 */
+    fun applyPreset(id: String) {
+        if (id.isNotEmpty()) preset = id
     }
 
     /**

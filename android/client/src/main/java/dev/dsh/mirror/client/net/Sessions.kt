@@ -59,6 +59,15 @@ sealed class SessionsResult {
     object Broken : SessionsResult()
 }
 
+/** 归档（= 手机上的「长按删除」）的结果。 */
+sealed class ArchiveResult {
+    object Ok : ArchiveResult()
+    /** 服务端明确拒绝：会话已经不在了 / 还有工作在跑 / 只读模式；message 能直接给用户看。 */
+    class Rejected(val message: String) : ArchiveResult()
+    object Expired : ArchiveResult()
+    object Unreachable : ArchiveResult()
+}
+
 sealed class CreateResult {
     class Ok(val sessionId: String) : CreateResult()
     /** 服务端明确拒绝；message 已经是能直接给用户看的中文。 */
@@ -122,13 +131,20 @@ object Sessions {
      * 手机端**拿不到**这个开关（它只在 loopback 专享的 /pair.json 里），所以不预判，
      * 撞上了就把服务端那句 message 原样显示出来。
      */
-    suspend fun create(ctx: Context, workspaceId: String?, cwd: String?): CreateResult {
+    suspend fun create(
+        ctx: Context,
+        workspaceId: String?,
+        cwd: String?,
+        /** 模式 id；空 = 用宿主默认。对应宿主的 `agentPreset`（0.12 起首页/新建页可选）。 */
+        preset: String? = null,
+    ): CreateResult {
         val payload = JSONObject()
         when {
             !workspaceId.isNullOrEmpty() -> payload.put("workspaceId", workspaceId)
             !cwd.isNullOrEmpty() -> payload.put("cwd", cwd)
             else -> return CreateResult.Rejected("缺少工作区或目录")
         }
+        if (!preset.isNullOrEmpty()) payload.put("agentPreset", preset)
         return when (val r = MirrorSession.postJson(ctx, "/api/session", payload.toString())) {
             is Send.Ok -> {
                 val id = try {
@@ -144,6 +160,28 @@ object Sessions {
             )
             Send.Expired -> CreateResult.Expired
             Send.Unreachable -> CreateResult.Unreachable
+        }
+    }
+
+    /**
+     * 归档（= 手机上「长按删除」）一个会话。
+     *
+     * <p>DSH **没有真删会话的接口** —— 桌面端自己那个「从列表里去掉」用的就是归档
+     * （{@code dsh-client-ui-workspace}：「对静止的 Session，Archive 不经确认对话框直接提交，
+     * 并保留 Session 的记账位置」）。语义是**软删除**：会话文件还在磁盘上，
+     * 电脑端的「已归档」里找得回来。
+     *
+     * <p>服务端把「还有工作在跑」单独回 409 并列出在跑的东西，这里原样带出来给用户看。
+     */
+    suspend fun archive(ctx: Context, sessionId: String): ArchiveResult {
+        val payload = JSONObject().put("sessionId", sessionId)
+        return when (val r = MirrorSession.postJson(ctx, "/api/session/archive", payload.toString())) {
+            is Send.Ok -> ArchiveResult.Ok
+            is Send.Rejected -> ArchiveResult.Rejected(
+                messageOf(r.body) ?: ("删除失败（HTTP " + r.code + "）")
+            )
+            Send.Expired -> ArchiveResult.Expired
+            Send.Unreachable -> ArchiveResult.Unreachable
         }
     }
 

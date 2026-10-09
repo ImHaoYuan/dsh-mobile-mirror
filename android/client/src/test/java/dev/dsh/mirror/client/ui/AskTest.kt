@@ -2,8 +2,8 @@ package dev.dsh.mirror.client.ui
 
 import dev.dsh.mirror.client.net.AskAnswer
 import dev.dsh.mirror.client.net.AskQuestion
-import dev.dsh.mirror.client.net.FieldReader
 import dev.dsh.mirror.client.net.Questions
+import dev.dsh.mirror.client.net.httpErrorText
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -18,32 +18,10 @@ import org.junit.jupiter.api.Test
  *   ② 「能不能提交」的判据（宿主要求每题要么选、要么写，否则 400 `empty-answer`）；
  *   ③ 下发形状（`custom` 为空时整个字段都不能出现，空串要丢掉）。
  *
- * 注意用的是 [FieldReader] 而不是 JSONObject：Android 单测跑在桩 android.jar 上，
- * `org.json` 的方法一律抛 `Method … not mocked`（见 Questions.kt 里 FieldReader 的说明）。
+ * 注意用的是 MapReader（TestJson.kt）而不是 JSONObject：Android 单测跑在桩 android.jar 上，
+ * `org.json` 的方法一律抛 `Method … not mocked`（见 net/FieldReader.kt 的说明）。
  * 字段名本身仍然是被测到的 —— 名字写在 `Questions.parseBatch` 里，不在这里。
  */
-
-/** 一张 Map 当帧用：`mapOf("id" to "q1", "questions" to listOf(mapOf(...)))`。 */
-private class MapReader(private val m: Map<String, Any?>) : FieldReader {
-    override fun str(name: String): String = m[name] as? String ?: ""
-
-    override fun bool(name: String, def: Boolean): Boolean = m[name] as? Boolean ?: def
-
-    override fun long(name: String, def: Long): Long = (m[name] as? Number)?.toLong() ?: def
-
-    override fun arr(name: String): List<FieldReader> {
-        val list = m[name] as? List<*> ?: return emptyList()
-        val out = ArrayList<FieldReader>(list.size)
-        for (item in list) {
-            @Suppress("UNCHECKED_CAST")
-            val map = item as? Map<String, Any?> ?: continue
-            out.add(MapReader(map))
-        }
-        return out
-    }
-}
-
-private fun frame(vararg pairs: Pair<String, Any?>): FieldReader = MapReader(mapOf(*pairs))
 
 private fun q(id: String, header: String = "", text: String = "问题", multi: Boolean = false) =
     AskQuestion(id, header, text, emptyList(), multi)
@@ -216,14 +194,14 @@ class AskTest {
     fun `服务端的中文说明优先`() {
         assertEquals(
             "题目 a 既没选选项、也没填自定义答案",
-            Questions.errorText(400, "题目 a 既没选选项、也没填自定义答案"),
+            httpErrorText(400, "题目 a 既没选选项、也没填自定义答案"),
         )
     }
 
     @Test
     fun `没有 message 时退回状态码`() {
-        assertEquals("HTTP 502", Questions.errorText(502, null))
-        assertEquals("HTTP 500", Questions.errorText(500, ""))
-        assertEquals("HTTP 400", Questions.errorText(400, "   "))
+        assertEquals("HTTP 502", httpErrorText(502, null))
+        assertEquals("HTTP 500", httpErrorText(500, ""))
+        assertEquals("HTTP 400", httpErrorText(400, "   "))
     }
 }

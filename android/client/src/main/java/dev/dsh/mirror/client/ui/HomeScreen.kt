@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -50,6 +51,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.dsh.mirror.client.R
+import dev.dsh.mirror.client.net.ModelPick
 import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.net.Workspace
 import dev.dsh.mirror.client.prefs.Composer
@@ -82,8 +84,20 @@ import dev.dsh.mirror.client.theme.LocalDshFonts
 fun HomeScreen(
     app: Context,
     onOpenDrawer: () -> Unit,
-    /** 真发：建会话 → 进会话页 → 把这句话发出去（都在 MainActivity 里串）。 */
-    onSend: (text: String, workspaceId: String?, cwd: String?) -> Unit,
+    /** 模型目录缓存（0.12，进程内一份，三个入口共用）。 */
+    hub: ModelHub,
+    /** 建会话前先记着的模型 / 模式：状态在 MainActivity —— 卡片也在那一层画，才能连抽屉一起罩住。 */
+    pickModel: ModelPick,
+    presetId: String,
+    sheetOpen: Boolean,
+    onOpenSheet: () -> Unit,
+    /**
+     * 真发：建会话 → 进会话页 → 把这句话发出去（都在 MainActivity 里串）。
+     *
+     * <p>`preset` / `pick` 是 0.12 加的：**建会话时就要带过去** —— 首句一发出去模式就锁死了
+     * （宿主 `agent-preset/locked`），之后再改只能新建会话。
+     */
+    onSend: (text: String, workspaceId: String?, cwd: String?, preset: String?, pick: ModelPick) -> Unit,
 ) {
     val composer = remember { Composer(app) }
     val focus = LocalFocusManager.current
@@ -104,6 +118,10 @@ fun HomeScreen(
     val tNewFolder = stringResource(R.string.home_folder_new)
     val tUse = stringResource(R.string.home_folder_use)
     val tBadPath = stringResource(R.string.home_path_bad)
+    val tCapsule = stringResource(R.string.model_capsule)
+    val tPresetDefault = stringResource(R.string.model_preset_default)
+    /** 模式 id → 中文名（清单还没拉到时退回 id 本身）。 */
+    val presetLabels = hub.presets.associate { it.id to it.label }
 
     LaunchedEffect(Unit) { workspaces = Sessions.workspaces(app) }
 
@@ -169,11 +187,43 @@ fun HomeScreen(
             onSend = {
                 val t = text.trim()
                 if (t.isNotEmpty()) {
-                    onSend(t, chosen?.workspaceId, chosen?.cwd)
+                    onSend(t, chosen?.workspaceId, chosen?.cwd, presetId, pickModel)
                     text = ""
                 }
             },
         )
+
+        // 模型 · 档位 / 模式（0.12）。放在输入条与文件夹行之间，两行都是「这次要带什么参数」。
+        // 上下间隔必须**相等**：输入条是个 52dp 的盒子、底边就是它的下沿，所以上面这段
+        // 只由这里的 top 决定；下面那行 FolderRow 自带 top = 8dp，于是下间隔 = bottom + 8。
+        // 取 top = 10 / bottom = 2 → 上下都是 10dp（0.12 时是 2 与 10，看着偏上）。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ModelCapsule(
+                text = ModelLogic.capsuleText(hub.catalog, pickModel, tCapsule),
+                open = sheetOpen,
+                onClick = {
+                    // 收键盘 + 收起文件夹清单：卡片要盖满屏，键盘还在会把它顶掉一半
+                    focus.clearFocus()
+                    pick = FolderPick.None
+                    onOpenSheet()
+                },
+            )
+            ModelCapsule(
+                text = ModelLogic.presetText(presetLabels, presetId, tPresetDefault),
+                open = sheetOpen,
+                onClick = {
+                    focus.clearFocus()
+                    pick = FolderPick.None
+                    onOpenSheet()
+                },
+            )
+        }
 
         FolderRow(
             label = folderLabel,

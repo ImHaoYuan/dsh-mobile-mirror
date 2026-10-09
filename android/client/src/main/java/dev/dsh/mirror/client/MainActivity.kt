@@ -34,6 +34,8 @@ import dev.dsh.mirror.ServerPrefs
 import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.net.LoginResult
 import dev.dsh.mirror.client.net.CreateResult
+import dev.dsh.mirror.client.net.ModelPick
+import dev.dsh.mirror.client.net.Models
 import dev.dsh.mirror.client.net.MirrorSession
 import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.theme.Dsh
@@ -49,6 +51,8 @@ import dev.dsh.mirror.client.ui.FontPanel
 import dev.dsh.mirror.client.ui.HomeScreen
 import dev.dsh.mirror.client.ui.LicensePanel
 import dev.dsh.mirror.client.ui.LoginScreen
+import dev.dsh.mirror.client.ui.ModelHub
+import dev.dsh.mirror.client.ui.ModelSheet
 import dev.dsh.mirror.client.ui.MorePanel
 import dev.dsh.mirror.client.ui.NewSessionPanel
 import dev.dsh.mirror.client.ui.PairScreen
@@ -162,7 +166,6 @@ private fun HomeWithDrawer(
     var page by remember { mutableStateOf(DrawerPage.Sessions) }
     // 开源许可既可以从「更多」进、也可以从「字体」进：返回要回**来的那一层**，不能一律回「更多」
     var licensesFrom by remember { mutableStateOf(DrawerPage.More) }
-    val tCreated = stringResource(R.string.new_created)
     val tCreateFail = stringResource(R.string.chat_create_failed)
     // 正在看的那条会话（0.7）：非空就把会话页盖在最上层
     var chat by remember { mutableStateOf<ChatTarget?>(null) }
@@ -175,6 +178,21 @@ private fun HomeWithDrawer(
     val questions = remember { QuestionHub(app) }
     LaunchedEffect(Unit) { questions.connect(scope) }
     LaunchedEffect(questions.expired) { if (questions.expired) onExpired() }
+
+    // 模型 / 模式（0.12）：首页输入条与抽屉里的「新建会话」共用同一份 —— 那时会话还没建，
+    // 所以这里是「先记住」，建会话时再带过去；卡片画在根 Box 那一层（见文件末尾）。
+    val modelHub = remember { ModelHub(app) }
+    var preSheet by remember { mutableStateOf(false) }
+    var preModel by remember { mutableStateOf(ModelPick("", "")) }
+    var prePreset by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { modelHub.ensure() }
+    // 目录到手后把「宿主默认模型」填进去：用户没主动选过，胶囊就不该是空的
+    LaunchedEffect(modelHub.catalog) {
+        val cat = modelHub.catalog ?: return@LaunchedEffect
+        if (preModel.model.isEmpty()) {
+            preModel = ModelPick(cat.defaultProvider, cat.defaultModel, cat.defaultEffort)
+        }
+    }
 
     // 返回键分层：先回上一层，已经在会话列表那一层才关抽屉
     BackHandler(enabled = drawerState.isOpen) {
@@ -226,7 +244,8 @@ private fun HomeWithDrawer(
                             onOpenSession = { row ->
                                 // 进会话页：抽屉先关上（否则返回时它还开着），会话页盖在最上层
                                 focus.clearFocus()
-                                chat = ChatTarget(row.id, row.title, row.cwd, row.preset, row.running)
+                                // blank 决定「模式能不能改」（0.12 的胶囊要拿它判断锁没锁）
+                                chat = ChatTarget(row.id, row.title, row.cwd, row.preset, row.running, blank = row.blank)
                                 scope.launch { drawerState.close() }
                             },
                         )
@@ -274,11 +293,26 @@ private fun HomeWithDrawer(
 
                             DrawerPage.New -> NewSessionPanel(
                                 app = app,
+                                hub = modelHub,
+                                pickModel = preModel,
+                                presetId = prePreset,
+                                sheetOpen = preSheet,
+                                onOpenSheet = { preSheet = true },
                                 onBack = { page = DrawerPage.Sessions },
-                                onCreated = {
+                                // 建完**直接进那个会话**（0.12.1）。以前只 toast + 回列表，
+                                // 看着像"点了没反应" —— 用户连点了 4 次，17 秒里建了 4 个空白会话。
+                                onCreated = { newId, newCwd ->
                                     page = DrawerPage.Sessions
+                                    chat = ChatTarget(
+                                        id = newId,
+                                        // 空标题：会话页顶栏会退回显示目录名，等宿主的标题投影到了再换
+                                        title = "",
+                                        cwd = newCwd,
+                                        preset = prePreset.ifEmpty { null },
+                                        running = false,
+                                        blank = true,
+                                    )
                                     reloadKey += 1
-                                    Toast.makeText(app, tCreated, Toast.LENGTH_SHORT).show()
                                 },
                                 onExpired = {
                                     page = DrawerPage.Sessions
@@ -292,21 +326,29 @@ private fun HomeWithDrawer(
         ) {
             HomeScreen(
                 app = app,
+                hub = modelHub,
+                pickModel = preModel,
+                presetId = prePreset,
+                sheetOpen = preSheet,
+                onOpenSheet = { preSheet = true },
                 // 先收键盘再开抽屉：ModalNavigationDrawer 不会自己夺焦，输入框不收焦点输入法就不走
-            onOpenDrawer = {
-                focus.clearFocus()
-                scope.launch { drawerState.open() }
-            },
+                onOpenDrawer = {
+                    focus.clearFocus()
+                    scope.launch { drawerState.open() }
+                },
                 // 真发第一步：建会话（宿主 /api/session **不吃 prompt**，所以必须两步）。
                 // 拿到 id 后进会话页，并把这句话当 initialPrompt 交给它 —— 会话页拿到第一帧快照后再发，
                 // 这样乐观回显与宿主的权威回显落在同一个地方。
-                onSend = { text, workspaceId, cwd ->
+                onSend = { text, workspaceId, cwd, preset, pick ->
                     if (!creating) {
                         creating = true
                         scope.launch {
-                            when (val r = Sessions.create(app, workspaceId, cwd)) {
+                            when (val r = Sessions.create(app, workspaceId, cwd, preset)) {
                                 is CreateResult.Ok -> {
-                                    chat = ChatTarget(r.sessionId, text, cwd, null, true, text)
+                                    // 建完立刻定模型（`/api/session` 不吃模型）。失败就不管：
+                                    // 会话页那枚胶囊显示的是宿主实际在用的模型，用户一眼能看出没生效。
+                                    if (pick.model.isNotEmpty()) Models.select(app, r.sessionId, pick)
+                                    chat = ChatTarget(r.sessionId, text, cwd, preset, true, text)
                                     reloadKey += 1
                                 }
                                 is CreateResult.Rejected ->
@@ -328,6 +370,7 @@ private fun HomeWithDrawer(
             ChatScreen(
                 app = app,
                 target = open,
+                hub = modelHub,
                 detail = detail,
                 onBack = { chat = null },
                 onExpired = {
@@ -338,6 +381,27 @@ private fun HomeWithDrawer(
             // 提问卡盖在会话页**之上**（Box 里后画的就是上层），所以它内部那个
             // fillMaxSize 能连输入框一起罩住；没有待答提问时它不画遮罩、也不吃点击。
             AskOverlay(hub = questions, sessionId = open.id)
+        }
+
+        // 建会话前的模型 / 模式卡片（0.12）：画在根 Box 这一层，才能连抽屉一起罩住
+        // （画在抽屉里只能盖住抽屉那一栏，画在首页里则盖不住抽屉）。
+        if (preSheet) {
+            ModelSheet(
+                hub = modelHub,
+                pick = preModel,
+                presetId = prePreset,
+                // 会话都还没建，谈不上锁
+                presetLocked = false,
+                onPick = { p ->
+                    preModel = p
+                    null
+                },
+                onPreset = { id ->
+                    prePreset = id
+                    null
+                },
+                onDismiss = { preSheet = false },
+            )
         }
     }
 

@@ -56,6 +56,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.dsh.mirror.client.R
+import dev.dsh.mirror.client.net.Models
+import dev.dsh.mirror.client.net.PickOutcome
 import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.theme.Dsh
 import dev.dsh.mirror.client.theme.LocalDshFonts
@@ -82,6 +84,8 @@ import kotlinx.coroutines.launch
 fun ChatScreen(
     app: Context,
     target: ChatTarget,
+    /** 模型目录缓存（0.12，进程内一份，三个入口共用）。 */
+    hub: ModelHub,
     /** 设置里的「显示详细工作过程」：关时每一步只显示简短解释。 */
     detail: Boolean,
     onBack: () -> Unit,
@@ -96,11 +100,22 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
+    /** 模型 / 模式卡片开着没有（0.12）。 */
+    var sheet by remember(target.id) { mutableStateOf(false) }
+
+    val tCapsule = stringResource(R.string.model_capsule)
+    val tPreset = stringResource(R.string.model_preset_default)
+    val tExpired = stringResource(R.string.chat_expired)
+    val tUnreachable = stringResource(R.string.login_err_unreachable)
+    /** 模式 id → 中文名（清单还没拉到时胶囊退回 id 本身）。 */
+    val presetLabels = hub.presets.associate { it.id to it.label }
+
     // 是否"贴在底部"（对齐网页端 state.stick）。初始 true：进会话页就该看到最新一条。
     var stick by remember(target.id) { mutableStateOf(true) }
     val stickGap = with(LocalDensity.current) { 80.dp.toPx() }   // 网页端 STICK_GAP = 80
 
     LaunchedEffect(target.id) { model.connect(scope) }
+    LaunchedEffect(target.id) { hub.ensure() }
     LaunchedEffect(model.expired) { if (model.expired) onExpired() }
     BackHandler { onBack() }
 
@@ -151,118 +166,180 @@ fun ChatScreen(
         )
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(Dsh.BgPage)) {
-        ChatTopBar(model, onBack)
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().background(Dsh.BgPage)) {
+            ChatTopBar(model, onBack)
 
-        if (model.status.isNotEmpty()) StatusStrip(model.status)
+            if (model.status.isNotEmpty()) StatusStrip(model.status)
 
-        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-            val shown = model.rows.asReversed()
-            LazyColumn(
-                state = listState,
-                reverseLayout = true,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(top = 10.dp, bottom = 14.dp),
-            ) {
-                // index 0 = 屏幕最下：正在输出中的那条排在最前，落库的行排在它上面
-                if (model.liveVisible) {
-                    item(key = "live") {
-                        LiveRow(model, detail)
-                    }
-                }
-                // 乐观回显：还没被宿主回显的那几句，排在已落库的行**下面**（也就是屏幕更靠下）
-                itemsIndexed(
-                    model.pending.asReversed(),
-                    key = { _, p -> "p" + p.requestId },
-                ) { _, p ->
-                    ChatRowView(ChatRow.User(0, p.text), detail, running = false)
-                }
-                // 落库的行一律 running=false：它们的过程已经结束，标题显示「工作过程」；
-                // 真正在跑的那条走上面的 live 块，标题才是「工作中」。
-                // key 里带上行的类型：一条 turn/end 可能同时产出「工作过程」与「系统提示」两条，
-                // 只按 seq 做 key 会撞（LazyColumn 撞 key 会崩）
-                itemsIndexed(shown, key = { _, r -> "s" + r.seq + r.javaClass.simpleName }) { _, row ->
-                    ChatRowView(row, detail, running = false, onFile = { path -> dl = Dl.Ask(path, baseNameOf(path)) })
-                }
-                if (model.loadingOlder) {
-                    item(key = "older") {
-                        DimLine(stringResource(R.string.chat_loading_older))
-                    }
-                }
-                if (shown.isEmpty() && !model.liveVisible && !model.loadingOlder) {
-                    item(key = "empty") {
-                        DimLine(stringResource(R.string.chat_empty))
-                    }
-                }
-            }
-
-            // 用户滚上去看历史时，右下角浮一个"回到底部"键（网页端 btnBottom）。
-            // 它和列表是叠着的：Box 的右下角就是输入框上方。
-            if (!stick) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 16.dp, bottom = 12.dp)
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(Dsh.BgPage)
-                        .border(1.dp, Dsh.ListLine, CircleShape)
-                        .clickable {
-                            stick = true
-                            scope.launch { listState.animateScrollToItem(0) }
-                        },
-                    contentAlignment = Alignment.Center,
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                val shown = model.rows.asReversed()
+                LazyColumn(
+                    state = listState,
+                    reverseLayout = true,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(top = 10.dp, bottom = 14.dp),
                 ) {
-                    Text(
-                        text = "↓",
-                        fontSize = 18.sp,
-                        lineHeight = 18.sp,
-                        color = Dsh.ListDim,
-                        fontFamily = LocalDshFonts.current.ui,
-                    )
+                    // index 0 = 屏幕最下：正在输出中的那条排在最前，落库的行排在它上面
+                    if (model.liveVisible) {
+                        item(key = "live") {
+                            LiveRow(model, detail)
+                        }
+                    }
+                    // 乐观回显：还没被宿主回显的那几句，排在已落库的行**下面**（也就是屏幕更靠下）
+                    itemsIndexed(
+                        model.pending.asReversed(),
+                        key = { _, p -> "p" + p.requestId },
+                    ) { _, p ->
+                        ChatRowView(ChatRow.User(0, p.text), detail, running = false)
+                    }
+                    // 落库的行一律 running=false：它们的过程已经结束，标题显示「工作过程」；
+                    // 真正在跑的那条走上面的 live 块，标题才是「工作中」。
+                    // key 里带上行的类型：一条 turn/end 可能同时产出「工作过程」与「系统提示」两条，
+                    // 只按 seq 做 key 会撞（LazyColumn 撞 key 会崩）
+                    itemsIndexed(shown, key = { _, r -> "s" + r.seq + r.javaClass.simpleName }) { _, row ->
+                        ChatRowView(row, detail, running = false, onFile = { path -> dl = Dl.Ask(path, baseNameOf(path)) })
+                    }
+                    if (model.loadingOlder) {
+                        item(key = "older") {
+                            DimLine(stringResource(R.string.chat_loading_older))
+                        }
+                    }
+                    if (shown.isEmpty() && !model.liveVisible && !model.loadingOlder) {
+                        item(key = "empty") {
+                            DimLine(stringResource(R.string.chat_empty))
+                        }
+                    }
                 }
-            }
 
-            // 判定只在**滚动停止**的那一刻做。不能直接盯着 firstVisibleItemIndex：
-            // 新内容插进倒排列表的 index 0 时，Compose 会按 item key 重锚定 ——
-            // 上一刻还贴着底，插入后 firstVisibleItemIndex 就变成 1 了，跟着判定就会
-            // 把"正在跟随"误判成"用户滚走了"，然后跟随自己把自己关掉。
-            // 所以判据是"用户的手停下来时，视口是不是还在底部附近"。
-            LaunchedEffect(listState, stickGap) {
-                snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-                    if (!scrolling) {
-                        stick = listState.firstVisibleItemIndex == 0 &&
-                            listState.firstVisibleItemScrollOffset <= stickGap
+                // 用户滚上去看历史时，右下角浮一个"回到底部"键（网页端 btnBottom）。
+                // 它和列表是叠着的：Box 的右下角就是输入框上方。
+                if (!stick) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 12.dp)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Dsh.BgPage)
+                            .border(1.dp, Dsh.ListLine, CircleShape)
+                            .clickable {
+                                stick = true
+                                scope.launch { listState.animateScrollToItem(0) }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "↓",
+                            fontSize = 18.sp,
+                            lineHeight = 18.sp,
+                            color = Dsh.ListDim,
+                            fontFamily = LocalDshFonts.current.ui,
+                        )
+                    }
+                }
+
+                // 判定只在**滚动停止**的那一刻做。不能直接盯着 firstVisibleItemIndex：
+                // 新内容插进倒排列表的 index 0 时，Compose 会按 item key 重锚定 ——
+                // 上一刻还贴着底，插入后 firstVisibleItemIndex 就变成 1 了，跟着判定就会
+                // 把"正在跟随"误判成"用户滚走了"，然后跟随自己把自己关掉。
+                // 所以判据是"用户的手停下来时，视口是不是还在底部附近"。
+                LaunchedEffect(listState, stickGap) {
+                    snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+                        if (!scrolling) {
+                            stick = listState.firstVisibleItemIndex == 0 &&
+                                listState.firstVisibleItemScrollOffset <= stickGap
+                        }
+                    }
+                }
+
+                // 内容一变就往底贴（仅当用户在底部附近）。**不加动画**：网页端也是
+                // stickToBottom(false)，流式输出几十毫秒变一次，动画会互相打架。
+                val contentKey = listOf(
+                    model.rows.size,
+                    model.pending.size,
+                    model.liveText.length,
+                    model.liveThink,          // 是"思考字符数"（Int），不是字符串
+                    model.liveTools.size,
+                )
+                LaunchedEffect(contentKey) {
+                    if (stick && !listState.isScrollInProgress) listState.scrollToItem(0)
+                }
+
+                // 往上翻到头（倒排列表的末端）就再要一页
+                LaunchedEffect(listState) {
+                    snapshotFlow {
+                        val info = listState.layoutInfo
+                        val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        last to info.totalItemsCount
+                    }.collect { (last, total) ->
+                        if (total > 0 && last >= total - 2) model.loadOlder(scope)
                     }
                 }
             }
 
-            // 内容一变就往底贴（仅当用户在底部附近）。**不加动画**：网页端也是
-            // stickToBottom(false)，流式输出几十毫秒变一次，动画会互相打架。
-            val contentKey = listOf(
-                model.rows.size,
-                model.pending.size,
-                model.liveText.length,
-                model.liveThink,          // 是"思考字符数"（Int），不是字符串
-                model.liveTools.size,
-            )
-            LaunchedEffect(contentKey) {
-                if (stick && !listState.isScrollInProgress) listState.scrollToItem(0)
+            // 输入条上方那颗胶囊（0.12）：模型 · 档位 / 模式，点开底部卡片
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ModelCapsule(
+                    text = ModelLogic.capsuleText(hub.catalog, model.pick, tCapsule),
+                    open = sheet,
+                    onClick = { sheet = true },
+                )
+                ModelCapsule(
+                    text = ModelLogic.presetText(presetLabels, model.preset.orEmpty(), tPreset),
+                    open = sheet,
+                    onClick = { sheet = true },
+                )
             }
 
-            // 往上翻到头（倒排列表的末端）就再要一页
-            LaunchedEffect(listState) {
-                snapshotFlow {
-                    val info = listState.layoutInfo
-                    val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
-                    last to info.totalItemsCount
-                }.collect { (last, total) ->
-                    if (total > 0 && last >= total - 2) model.loadOlder(scope)
-                }
-            }
+            ChatComposer(model, scope)
         }
 
-        ChatComposer(model, scope)
+        if (sheet) {
+            ModelSheet(
+                hub = hub,
+                pick = model.pick,
+                presetId = model.preset.orEmpty(),
+                // 跑过至少一轮就锁死（网页端同款信号：`row.blank === false`）
+                presetLocked = !target.blank,
+                onPick = { p ->
+                    when (val r = Models.select(app, target.id, p)) {
+                        is PickOutcome.Ok -> {
+                            model.setPick(p)
+                            null
+                        }
+                        is PickOutcome.Rejected -> SheetReply(r.message)
+                        PickOutcome.Expired -> {
+                            onExpired()
+                            SheetReply(tExpired)
+                        }
+                        PickOutcome.Unreachable -> SheetReply(tUnreachable)
+                    }
+                },
+                onPreset = { id ->
+                    when (val r = Models.selectPreset(app, target.id, id)) {
+                        is PickOutcome.Ok -> {
+                            model.applyPreset(id)
+                            null
+                        }
+                        // `preset-locked`：把整段模式置灰，别让人反复点
+                        is PickOutcome.Rejected -> SheetReply(r.message, r.code == "preset-locked")
+                        PickOutcome.Expired -> {
+                            onExpired()
+                            SheetReply(tExpired)
+                        }
+                        PickOutcome.Unreachable -> SheetReply(tUnreachable)
+                    }
+                },
+                onDismiss = { sheet = false },
+            )
+        }
     }
 }
 
