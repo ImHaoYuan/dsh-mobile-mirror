@@ -72,6 +72,8 @@ import kotlinx.coroutines.launch
 fun ChatScreen(
     app: Context,
     target: ChatTarget,
+    /** 设置里的「显示详细工作过程」：关时每一步只显示简短解释。 */
+    detail: Boolean,
     onBack: () -> Unit,
     onExpired: () -> Unit,
 ) {
@@ -108,7 +110,7 @@ fun ChatScreen(
                 // index 0 = 屏幕最下：正在输出中的那条排在最前，落库的行排在它上面
                 if (model.liveVisible) {
                     item(key = "live") {
-                        LiveRow(model)
+                        LiveRow(model, detail)
                     }
                 }
                 // 乐观回显：还没被宿主回显的那几句，排在已落库的行**下面**（也就是屏幕更靠下）
@@ -116,10 +118,14 @@ fun ChatScreen(
                     model.pending.asReversed(),
                     key = { _, p -> "p" + p.requestId },
                 ) { _, p ->
-                    ChatRowView(ChatRow.User(0, p.text))
+                    ChatRowView(ChatRow.User(0, p.text), detail, running = false)
                 }
-                itemsIndexed(shown, key = { _, r -> "s" + r.seq }) { _, row ->
-                    ChatRowView(row)
+                // 落库的行一律 running=false：它们的过程已经结束，标题显示「工作过程」；
+                // 真正在跑的那条走上面的 live 块，标题才是「工作中」。
+                // key 里带上行的类型：一条 turn/end 可能同时产出「工作过程」与「系统提示」两条，
+                // 只按 seq 做 key 会撞（LazyColumn 撞 key 会崩）
+                itemsIndexed(shown, key = { _, r -> "s" + r.seq + r.javaClass.simpleName }) { _, row ->
+                    ChatRowView(row, detail, running = false)
                 }
                 if (model.loadingOlder) {
                     item(key = "older") {
@@ -354,32 +360,12 @@ private fun ChatComposer(model: ChatModel, scope: CoroutineScope) {
 
 /** 正在流式输出的那条。 */
 @Composable
-private fun LiveRow(model: ChatModel) {
+private fun LiveRow(model: ChatModel, detail: Boolean) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        if (model.liveThink > 0) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(modifier = Modifier.size(5.dp).clip(CircleShape).background(Dsh.ListDim3))
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    stringResource(R.string.chat_think, model.liveThink),
-                    fontSize = 12.5.sp,
-                    color = Dsh.ListDim3,
-                    fontFamily = LocalDshFonts.current.ui,
-                )
-            }
-        }
-        model.liveTools.forEach { name ->
-            Text(
-                name,
-                fontSize = 12.5.sp,
-                color = Dsh.ListDim3,
-                fontFamily = LocalDshFonts.current.mono,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        // 流式中的工作过程：与落库后**同一条折叠卡**，只是标题是「工作中」
+        if (model.liveThink > 0 || model.liveTools.isNotEmpty()) {
+            WorkBlock(model.liveThink, model.liveTools, detail, running = true)
+            Spacer(Modifier.size(6.dp))
         }
         if (model.liveText.isNotEmpty()) {
             Text(

@@ -25,8 +25,8 @@ android {
         // 发送 / 停止 + 乐观回显 = 0.8
         // Markdown 渲染与网页端逐条一致 = 0.9（修版 0.9.1：会话页贴底跟随）
         // 修版 0.9.2：表格重写（列对齐 / 只画横线 / 空表头不画）+ 本地文件蓝色芯片
-        versionCode = 16
-        versionName = "0.9.2"
+        versionCode = 17
+        versionName = "0.9.3"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
         resValue("string", "app_name", "DSH镜像原生")

@@ -29,6 +29,15 @@ class ChatTarget(
     val initialPrompt: String? = null,
 )
 
+/**
+ * 「工作过程」里的一步。
+ *
+ * 默认**只显示 [label]** —— 也就是 `run_code` 参数里那句简短解释；工具名与参数都藏起来
+ * （会话里那串 `run_code  {"code":"const R=…"}` 太吵，手机上要滑很久）。
+ * 设置里打开「显示详细工作过程」后才显示 [name] 与 [detail]（完整参数，含代码）。
+ */
+class WorkStep(val name: String, val label: String, val detail: String, val isError: Boolean)
+
 /** 会话页里的一行。 */
 sealed class ChatRow {
     abstract val seq: Int
@@ -39,20 +48,25 @@ sealed class ChatRow {
     /**
      * 助手回复。
      *
-     * @param thinkChars 「思考」的字符数 —— 0.7 只显示一行"思考 · N 字"，
-     *   真正的折叠卡片是 M5。与网页端一致：**只有思考、没有正文的整条不渲染**。
-     * @param tools 这条消息里内嵌的工具调用名（通常是空的，工具调用有独立事件）。
+     * @param thinkChars 「思考」的字符数（展开工作过程时才显示一行）。
+     * @param work 这一轮的工作过程 —— 与思考折进**同一张**「工作中 / 工作过程」卡，
+     *   正文留在卡外（折叠的是过程，不是回答）。
      */
     class Assistant(
         override val seq: Int,
         val text: String,
         val thinkChars: Int,
-        val tools: List<String>,
+        val work: List<WorkStep>,
         val interrupted: Boolean,
     ) : ChatRow()
 
-    /** 工具调用 / 报错结果，折成一行。 */
-    class Tool(override val seq: Int, val name: String, val detail: String, val isError: Boolean) : ChatRow()
+    /**
+     * 只有工作过程、没有正文的一条。
+     *
+     * 与网页端 1.2.1 的修正一致：正文为空的气泡不渲染（约 68% 的助手消息只有思考 + 命令）。
+     * 但**工作过程要留着** —— 折成一行「工作过程 · N 步」，点了能看它刚才在干什么。
+     */
+    class Work(override val seq: Int, val steps: List<WorkStep>, val thinkChars: Int) : ChatRow()
 
     /** 系统提示行（本轮出错、被中断等）。 */
     class Notice(override val seq: Int, val text: String, val isError: Boolean) : ChatRow()
@@ -92,7 +106,7 @@ class ChatModel(
         private set
     var liveThink by mutableStateOf(0)
         private set
-    var liveTools by mutableStateOf<List<String>>(emptyList())
+    var liveTools by mutableStateOf<List<WorkStep>>(emptyList())
         private set
 
     val liveVisible: Boolean get() = liveText.isNotEmpty() || liveThink > 0 || liveTools.isNotEmpty()
@@ -155,7 +169,11 @@ class ChatModel(
 
     /** 流式文本按块下标攒，最后按序拼 —— 不能直接追加，否则多块消息顺序会乱。 */
     private val liveTextByIndex = TreeMap<Int, StringBuilder>()
-    private val liveToolsByIndex = TreeMap<Int, String>()
+    private val liveToolsByIndex = TreeMap<Int, WorkStep>()
+    /** 这一轮累积的工作过程，落到下一条助手消息上（没有正文就单独成一条 [ChatRow.Work]）。 */
+    private val workAcc = ArrayList<WorkStep>()
+    /** 只有思考、没有正文的那些消息的思考字数，攒着并进工作过程。 */
+    private var workThink = 0
 
     fun connect(scope: CoroutineScope) {
         if (job != null) return
@@ -179,8 +197,9 @@ class ChatModel(
                         if (seq in 1..lastSeq) return@collect
                         if (seq > lastSeq) lastSeq = seq
                         note(f.json, live = true)
-                        val row = rowOf(f.json, live = true)
-                        if (row != null) rows = rows + row
+                        val newRows = rowsOf(f.json, live = true)
+                        rows = rows + newRows
+                        val row = newRows.lastOrNull()
                         status = ""
                         // 宿主回显了我发的那句 → 把乐观那条撤掉（权威版本已经进了 rows，位置不变）
                         if (row is ChatRow.User) pending = pending.filterNot { it.text == row.text }
@@ -204,7 +223,7 @@ class ChatModel(
                     val older = ArrayList<ChatRow>(r.records.size)
                     for (ev in r.records) {
                         note(ev, live = false)
-                        rowOf(ev, live = false)?.let { older.add(it) }
+                        older.addAll(rowsOf(ev, live = false))
                     }
                     rows = older + rows
                     hasMore = r.hasMore
@@ -317,7 +336,7 @@ class ChatModel(
                     "turn/end" -> lastEnd = ev.optInt("seq", 0)
                     else -> { }
                 }
-                rowOf(ev, live = false)?.let { out.add(it) }
+                out.addAll(rowsOf(ev, live = false))
             }
         }
         rows = out
@@ -366,9 +385,10 @@ class ChatModel(
             "reason" -> liveThink += d.optString("t").length
             "tool" -> {
                 val i = d.optInt("i", 0)
-                val name = d.optString("name").ifEmpty { liveToolsByIndex[i].orEmpty() }
+                val name = d.optString("name").ifEmpty { liveToolsByIndex[i]?.name.orEmpty() }
                 if (name.isNotEmpty()) {
-                    liveToolsByIndex[i] = name
+                    // 流式帧里只有工具名、没有参数，所以这一步拿不到 description，用中文名兜底
+                    liveToolsByIndex[i] = WorkStep(name, toolLabel(name), "", false)
                     liveTools = liveToolsByIndex.values.toList()
                 }
             }
@@ -409,42 +429,81 @@ class ChatModel(
         }
     }
 
-    /** 投影事件 → 可渲染的行。返回 null 表示这条不下发（或手机上不显示）。 */
-    private fun rowOf(ev: JSONObject, live: Boolean): ChatRow? {
+    /**
+     * 投影事件 → 可渲染的行。
+     *
+     * 返回**列表**：`turn/end` 收尾时可能既要补一条攒下的工作过程、又要补一条系统提示。
+     *
+     * 工具调用（`tool/call`）**不单独成行**，先攒进 [workAcc]，落到下一条助手消息上 ——
+     * 这样「思考」与「命令」就住在同一张折叠卡里。网页端也是这么合的：
+     * "它想了什么、动了什么"本来就是同一件事的两面，拆成两摊手机上要滑很久。
+     */
+    private fun rowsOf(ev: JSONObject, live: Boolean): List<ChatRow> {
         val seq = ev.optInt("seq", 0)
         val type = ev.optString("type")
         val data = ev.optJSONObject("data") ?: JSONObject()
         return when (type) {
             "user/message" -> {
                 val text = textOf(data.optJSONArray("blocks"))
-                ChatRow.User(seq, text.ifEmpty { app.getString(R.string.chat_attach) })
+                listOf(ChatRow.User(seq, text.ifEmpty { app.getString(R.string.chat_attach) }))
             }
             "assistant/message" -> {
                 val blocks = data.optJSONArray("blocks")
                 val text = textOf(blocks)
-                // 与网页端 1.2.1 的修正一致：约 68% 的助手消息只有思考 + 命令、没有正文，
-                // 这类整条不渲染（否则满屏空气泡）
-                if (text.isEmpty()) null
-                else ChatRow.Assistant(
-                    seq, text, thinkCharsOf(blocks), toolNamesOf(blocks),
-                    data.optBoolean("interrupted", false),
-                )
+                val think = thinkCharsOf(blocks)
+                val work = drainWork()
+                if (text.isEmpty()) {
+                    // 与网页端 1.2.1 的修正一致：约 68% 的助手消息只有思考 + 命令、没有正文，
+                    // 这类整条不渲染（否则满屏空气泡）—— 但**工作过程要留下**，折成一行。
+                    workThink += think
+                    if (work.isEmpty()) {
+                        emptyList()
+                    } else {
+                        val row = ChatRow.Work(seq, work, workThink)
+                        workThink = 0
+                        listOf(row)
+                    }
+                } else {
+                    val row = ChatRow.Assistant(
+                        seq, text, think + workThink, work,
+                        data.optBoolean("interrupted", false),
+                    )
+                    workThink = 0
+                    listOf(row)
+                }
             }
-            "tool/call" -> ChatRow.Tool(
-                seq,
-                data.optString("name").ifEmpty { app.getString(R.string.chat_tool) },
-                firstLine(data.optString("args")),
-                false,
-            )
+            "tool/call" -> {
+                val name = data.optString("name").ifEmpty { app.getString(R.string.chat_tool) }
+                val args = data.optString("args")
+                workAcc.add(WorkStep(name, stepLabel(name, args), argsText(args), false))
+                emptyList()
+            }
             "tool/result" -> {
-                // 成功的结果不显示（网页端折进「工作过程」里），只有报错值得单独一行
-                if (!data.optBoolean("isError", false)) null
-                else ChatRow.Tool(seq, app.getString(R.string.chat_tool_error), firstLine(textOf(data.optJSONArray("blocks"))), true)
+                // 成功的结果不显示（网页端折进「工作过程」里），只有报错值得留下
+                if (!data.optBoolean("isError", false)) {
+                    emptyList()
+                } else {
+                    workAcc.add(
+                        WorkStep(
+                            app.getString(R.string.chat_tool_error),
+                            firstLine(textOf(data.optJSONArray("blocks"))),
+                            "",
+                            true,
+                        ),
+                    )
+                    emptyList()
+                }
             }
             "turn/end" -> {
+                val out = ArrayList<ChatRow>(2)
+                val work = drainWork()
+                if (work.isNotEmpty()) {
+                    out.add(ChatRow.Work(seq, work, workThink))
+                    workThink = 0
+                }
                 val err = data.optJSONObject("error")
                 if (err != null) {
-                    ChatRow.Notice(seq, err.optString("message").ifEmpty { app.getString(R.string.chat_turn_error) }, true)
+                    out.add(ChatRow.Notice(seq, err.optString("message").ifEmpty { app.getString(R.string.chat_turn_error) }, true))
                 } else {
                     val label = when (data.optString("reason")) {
                         "aborted" -> app.getString(R.string.chat_end_aborted)
@@ -453,11 +512,46 @@ class ChatModel(
                         "blocked" -> app.getString(R.string.chat_end_blocked)
                         else -> ""
                     }
-                    if (label.isEmpty()) null else ChatRow.Notice(seq, label, false)
+                    if (label.isNotEmpty()) out.add(ChatRow.Notice(seq, label, false))
                 }
+                out
             }
-            else -> null
+            else -> emptyList()
         }
+    }
+
+    /** 攒下的工作过程取走并清空。 */
+    private fun drainWork(): List<WorkStep> {
+        if (workAcc.isEmpty()) return emptyList()
+        val out = ArrayList<WorkStep>(workAcc)
+        workAcc.clear()
+        return out
+    }
+
+    /** 一步的默认文案：优先用参数里的 description（`run_code` 那句简短解释），否则退化成工具的中文名。 */
+    private fun stepLabel(name: String, args: String): String {
+        val d = try {
+            JSONObject(args).optString("description")
+        } catch (_: Exception) {
+            ""
+        }
+        return d.trim().ifEmpty { toolLabel(name) }
+    }
+
+    /** 详细模式下的参数：压成一行并截断。 */
+    private fun argsText(args: String): String = args.trim().replace(Regex("\\s+"), " ").take(240)
+
+    /** 工具的中文名。默认模式不显示工具名，只有拿不到 description 时才用它兜底。 */
+    private fun toolLabel(name: String): String = when (name) {
+        "run_code" -> app.getString(R.string.tool_run_code)
+        "read" -> app.getString(R.string.tool_read)
+        "write" -> app.getString(R.string.tool_write)
+        "edit" -> app.getString(R.string.tool_edit)
+        "pwsh", "bash", "shell" -> app.getString(R.string.tool_shell)
+        "glob", "grep" -> app.getString(R.string.tool_search)
+        "web_search", "web_fetch" -> app.getString(R.string.tool_web)
+        "todo_write" -> app.getString(R.string.tool_plan)
+        else -> app.getString(R.string.chat_tool)
     }
 
     private fun textOf(blocks: JSONArray?): String {
@@ -484,18 +578,6 @@ class ChatModel(
             if (b.optString("type") == "reasoning") n += b.optString("text").length
         }
         return n
-    }
-
-    private fun toolNamesOf(blocks: JSONArray?): List<String> {
-        if (blocks == null) return emptyList()
-        val out = ArrayList<String>(2)
-        for (i in 0 until blocks.length()) {
-            val b = blocks.optJSONObject(i) ?: continue
-            if (b.optString("type") == "tool-call") {
-                b.optString("name").takeIf { it.isNotEmpty() }?.let { out.add(it) }
-            }
-        }
-        return out
     }
 
     private fun firstLine(s: String): String {

@@ -67,9 +67,11 @@
     <string name="new_created">已新建会话</string>
 
     <!-- ⋯ 面板 -->
-    <string name="more_title">更多</string>
+    <string name="more_title">设置</string>
     <string name="more_repair_note">重新配对会清掉保存的地址、证书指纹、登录票根和记住的账号密码，下次要重新登录。</string>
-    <string name="more_fonts">字体</string>
+    <string name="more_fonts">字体设置</string>
+    <string name="settings_detail">显示详细工作过程</string>
+    <string name="settings_detail_note">打开后，会话里的「工作过程」会显示工具名与完整参数（含代码）；关闭时只显示每一步的简短说明。</string>
     <string name="more_licenses">开源许可</string>
 
     <!-- 字体 -->
@@ -125,6 +127,17 @@
     <string name="chat_running">运行中…</string>
     <string name="chat_readonly">只读 · 发送与停止在 0.8 接上</string>
     <string name="chat_think">思考 %1$d 字</string>
+    <string name="chat_work_running">工作中</string>
+    <string name="chat_work_done">工作过程</string>
+    <string name="chat_work_steps">%1$d 步</string>
+    <string name="tool_run_code">运行代码</string>
+    <string name="tool_read">读取文件</string>
+    <string name="tool_write">写入文件</string>
+    <string name="tool_edit">修改文件</string>
+    <string name="tool_shell">执行命令</string>
+    <string name="tool_search">查找文件</string>
+    <string name="tool_web">联网查询</string>
+    <string name="tool_plan">更新计划</string>
     <string name="chat_interrupted">本轮被中断</string>
     <string name="chat_empty">这个会话还没有可显示的内容</string>
     <string name="chat_back">返回</string>

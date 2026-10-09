@@ -41,6 +41,7 @@ import dev.dsh.mirror.client.theme.DshFonts
 import dev.dsh.mirror.client.theme.DshMirrorTheme
 import dev.dsh.mirror.client.ui.ChatScreen
 import dev.dsh.mirror.client.ui.ChatTarget
+import dev.dsh.mirror.client.prefs.UiPrefs
 import dev.dsh.mirror.client.ui.FontPanel
 import dev.dsh.mirror.client.ui.HomeScreen
 import dev.dsh.mirror.client.ui.LicensePanel
@@ -161,6 +162,8 @@ private fun HomeWithDrawer(
     var chat by remember { mutableStateOf<ChatTarget?>(null) }
     // 建会话是异步的，挡住连点（两次点击会建出两条会话）
     var creating by remember { mutableStateOf(false) }
+    // 「显示详细工作过程」：设置面板改、会话页读，所以状态放在共同父级
+    var detail by remember { mutableStateOf(UiPrefs.detailWork(app)) }
 
     // 返回键分层：先回上一层，已经在会话列表那一层才关抽屉
     BackHandler(enabled = drawerState.isOpen) {
@@ -216,6 +219,11 @@ private fun HomeWithDrawer(
                             DrawerPage.Sessions -> Unit
 
                             DrawerPage.More -> MorePanel(
+                                detail = detail,
+                                onDetail = {
+                                    detail = it
+                                    UiPrefs.setDetailWork(app, it)
+                                },
                                 onBack = { page = DrawerPage.Sessions },
                                 onFonts = { page = DrawerPage.Fonts },
                                 onLicenses = {
@@ -300,6 +308,7 @@ private fun HomeWithDrawer(
             ChatScreen(
                 app = app,
                 target = open,
+                detail = detail,
                 onBack = { chat = null },
                 onExpired = {
                     chat = null

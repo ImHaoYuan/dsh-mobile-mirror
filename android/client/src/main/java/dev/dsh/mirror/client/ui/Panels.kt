@@ -13,9 +13,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -109,9 +111,16 @@ fun PanelOption(label: String, desc: String, enabled: Boolean = true, onClick: (
     }
 }
 
-/** 顶栏「⋯」：字体 / 开源许可 / 重新配对。 */
+/**
+ * 设置面板（0.9.3 起由「更多」改名而来）。
+ *
+ * <p>字体设置收在这里；「显示详细工作过程」也在这里 —— 关（默认）时「工作过程」折叠卡
+ * 每一步只显示简短解释，打开才显示工具名与完整参数。
+ */
 @Composable
 fun MorePanel(
+    detail: Boolean,
+    onDetail: (Boolean) -> Unit,
     onBack: () -> Unit,
     onFonts: () -> Unit,
     onLicenses: () -> Unit,
@@ -122,10 +131,25 @@ fun MorePanel(
     val tLicenses = stringResource(R.string.more_licenses)
     val tRepair = stringResource(R.string.action_repair)
     val tRepairNote = stringResource(R.string.more_repair_note)
+    val tDetail = stringResource(R.string.settings_detail)
+    val tDetailNote = stringResource(R.string.settings_detail_note)
 
     DrawerPanel(tTitle, onBack) {
         DshSecondaryButton(tFonts) { onFonts() }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(14.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable { onDetail(!detail) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(tDetail, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
+                Spacer(Modifier.height(2.dp))
+                Text(tDetailNote, fontSize = 12.5f.sp, lineHeight = 20.sp, color = Dsh.ListDim)
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(checked = detail, onCheckedChange = { onDetail(it) })
+        }
+        Spacer(Modifier.height(14.dp))
         DshSecondaryButton(tLicenses) { onLicenses() }
         Spacer(Modifier.height(14.dp))
         PanelNote(tRepairNote)
