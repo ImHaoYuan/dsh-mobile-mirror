@@ -1,6 +1,9 @@
 package dev.dsh.mirror.client.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -28,10 +31,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -211,6 +220,29 @@ fun DshHint(text: String, center: Boolean = false) {
         textAlign = if (center) TextAlign.Center else TextAlign.Start,
         style = MaterialTheme.typography.labelSmall,
     )
+}
+
+/**
+ * 手画的小箭头（`▾`）—— 展开时转 180°。
+ *
+ * <p>为什么不用字符：内置字体里没有 `⌄` / `▾` 这类字形，会掉到设备系统字体去画，
+ * 各家 ROM 的粗细与基线都不一样。0.12 的模型胶囊先画了它，0.12.2 起文件夹胶囊共用。
+ *
+ * @param open 展开时转 180°（桌面端 `transition .12s` 同款）。
+ */
+@Composable
+fun DshChevron(open: Boolean = false, size: Dp = 9.dp, color: Color = Dsh.ListDim3) {
+    val turn by animateFloatAsState(if (open) 180f else 0f, tween(120), label = "chevron")
+    Canvas(modifier = Modifier.size(size).rotate(turn)) {
+        // 显式写 this.size：DrawScope 自己也有个 size，别跟参数撞上
+        val w = this.size.width
+        val h = this.size.height
+        val p = Path()
+        p.moveTo(w * 0.1f, h * 0.32f)
+        p.lineTo(w * 0.5f, h * 0.7f)
+        p.lineTo(w * 0.9f, h * 0.32f)
+        drawPath(p, color, style = Stroke(width = 1.3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
 }
 
 /**

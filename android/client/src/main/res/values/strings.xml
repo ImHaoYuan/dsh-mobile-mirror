@@ -170,14 +170,10 @@
     <string name="ask_custom_only">输入你的答案…</string>
     <string name="ask_pill">有 %1$d 个问题待回答</string>
     <string name="ask_reconnecting">提问通道断开，正在重连（第 %1$d 次）</string>
-    <!-- 模型 / 模式选择卡（0.12） -->
-    <string name="model_title">模型与模式</string>
-    <string name="model_close">关闭</string>
+    <!-- 模型 / 模式 / 文件夹面板（0.12.3 起就地展开，不再是全屏卡片，所以没有标题与「关闭」） -->
     <string name="model_loading">正在读取模型目录…</string>
     <string name="model_retry">重试</string>
-    <string name="model_section_model">模型</string>
     <string name="model_section_failed">读不到的 provider</string>
-    <string name="model_section_preset">模式</string>
     <string name="model_preset_locked">这个会话已经跑过至少一轮，模式不能再改了（DSH 的规则）</string>
     <string name="model_preset_none">这台电脑上还没有可用的模式</string>
     <string name="model_switched">已切换为 %1$s</string>
@@ -188,7 +184,6 @@
     <string name="cd_menu">打开侧栏</string>
     <string name="home_folder_label">文件夹</string>
     <string name="home_folder_pick">选择文件夹</string>
-    <string name="home_folder_new">选择新的文件夹</string>
     <string name="home_folder_use">用这个文件夹</string>
     <string name="home_path_bad">要填绝对路径，例如 D:\\VibeCoding\\项目 或 /home/me/project</string>
     <string name="home_send_later">会话页在下一步（M3）实现，这句话先不发出去</string>

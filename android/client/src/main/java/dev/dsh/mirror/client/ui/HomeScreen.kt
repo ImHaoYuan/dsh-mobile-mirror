@@ -20,15 +20,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -69,13 +66,17 @@ import dev.dsh.mirror.client.theme.LocalDshFonts
  * 标题、刷新、更多都搬进抽屉头部了。
  *
  * <p><b>0.6：底部那条从「按钮」变成真输入框</b>。点一下聚焦、出键盘；键盘靠清单里的
- * {@code adjustResize} 把窗口缩短，输入框自然贴在键盘上方，logo 被顶上去。输入框**下面**
- * 一行是文件夹：左边显示当前文件夹、右边「选择新的文件夹」手输绝对路径 —— 两个都在首页就地展开。
- * 展开时 logo 缩到 56dp 压到顶部给它腾地方，清单最多半个窗口高。
+ * {@code adjustResize} 把窗口缩短，输入框自然贴在键盘上方，logo 被顶上去。面板展开时 logo
+ * 缩到 56dp 压到顶部给它腾地方，面板最多半个窗口高。
  *
- * <p>0.6.1 修的两件事：① logo 缩不缩**只看选择器是否展开**，不再看输入框焦点 ——
+ * <p><b>0.12.3 起底部是两段：胶囊行 → 输入框</b>。三颗胶囊（模型 / 模式 / 文件夹）**并排一行**、
+ * 各占一份（{@code weight(1f, fill = false)}，字短按内容宽、字长截断加省略号），样式统一成
+ * 文件夹那颗的全圆胶囊。点开谁，谁的面板就**就地**长在胶囊行与输入框之间（没有遮罩、页面
+ * 还是亮的、最多半个窗口），再点一下收起。「选择新的文件夹」那行独立的蓝字 0.12.2 已并进清单末尾。
+ *
+ * <p>0.6.1 修的两件事：① logo 缩不缩**只看面板是否展开**，不再看输入框焦点 ——
  * 点文件夹按钮时输入框的焦点不一定被清掉，把焦点算进来会让选完文件夹后 logo 回不到中心；
- * 打开选择器时主动 {@code clearFocus()} 收键盘。② 清单高度从 132dp 改成「半个窗口」。
+ * 打开面板时主动 {@code clearFocus()} 收键盘。② 清单高度从 132dp 改成「半个窗口」。
  *
  * <p><b>0.6 的边界（用户选定）</b>：发送键**不真发**，只提示会话页在 M3。
  * 输入框内容与文件夹选择先按 M3 的形状做好，等聊天页接上再打开开关。
@@ -86,11 +87,12 @@ fun HomeScreen(
     onOpenDrawer: () -> Unit,
     /** 模型目录缓存（0.12，进程内一份，三个入口共用）。 */
     hub: ModelHub,
-    /** 建会话前先记着的模型 / 模式：状态在 MainActivity —— 卡片也在那一层画，才能连抽屉一起罩住。 */
+    /** 建会话前先记着的模型 / 模式：状态在 MainActivity —— 首页与抽屉里的「新建会话」共用同一份。 */
     pickModel: ModelPick,
     presetId: String,
-    sheetOpen: Boolean,
-    onOpenSheet: () -> Unit,
+    /** 选模型 / 换模式：会话还没建，只是记下来（没有网络请求），返回 null = 成功。 */
+    onPickModel: suspend (ModelPick) -> PickReply?,
+    onPreset: suspend (String) -> PickReply?,
     /**
      * 真发：建会话 → 进会话页 → 把这句话发出去（都在 MainActivity 里串）。
      *
@@ -105,7 +107,7 @@ fun HomeScreen(
     // 按物理屏幕算会算出比可见区域还高的清单，直接顶出屏幕
     val halfScreen = LocalConfiguration.current.screenHeightDp.dp * 0.5f
     var text by remember { mutableStateOf("") }
-    var pick by remember { mutableStateOf(FolderPick.None) }
+    var panel by remember { mutableStateOf(ChipPanel.None) }
     var workspaces by remember { mutableStateOf<List<Workspace>?>(null) }
     var chosen by remember {
         mutableStateOf(composer.location()?.let { ChosenFolder(it.workspaceId, it.cwd, "") })
@@ -115,7 +117,8 @@ fun HomeScreen(
 
     val hint = stringResource(R.string.home_input_hint)
     val tPickFolder = stringResource(R.string.home_folder_pick)
-    val tNewFolder = stringResource(R.string.home_folder_new)
+    /** 文件夹胶囊的前缀小字（0.12.3：它跟模型 / 模式并排，得说清自己是什么）。 */
+    val tFolderPrefix = stringResource(R.string.home_folder_label)
     val tUse = stringResource(R.string.home_folder_use)
     val tBadPath = stringResource(R.string.home_path_bad)
     val tCapsule = stringResource(R.string.model_capsule)
@@ -141,7 +144,7 @@ fun HomeScreen(
     // logo 缩到顶部**只看选择器是否展开**（要给它腾地方）。
     // 输入框聚焦时不额外缩 —— 键盘一弹窗口自己会缩短，logo 会被顶上去，这已经够了；
     // 而且把「焦点」算进来会卡住：点文件夹按钮时输入框的焦点不一定被清掉，选完文件夹 logo 就回不到中心了。
-    val compact = pick != FolderPick.None
+    val compact = panel != ChipPanel.None
 
     // logo 的位置与大小**都走动画** —— 不然点文件夹时它是「跳」过去的。
     // 位置由上下两个 weight 的比值决定（0.44/0.56 → 0.06/0.94），权重本身可以动画，
@@ -174,11 +177,120 @@ fun HomeScreen(
         }
         Spacer(Modifier.weight(bottomWeight))
 
+        // 胶囊行（0.12.2 起在**输入框上方**；0.12.3 起三颗并排：模型 / 模式 / 文件夹）。
+        // 三颗**各占一份**（weight(1f, fill = false)）：字短就按内容宽，字长就截到自己的那份并省略号，
+        // 谁也不会把谁挤出去。圆角与字号统一到文件夹那一套，并排才不会显得没对齐。
+        // 间距：输入框是个 52dp 的盒子、上下都没有内距，所以这一行的 bottom 就是它与下面那块的间隔；
+        // 面板自己底部的 10dp（PanelBody 里）是它与输入框的间隔 —— 两段相等。
+        // （胶囊上方是弹性的 weight 区域，不给固定上距：那不是「两个组件之间」。）
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ModelCapsule(
+                modifier = Modifier.weight(1f, fill = false),
+                text = ModelLogic.capsuleText(hub.catalog, pickModel, tCapsule),
+                open = panel == ChipPanel.Model,
+                onClick = {
+                    // 收键盘：面板要地方，而且这样 logo 才能回中心
+                    focus.clearFocus()
+                    panel = if (panel == ChipPanel.Model) ChipPanel.None else ChipPanel.Model
+                },
+            )
+            ModelCapsule(
+                modifier = Modifier.weight(1f, fill = false),
+                text = ModelLogic.presetText(presetLabels, presetId, tPresetDefault),
+                open = panel == ChipPanel.Preset,
+                onClick = {
+                    focus.clearFocus()
+                    panel = if (panel == ChipPanel.Preset) ChipPanel.None else ChipPanel.Preset
+                },
+            )
+            ModelCapsule(
+                modifier = Modifier.weight(1f, fill = false),
+                prefix = tFolderPrefix,
+                text = folderLabel,
+                open = panel == ChipPanel.Folder || panel == ChipPanel.Path,
+                onClick = {
+                    // 清焦点 = 收键盘：半屏清单需要地方，而且这样 logo 才能回中心
+                    focus.clearFocus()
+                    panel = if (panel == ChipPanel.Folder) ChipPanel.None else ChipPanel.Folder
+                },
+            )
+        }
+
+        // 面板槽（0.12.3）：三颗胶囊共用这一个位置 —— 谁被点开谁就长在这里，
+        // 而且**就长在胶囊行与输入框之间**（会话页、抽屉里的「新建会话」也是同一套）。
+        // 收起动画期间 panel 已经是 None，所以单独留一份「最后展开的是哪个」给内容用，
+        // 否则内容会先变空、动画只剩一片空白在缩。
+        var lastPanel by remember { mutableStateOf(ChipPanel.Folder) }
+        LaunchedEffect(panel) {
+            if (panel != ChipPanel.None) lastPanel = panel
+        }
+        AnimatedVisibility(
+            visible = panel != ChipPanel.None,
+            enter = expandVertically(tween(MOVE_MS)) + fadeIn(tween(MOVE_MS)),
+            exit = shrinkVertically(tween(MOVE_MS)) + fadeOut(tween(MOVE_MS)),
+        ) {
+            when (lastPanel) {
+                ChipPanel.Model -> ModelPanel(
+                    hub = hub,
+                    pick = pickModel,
+                    maxHeight = halfScreen,
+                    onPick = onPickModel,
+                )
+                ChipPanel.Preset -> PresetPanel(
+                    hub = hub,
+                    presetId = presetId,
+                    // 会话都还没建，谈不上锁
+                    presetLocked = false,
+                    maxHeight = halfScreen,
+                    onPreset = onPreset,
+                    onDismiss = { panel = ChipPanel.None },
+                )
+                ChipPanel.Path -> PathPicker(
+                    value = manual,
+                    onValueChange = { manual = it; pathError = "" },
+                    error = pathError,
+                    tUse = tUse,
+                ) {
+                    val v = manual.trim()
+                    if (!looksAbsolute(v)) {
+                        pathError = tBadPath
+                    } else {
+                        chosen = ChosenFolder(null, v, Sessions.shortPath(v).ifEmpty { v })
+                        composer.remember(null, v)
+                        focus.clearFocus()
+                        panel = ChipPanel.None
+                    }
+                }
+                else -> FolderPicker(
+                    rows = workspaces,
+                    maxHeight = halfScreen,
+                    onChoose = { w ->
+                        val id = w.id.ifEmpty { null }
+                        chosen = ChosenFolder(id, w.path, labelOf(w))
+                        composer.remember(id, w.path)
+                        focus.clearFocus()
+                        panel = ChipPanel.None
+                    },
+                    // 「其他路径…」原来是输入框右边一行独立的蓝字，0.12.2 合并到清单末尾
+                    onManual = {
+                        pathError = ""
+                        panel = ChipPanel.Path
+                    },
+                )
+            }
+        }
+
         HomeComposer(
             value = text,
             onValueChange = { text = it },
             // 点回输入框就收起选择器：键盘与半屏清单同时出现会撑出屏幕
-            onFocusChanged = { if (it) pick = FolderPick.None },
+            onFocusChanged = { if (it) panel = ChipPanel.None },
             hint = hint,
             canSend = text.isNotBlank(),
             // 0.8 起真发：建会话 → 进会话页 → 发首句。
@@ -192,98 +304,11 @@ fun HomeScreen(
                 }
             },
         )
-
-        // 模型 · 档位 / 模式（0.12）。放在输入条与文件夹行之间，两行都是「这次要带什么参数」。
-        // 上下间隔必须**相等**：输入条是个 52dp 的盒子、底边就是它的下沿，所以上面这段
-        // 只由这里的 top 决定；下面那行 FolderRow 自带 top = 8dp，于是下间隔 = bottom + 8。
-        // 取 top = 10 / bottom = 2 → 上下都是 10dp（0.12 时是 2 与 10，看着偏上）。
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 2.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ModelCapsule(
-                text = ModelLogic.capsuleText(hub.catalog, pickModel, tCapsule),
-                open = sheetOpen,
-                onClick = {
-                    // 收键盘 + 收起文件夹清单：卡片要盖满屏，键盘还在会把它顶掉一半
-                    focus.clearFocus()
-                    pick = FolderPick.None
-                    onOpenSheet()
-                },
-            )
-            ModelCapsule(
-                text = ModelLogic.presetText(presetLabels, presetId, tPresetDefault),
-                open = sheetOpen,
-                onClick = {
-                    focus.clearFocus()
-                    pick = FolderPick.None
-                    onOpenSheet()
-                },
-            )
-        }
-
-        FolderRow(
-            label = folderLabel,
-            tNew = tNewFolder,
-            onPick = {
-                // 清焦点 = 收键盘：半屏清单需要地方，而且这样 logo 才能回中心
-                focus.clearFocus()
-                pick = if (pick == FolderPick.List) FolderPick.None else FolderPick.List
-            },
-            onNewPath = {
-                focus.clearFocus()
-                pick = if (pick == FolderPick.Path) FolderPick.None else FolderPick.Path
-            },
-        )
-
-        // 收起动画期间 pick 已经是 None，所以单独留一份「最后展开的是哪个」给内容用，
-        // 否则内容会先变空、动画只剩一片空白在缩。
-        var lastPick by remember { mutableStateOf(FolderPick.List) }
-        LaunchedEffect(pick) {
-            if (pick != FolderPick.None) lastPick = pick
-        }
-        AnimatedVisibility(
-            visible = pick != FolderPick.None,
-            enter = expandVertically(tween(MOVE_MS)) + fadeIn(tween(MOVE_MS)),
-            exit = shrinkVertically(tween(MOVE_MS)) + fadeOut(tween(MOVE_MS)),
-        ) {
-            when (lastPick) {
-                FolderPick.Path -> PathPicker(
-                    value = manual,
-                    onValueChange = { manual = it; pathError = "" },
-                    error = pathError,
-                    tUse = tUse,
-                ) {
-                    val v = manual.trim()
-                    if (!looksAbsolute(v)) {
-                        pathError = tBadPath
-                    } else {
-                        chosen = ChosenFolder(null, v, Sessions.shortPath(v).ifEmpty { v })
-                        composer.remember(null, v)
-                        focus.clearFocus()
-                        pick = FolderPick.None
-                    }
-                }
-                else -> FolderPicker(rows = workspaces, maxHeight = halfScreen) { w ->
-                    val id = w.id.ifEmpty { null }
-                    chosen = ChosenFolder(id, w.path, labelOf(w))
-                    composer.remember(id, w.path)
-                    focus.clearFocus()
-                    pick = FolderPick.None
-                }
-            }
-        }
     }
 }
 
 /** 首页 logo 移动 / 选择器展开共用的动画时长。 */
 private const val MOVE_MS = 220
-
-/** 首页下面那一行文件夹选择器的展开状态。 */
-private enum class FolderPick { None, List, Path }
 
 /** 首页当前选中的文件夹。{@code label} 为空表示「从设置里恢复出来的，还没跟清单对上」。 */
 private data class ChosenFolder(val workspaceId: String?, val cwd: String?, val label: String)
@@ -329,7 +354,8 @@ private fun HomeComposer(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp)
+            // bottom = 12dp：输入框现在是**最下面那一个**，屏幕底边的留白归它（原来在文件夹行上）
+            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
             .height(52.dp)
             .clip(shape)
             .background(Dsh.Field)
@@ -369,48 +395,6 @@ private fun HomeComposer(
     }
 }
 
-/** 输入框下面那行：当前文件夹 + 选择新的文件夹。 */
-@Composable
-private fun FolderRow(label: String, tNew: String, onPick: () -> Unit, onNewPath: () -> Unit) {
-    val pill = RoundedCornerShape(999.dp)
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .clip(pill)
-                .background(Dsh.Chip)
-                .clickable(onClick = onPick)
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(stringResource(R.string.home_folder_label), fontSize = 12.5f.sp, color = Dsh.ListDim3)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                label,
-                modifier = Modifier.weight(1f),
-                fontSize = 12.5f.sp,
-                color = Dsh.ListDim,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            tNew,
-            modifier = Modifier
-                .clip(pill)
-                .clickable(onClick = onNewPath)
-                .padding(horizontal = 10.dp, vertical = 7.dp),
-            fontSize = 12.5f.sp,
-            color = Dsh.Brand,
-            maxLines = 1,
-        )
-    }
-}
-
 /**
  * 展开的工作区清单。
  *
@@ -418,16 +402,18 @@ private fun FolderRow(label: String, tNew: String, onPick: () -> Unit, onNewPath
  * 多的时候也不会把输入框挤出屏幕。超过就自己滚动。
  */
 @Composable
-private fun FolderPicker(rows: List<Workspace>?, maxHeight: Dp, onChoose: (Workspace) -> Unit) {
+private fun FolderPicker(
+    rows: List<Workspace>?,
+    maxHeight: Dp,
+    onChoose: (Workspace) -> Unit,
+    /** 清单末尾的「其他路径…」：手输一个绝对路径（0.12.2 从输入框右边搬进来）。 */
+    onManual: () -> Unit,
+) {
     val tPick = stringResource(R.string.new_pick)
     val tNone = stringResource(R.string.new_none)
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .heightIn(max = maxHeight)
-            .verticalScroll(rememberScrollState()),
-    ) {
+    val tOther = stringResource(R.string.new_other)
+    // 外壳与模型 / 模式面板共用（0.12.3）：左右 16dp、最高半个窗口、超了自己滚、底部 10dp
+    PanelBody(maxHeight) {
         when {
             rows == null -> PanelNote(tPick)
             rows.isEmpty() -> PanelNote(tNone)
@@ -435,6 +421,9 @@ private fun FolderPicker(rows: List<Workspace>?, maxHeight: Dp, onChoose: (Works
                 PanelOption(label = labelOf(w), desc = Sessions.shortPath(w.path)) { onChoose(w) }
             }
         }
+        // 这一行**不受上面 when 影响**：清单拉不到 / 一个工作区都没有时它照样在 ——
+        // 「清单挂了也能新建」这条老性质（原来靠输入框右边那个独立入口保着）不能丢
+        PanelOption(label = tOther, desc = "") { onManual() }
     }
 }
 
@@ -447,7 +436,7 @@ private fun PathPicker(
     tUse: String,
     onUse: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 10.dp)) {
         DshField(
             value = value,
             onValueChange = onValueChange,

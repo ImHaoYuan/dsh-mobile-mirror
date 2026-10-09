@@ -12,6 +12,12 @@ import kotlinx.coroutines.withContext
 
 import android.content.Context
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -48,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -100,8 +107,16 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    /** 模型 / 模式卡片开着没有（0.12）。 */
-    var sheet by remember(target.id) { mutableStateOf(false) }
+    /** 胶囊行下面开着哪一块面板（0.12.3 起是就地展开的面板，不再是盖住整屏的卡片）。 */
+    var panel by remember(target.id) { mutableStateOf(ChipPanel.None) }
+    // 收起动画期间 panel 已经是 None，所以单独留一份「最后展开的是哪个」给内容用，
+    // 否则内容会先变空、动画只剩一片空白在缩（首页文件夹清单同款）
+    var lastPanel by remember(target.id) { mutableStateOf(ChipPanel.Model) }
+    LaunchedEffect(panel) {
+        if (panel != ChipPanel.None) lastPanel = panel
+    }
+    /** 面板最高「半个窗口」（按当前窗口算，键盘在的时候窗口已经缩了）。 */
+    val halfScreen = LocalConfiguration.current.screenHeightDp.dp * 0.5f
 
     val tCapsule = stringResource(R.string.model_capsule)
     val tPreset = stringResource(R.string.model_preset_default)
@@ -278,68 +293,85 @@ fun ChatScreen(
                 }
             }
 
-            // 输入条上方那颗胶囊（0.12）：模型 · 档位 / 模式，点开底部卡片
+            // 胶囊行（0.12）：模型 · 档位 / 模式。两颗各占一半（字长了省略号），
+            // 点开就地展开的面板（0.12.3）—— 会话页没有文件夹那颗，路径是会话级的。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                    .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 ModelCapsule(
+                    modifier = Modifier.weight(1f, fill = false),
                     text = ModelLogic.capsuleText(hub.catalog, model.pick, tCapsule),
-                    open = sheet,
-                    onClick = { sheet = true },
+                    open = panel == ChipPanel.Model,
+                    onClick = { panel = if (panel == ChipPanel.Model) ChipPanel.None else ChipPanel.Model },
                 )
                 ModelCapsule(
+                    modifier = Modifier.weight(1f, fill = false),
                     text = ModelLogic.presetText(presetLabels, model.preset.orEmpty(), tPreset),
-                    open = sheet,
-                    onClick = { sheet = true },
+                    open = panel == ChipPanel.Preset,
+                    onClick = { panel = if (panel == ChipPanel.Preset) ChipPanel.None else ChipPanel.Preset },
                 )
+            }
+
+            // 面板紧贴胶囊行下面、输入框上面：消息列表在上面，被往上挤（不是被盖住）
+            AnimatedVisibility(
+                visible = panel != ChipPanel.None,
+                enter = expandVertically(tween(PANEL_MS)) + fadeIn(tween(PANEL_MS)),
+                exit = shrinkVertically(tween(PANEL_MS)) + fadeOut(tween(PANEL_MS)),
+            ) {
+                when (lastPanel) {
+                    ChipPanel.Model -> ModelPanel(
+                        hub = hub,
+                        pick = model.pick,
+                        maxHeight = halfScreen,
+                        onPick = { p ->
+                            when (val r = Models.select(app, target.id, p)) {
+                                is PickOutcome.Ok -> {
+                                    model.setPick(p)
+                                    null
+                                }
+                                is PickOutcome.Rejected -> PickReply(r.message)
+                                PickOutcome.Expired -> {
+                                    onExpired()
+                                    PickReply(tExpired)
+                                }
+                                PickOutcome.Unreachable -> PickReply(tUnreachable)
+                            }
+                        },
+                    )
+                    ChipPanel.Preset -> PresetPanel(
+                        hub = hub,
+                        presetId = model.preset.orEmpty(),
+                        // 跑过至少一轮就锁死（网页端同款信号：`row.blank === false`）
+                        presetLocked = !target.blank,
+                        maxHeight = halfScreen,
+                        onPreset = { id ->
+                            when (val r = Models.selectPreset(app, target.id, id)) {
+                                is PickOutcome.Ok -> {
+                                    model.applyPreset(id)
+                                    null
+                                }
+                                // `preset-locked`：把整段模式置灰，别让人反复点
+                                is PickOutcome.Rejected -> PickReply(r.message, r.code == "preset-locked")
+                                PickOutcome.Expired -> {
+                                    onExpired()
+                                    PickReply(tExpired)
+                                }
+                                PickOutcome.Unreachable -> PickReply(tUnreachable)
+                            }
+                        },
+                        onDismiss = { panel = ChipPanel.None },
+                    )
+                    else -> {}
+                }
             }
 
             ChatComposer(model, scope)
         }
 
-        if (sheet) {
-            ModelSheet(
-                hub = hub,
-                pick = model.pick,
-                presetId = model.preset.orEmpty(),
-                // 跑过至少一轮就锁死（网页端同款信号：`row.blank === false`）
-                presetLocked = !target.blank,
-                onPick = { p ->
-                    when (val r = Models.select(app, target.id, p)) {
-                        is PickOutcome.Ok -> {
-                            model.setPick(p)
-                            null
-                        }
-                        is PickOutcome.Rejected -> SheetReply(r.message)
-                        PickOutcome.Expired -> {
-                            onExpired()
-                            SheetReply(tExpired)
-                        }
-                        PickOutcome.Unreachable -> SheetReply(tUnreachable)
-                    }
-                },
-                onPreset = { id ->
-                    when (val r = Models.selectPreset(app, target.id, id)) {
-                        is PickOutcome.Ok -> {
-                            model.applyPreset(id)
-                            null
-                        }
-                        // `preset-locked`：把整段模式置灰，别让人反复点
-                        is PickOutcome.Rejected -> SheetReply(r.message, r.code == "preset-locked")
-                        PickOutcome.Expired -> {
-                            onExpired()
-                            SheetReply(tExpired)
-                        }
-                        PickOutcome.Unreachable -> SheetReply(tUnreachable)
-                    }
-                },
-                onDismiss = { sheet = false },
-            )
-        }
     }
 }
 

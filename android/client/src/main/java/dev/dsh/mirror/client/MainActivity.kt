@@ -52,7 +52,6 @@ import dev.dsh.mirror.client.ui.HomeScreen
 import dev.dsh.mirror.client.ui.LicensePanel
 import dev.dsh.mirror.client.ui.LoginScreen
 import dev.dsh.mirror.client.ui.ModelHub
-import dev.dsh.mirror.client.ui.ModelSheet
 import dev.dsh.mirror.client.ui.MorePanel
 import dev.dsh.mirror.client.ui.NewSessionPanel
 import dev.dsh.mirror.client.ui.PairScreen
@@ -180,9 +179,9 @@ private fun HomeWithDrawer(
     LaunchedEffect(questions.expired) { if (questions.expired) onExpired() }
 
     // 模型 / 模式（0.12）：首页输入条与抽屉里的「新建会话」共用同一份 —— 那时会话还没建，
-    // 所以这里是「先记住」，建会话时再带过去；卡片画在根 Box 那一层（见文件末尾）。
+    // 所以这里是「先记住」，建会话时再带过去。0.12.3 起选择面板就地长在那两处的胶囊行下面
+    // （不再是画在根 Box 那一层的全屏卡片），所以这一层只剩状态。
     val modelHub = remember { ModelHub(app) }
-    var preSheet by remember { mutableStateOf(false) }
     var preModel by remember { mutableStateOf(ModelPick("", "")) }
     var prePreset by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { modelHub.ensure() }
@@ -296,8 +295,8 @@ private fun HomeWithDrawer(
                                 hub = modelHub,
                                 pickModel = preModel,
                                 presetId = prePreset,
-                                sheetOpen = preSheet,
-                                onOpenSheet = { preSheet = true },
+                                onPickModel = { p -> preModel = p; null },
+                                onPreset = { id -> prePreset = id; null },
                                 onBack = { page = DrawerPage.Sessions },
                                 // 建完**直接进那个会话**（0.12.1）。以前只 toast + 回列表，
                                 // 看着像"点了没反应" —— 用户连点了 4 次，17 秒里建了 4 个空白会话。
@@ -329,8 +328,8 @@ private fun HomeWithDrawer(
                 hub = modelHub,
                 pickModel = preModel,
                 presetId = prePreset,
-                sheetOpen = preSheet,
-                onOpenSheet = { preSheet = true },
+                onPickModel = { p -> preModel = p; null },
+                onPreset = { id -> prePreset = id; null },
                 // 先收键盘再开抽屉：ModalNavigationDrawer 不会自己夺焦，输入框不收焦点输入法就不走
                 onOpenDrawer = {
                     focus.clearFocus()
@@ -381,27 +380,6 @@ private fun HomeWithDrawer(
             // 提问卡盖在会话页**之上**（Box 里后画的就是上层），所以它内部那个
             // fillMaxSize 能连输入框一起罩住；没有待答提问时它不画遮罩、也不吃点击。
             AskOverlay(hub = questions, sessionId = open.id)
-        }
-
-        // 建会话前的模型 / 模式卡片（0.12）：画在根 Box 这一层，才能连抽屉一起罩住
-        // （画在抽屉里只能盖住抽屉那一栏，画在首页里则盖不住抽屉）。
-        if (preSheet) {
-            ModelSheet(
-                hub = modelHub,
-                pick = preModel,
-                presetId = prePreset,
-                // 会话都还没建，谈不上锁
-                presetLocked = false,
-                onPick = { p ->
-                    preModel = p
-                    null
-                },
-                onPreset = { id ->
-                    prePreset = id
-                    null
-                },
-                onDismiss = { preSheet = false },
-            )
         }
     }
 

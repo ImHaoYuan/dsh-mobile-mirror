@@ -1,6 +1,12 @@
 package dev.dsh.mirror.client.ui
 
 import android.content.Context
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -175,11 +182,12 @@ fun NewSessionPanel(
     app: Context,
     /** 模型目录缓存（0.12）。 */
     hub: ModelHub,
-    /** 建会话前先记着的模型 / 模式：状态与卡片都在 MainActivity（抽屉里画卡片只能盖住抽屉那一栏）。 */
+    /** 建会话前先记着的模型 / 模式：状态在 MainActivity（首页与这里共用同一份）。 */
     pickModel: ModelPick,
     presetId: String,
-    sheetOpen: Boolean,
-    onOpenSheet: () -> Unit,
+    /** 选模型 / 换模式：会话还没建，只是记下来（没有网络请求），返回 null = 成功。 */
+    onPickModel: suspend (ModelPick) -> PickReply?,
+    onPreset: suspend (String) -> PickReply?,
     onBack: () -> Unit,
     /** 建好了：`(sessionId, 用的目录)` —— 宿主直接进这个会话（0.12.1 起不再只 toast）。 */
     onCreated: (String, String?) -> Unit,
@@ -190,6 +198,14 @@ fun NewSessionPanel(
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    /** 胶囊行下面开着哪一块面板（0.12.3 起就地展开，见 HomeScreen 同款注释）。 */
+    var panel by remember { mutableStateOf(ChipPanel.None) }
+    var lastPanel by remember { mutableStateOf(ChipPanel.Model) }
+    LaunchedEffect(panel) {
+        if (panel != ChipPanel.None) lastPanel = panel
+    }
+    /** 面板最高「半个窗口」。 */
+    val halfScreen = LocalConfiguration.current.screenHeightDp.dp * 0.5f
 
     val tTitle = stringResource(R.string.new_title)
     val tPick = stringResource(R.string.new_pick)
@@ -235,24 +251,51 @@ fun NewSessionPanel(
     }
 
     DrawerPanel(tTitle, onBack) {
-        // 模型 / 模式（0.12）：见函数头注释 —— 建会话时就要带过去
+        // 模型 / 模式（0.12）：见函数头注释 —— 建会话时就要带过去。
+        // 0.12.3 起两颗各占一半，点开就地展开的面板（不再是盖住整屏的卡片）。
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
+                .padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ModelCapsule(
+                modifier = Modifier.weight(1f, fill = false),
                 text = ModelLogic.capsuleText(hub.catalog, pickModel, tCapsule),
-                open = sheetOpen,
-                onClick = onOpenSheet,
+                open = panel == ChipPanel.Model,
+                onClick = { panel = if (panel == ChipPanel.Model) ChipPanel.None else ChipPanel.Model },
             )
             ModelCapsule(
+                modifier = Modifier.weight(1f, fill = false),
                 text = ModelLogic.presetText(presetLabels, presetId, tPresetDefault),
-                open = sheetOpen,
-                onClick = onOpenSheet,
+                open = panel == ChipPanel.Preset,
+                onClick = { panel = if (panel == ChipPanel.Preset) ChipPanel.None else ChipPanel.Preset },
             )
+        }
+
+        AnimatedVisibility(
+            visible = panel != ChipPanel.None,
+            enter = expandVertically(tween(PANEL_MS)) + fadeIn(tween(PANEL_MS)),
+            exit = shrinkVertically(tween(PANEL_MS)) + fadeOut(tween(PANEL_MS)),
+        ) {
+            when (lastPanel) {
+                ChipPanel.Model -> ModelPanel(
+                    hub = hub,
+                    pick = pickModel,
+                    maxHeight = halfScreen,
+                    onPick = onPickModel,
+                )
+                else -> PresetPanel(
+                    hub = hub,
+                    presetId = presetId,
+                    // 会话都还没建，谈不上锁
+                    presetLocked = false,
+                    maxHeight = halfScreen,
+                    onPreset = onPreset,
+                    onDismiss = { panel = ChipPanel.None },
+                )
+            }
         }
 
         val rows = workspaces
