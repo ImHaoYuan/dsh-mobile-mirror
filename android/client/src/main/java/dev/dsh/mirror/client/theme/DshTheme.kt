@@ -1,11 +1,15 @@
 package dev.dsh.mirror.client.theme
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Typography
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -57,6 +61,17 @@ object Dsh {
     val AccentFg = Color(0xFF1D4ED8)         // --accent-fg（待回答标签的字）
     val LineAsk = Color(0xFFC7D8F5)          // --line-ask
     val Placeholder = Color(0xFF878E99)      // --placeholder
+    val Err = Color(0xFFB3261E)              // --danger-fg（浅色那套）
+    val ErrBg = Color(0xFFFDECEA)            // --bad-bg
+
+    // —— 下面这些是 M4 渲染 Markdown 时补的：网页端 app.css 的浅色那套里有，Dsh 里原先缺 ——
+    val FgStrong = Color(0xFF0B0D10)         // --fg-strong（加粗、表头）
+    val FgSoft = Color(0xFF2C3238)           // --fg-soft（h4-h6、斜体）
+    val FgMuted = Color(0xFF3D444C)          // --fg-muted（引用块）
+    val Dim2 = Color(0xFF69707C)             // --dim-2（删除线、代码块语言名）
+    val CodeHead = Color(0xFFE6E9EE)         // --code-head（代码块头部条底）
+    val MeLine = Color(0xFFBCD0F5)           // --me-line（引用块左侧竖条）
+    val RowAlt = Color(0x060F172A)           // --row-alt（表格偶数行，rgba(15,23,42,.025)）      // --placeholder
 
     // 圆角阶梯：--dsw-radius-xs/sm/md/lg/xl = 4/8/12/16/20
     val RadiusXs = 4.dp
@@ -76,22 +91,57 @@ private val DshTypography = Typography(
     labelSmall = TextStyle(fontSize = 11.sp, lineHeight = 16.sp, color = Dsh.LabelTertiary),
 )
 
+/**
+ * 把某一档字体铺到**所有**排版样式上。
+ *
+ * <p>逐个样式 copy，而不是只改 bodyLarge：M3/M4 会用到 titleMedium / labelSmall 等，
+ * 漏一个就会出现「大部分文字是新字体、个别地方还是系统字体」—— 这种漂移最难查。
+ */
+private fun Typography.withFamily(family: FontFamily): Typography = Typography(
+    displayLarge = displayLarge.copy(fontFamily = family),
+    displayMedium = displayMedium.copy(fontFamily = family),
+    displaySmall = displaySmall.copy(fontFamily = family),
+    headlineLarge = headlineLarge.copy(fontFamily = family),
+    headlineMedium = headlineMedium.copy(fontFamily = family),
+    headlineSmall = headlineSmall.copy(fontFamily = family),
+    titleLarge = titleLarge.copy(fontFamily = family),
+    titleMedium = titleMedium.copy(fontFamily = family),
+    titleSmall = titleSmall.copy(fontFamily = family),
+    bodyLarge = bodyLarge.copy(fontFamily = family),
+    bodyMedium = bodyMedium.copy(fontFamily = family),
+    bodySmall = bodySmall.copy(fontFamily = family),
+    labelLarge = labelLarge.copy(fontFamily = family),
+    labelMedium = labelMedium.copy(fontFamily = family),
+    labelSmall = labelSmall.copy(fontFamily = family),
+)
+
+/**
+ * 主题。
+ *
+ * @param fonts 三档字体；默认取 {@link FontSet#Fallback}，真正的取值由 MainActivity 从设置里读出来传进来。
+ */
 @Composable
-fun DshMirrorTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = Dsh.Brand,
-            onPrimary = Color.White,
-            background = Dsh.BgPage,
-            onBackground = Dsh.LabelPrimary,
-            surface = Dsh.BgPage,
-            onSurface = Dsh.LabelPrimary,
-            surfaceVariant = Dsh.BgModule,
-            onSurfaceVariant = Dsh.LabelSecondary,
-            outline = Dsh.BorderL4,
-            outlineVariant = Dsh.BorderL2,
-        ),
-        typography = DshTypography,
-        content = content,
-    )
+fun DshMirrorTheme(fonts: FontSet = FontSet.Fallback, content: @Composable () -> Unit) {
+    // Typeface 构建不便宜（思源黑体那个文件 17 MB），绝不能在每次重组时重建
+    val typography = remember(fonts) { DshTypography.withFamily(fonts.ui) }
+    CompositionLocalProvider(LocalDshFonts provides fonts) {
+        MaterialTheme(
+            colorScheme = lightColorScheme(
+                primary = Dsh.Brand,
+                onPrimary = Color.White,
+                background = Dsh.BgPage,
+                onBackground = Dsh.LabelPrimary,
+                surface = Dsh.BgPage,
+                onSurface = Dsh.LabelPrimary,
+                surfaceVariant = Dsh.BgModule,
+                onSurfaceVariant = Dsh.LabelSecondary,
+                outline = Dsh.BorderL4,
+                outlineVariant = Dsh.BorderL2,
+            ),
+            typography = typography,
+        ) {
+            // 裸 Text() 走的是 LocalTextStyle；显式写死一次，免得依赖 material3 的内部行为
+            ProvideTextStyle(typography.bodyLarge) { content() }
+        }
+    }
 }

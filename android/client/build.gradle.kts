@@ -19,9 +19,14 @@ android {
         minSdk = 29          // 与外壳一致：指纹固定要用 SslCertificate.getX509Certificate()（API 29）
         // targetSdk 与外壳一致停在 34：35+ 强制 edge-to-edge，Compose 也要自己处理 inset。
         targetSdk = 34
-        // 版本号慢慢递增：M0 = 0.1，M1 = 0.2（界面调整 0.2.1 / 0.2.2），M2 = 0.3
-        versionCode = 5
-        versionName = "0.3"
+        // 版本号慢慢递增：M0 = 0.1，M1 = 0.2（界面调整 0.2.1 / 0.2.2），M2 = 0.3，
+        // 首页+抽屉 = 0.4，字体 = 0.5，抽屉四级页 + 首页真输入框 = 0.6（修版 0.6.1、0.6.2）
+        // 会话页只读 = 0.7（修版 0.7.1：刷新图标箭头压住圆环）
+        // 发送 / 停止 + 乐观回显 = 0.8
+        // Markdown 渲染与网页端逐条一致 = 0.9（修版 0.9.1：会话页贴底跟随）
+        // 修版 0.9.2：表格重写（列对齐 / 只画横线 / 空表头不画）+ 本地文件蓝色芯片
+        versionCode = 16
+        versionName = "0.9.2"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
         resValue("string", "app_name", "DSH镜像原生")
@@ -45,6 +50,19 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // 内置字体（20.24 MB）刻意**不压缩**：android.graphics.fonts.Font.Builder 先试 fd，
+    // 压缩条目拿不到 fd，就只能退化成「整份读进内存」—— 思源黑体那 17 MB 会变成一份
+    // 18 MB 的常驻 ByteBuffer。不压缩就能 mmap，零堆占用。代价是 APK 大 6.8 MB。
+    androidResources {
+        noCompress.addAll(listOf("ttf", "otf"))
+    }
+
+    // 单测用 JUnit 5。5.10.2 全套（jupiter + platform）**本机 Gradle 缓存里都有**，
+    // 所以配好了也不需要联网 —— 与这个模块"依赖只用缓存里那套"的原则一致。
+    testOptions {
+        unitTests.all { it.useJUnitPlatform() }
+    }
 }
 
 dependencies {
@@ -58,4 +76,8 @@ dependencies {
     implementation("androidx.compose.foundation:foundation:1.7.3")
     implementation("androidx.compose.material3:material3:1.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Markdown 解析器的行为契约测试（断言搬自网页端 tools/web-pure-test.cjs）。
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
 }

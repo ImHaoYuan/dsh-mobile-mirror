@@ -4,32 +4,53 @@ import android.content.Context
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.sp
 import dev.dsh.mirror.ServerPrefs
 import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.net.LoginResult
+import dev.dsh.mirror.client.net.CreateResult
 import dev.dsh.mirror.client.net.MirrorSession
+import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.theme.Dsh
+import dev.dsh.mirror.client.theme.DshFontStore
+import dev.dsh.mirror.client.theme.DshFonts
 import dev.dsh.mirror.client.theme.DshMirrorTheme
+import dev.dsh.mirror.client.ui.ChatScreen
+import dev.dsh.mirror.client.ui.ChatTarget
+import dev.dsh.mirror.client.ui.FontPanel
+import dev.dsh.mirror.client.ui.HomeScreen
+import dev.dsh.mirror.client.ui.LicensePanel
 import dev.dsh.mirror.client.ui.LoginScreen
+import dev.dsh.mirror.client.ui.MorePanel
+import dev.dsh.mirror.client.ui.NewSessionPanel
 import dev.dsh.mirror.client.ui.PairScreen
 import dev.dsh.mirror.client.ui.SessionListScreen
 import dev.dsh.mirror.client.vault.SecretVault
+import kotlinx.coroutines.launch
 
 /**
  * 原生客户端的入口。
@@ -41,8 +62,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            DshMirrorTheme {
-                App()
+            // 改字体后 +1，重建整套 Typeface。思源黑体那个文件 17 MB，
+            // 绝不能每次重组都重建一遍。
+            var fontRev by remember { mutableStateOf(0) }
+            val fonts = remember(fontRev) {
+                DshFonts.build(applicationContext, DshFontStore.load(applicationContext))
+            }
+            DshMirrorTheme(fonts) {
+                App(onFontsChanged = { fontRev += 1 })
             }
         }
     }
@@ -50,14 +77,22 @@ class MainActivity : ComponentActivity() {
 
 private enum class Screen { Boot, Pair, Login, Home }
 
+/**
+ * 抽屉里的页面栈（0.6）。
+ *
+ * <p>0.6 之前「新建会话」「更多」「字体」「开源许可」都是底部弹层，点开时抽屉还开着、
+ * 弹层盖在上面。现在全部改成抽屉自己的页面：层级一致，返回键也有了明确的上一层。
+ */
+private enum class DrawerPage { Sessions, More, Fonts, Licenses, New }
+
 @Composable
-private fun App() {
+private fun App(onFontsChanged: () -> Unit) {
     val app = LocalContext.current.applicationContext
     val prefs = remember { ServerPrefs(app) }
     var screen by remember {
         mutableStateOf(if (prefs.isConfigured()) Screen.Boot else Screen.Pair)
     }
-    // 顶栏副标题用账号名（用户指定）。键是 screen：配对/重登之后会重新读一次保险箱。
+    // 抽屉头部的副标题用账号名（用户指定）。键是 screen：配对/重登之后会重新读一次保险箱。
     val username = remember(screen) { SecretVault.load(app)?.first ?: "" }
 
     // 键是 screen：配对完回到 Boot 时会重新跑一遍引导
@@ -86,18 +121,194 @@ private fun App() {
                 onLoggedIn = { screen = Screen.Home },
                 onRepair = { forget(app, prefs); screen = Screen.Pair },
             )
-            Screen.Home -> SessionListScreen(
+            Screen.Home -> HomeWithDrawer(
                 app = app,
                 username = username,
                 onExpired = { screen = Screen.Login },
                 onRepair = { forget(app, prefs); screen = Screen.Pair },
-                onOpenSession = {
-                    // M2 的边界：会话页是 M3。这里说清楚，不假装能进去。
-                    Toast.makeText(app, app.getString(R.string.list_chat_later), Toast.LENGTH_SHORT).show()
+                onFontsChanged = onFontsChanged,
+            )
+        }
+    }
+}
+
+/**
+ * 首页 + 抽屉（DeepSeek 安卓客户端那种形态，方案 §4.4）。
+ *
+ * <p>落地的页面是首页（logo + 底部输入区），会话列表住进左侧抽屉：
+ * 宽 **71.4% 屏宽**、直角白板、右侧遮罩 **32% 黑**（都是截图实测值）。
+ *
+ * <p>刷新键与两个面板都由这里持有 —— 首页的输入条和抽屉里的
+ * 「＋ 新建会话」指向同一个面板，状态放在共同父级才只有一个实例。
+ */
+@Composable
+private fun HomeWithDrawer(
+    app: Context,
+    username: String,
+    onExpired: () -> Unit,
+    onRepair: () -> Unit,
+    onFontsChanged: () -> Unit,
+) {
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    var reloadKey by remember { mutableStateOf(0) }
+    var page by remember { mutableStateOf(DrawerPage.Sessions) }
+    // 开源许可既可以从「更多」进、也可以从「字体」进：返回要回**来的那一层**，不能一律回「更多」
+    var licensesFrom by remember { mutableStateOf(DrawerPage.More) }
+    val tCreated = stringResource(R.string.new_created)
+    val tCreateFail = stringResource(R.string.chat_create_failed)
+    // 正在看的那条会话（0.7）：非空就把会话页盖在最上层
+    var chat by remember { mutableStateOf<ChatTarget?>(null) }
+    // 建会话是异步的，挡住连点（两次点击会建出两条会话）
+    var creating by remember { mutableStateOf(false) }
+
+    // 返回键分层：先回上一层，已经在会话列表那一层才关抽屉
+    BackHandler(enabled = drawerState.isOpen) {
+        if (page == DrawerPage.Sessions) {
+            scope.launch { drawerState.close() }
+        } else {
+            page = when (page) {
+                DrawerPage.Licenses -> licensesFrom
+                DrawerPage.Fonts -> DrawerPage.More
+                else -> DrawerPage.Sessions
+            }
+        }
+    }
+
+    // 抽屉一关就复位到会话列表：下次打开还是列表，不会停在半路的设置页
+    LaunchedEffect(drawerState.currentValue) {
+        if (drawerState.currentValue == DrawerValue.Closed) {
+            page = DrawerPage.Sessions
+            licensesFrom = DrawerPage.More
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            scrimColor = Color.Black.copy(alpha = 0.32f),
+            drawerContent = {
+                ModalDrawerSheet(
+                    modifier = Modifier.fillMaxWidth(0.714f),
+                    drawerShape = RectangleShape,
+                    drawerContainerColor = Dsh.BgPage,
+                ) {
+                    // 会话列表**一直留在组合里**，面板只是盖在它上面：
+                    // 否则每次从设置页返回都会重建列表 —— 重拉一次清单（闪一下「正在读取」）、
+                    // 滚动位置也回到顶部。面板自带不透明底色，视觉上没有区别。
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        SessionListScreen(
+                            app = app,
+                            username = username,
+                            reloadKey = reloadKey,
+                            onRefresh = { reloadKey += 1 },
+                            onNew = { page = DrawerPage.New },
+                            onMore = { page = DrawerPage.More },
+                            onExpired = onExpired,
+                            onOpenSession = { row ->
+                                // 进会话页：抽屉先关上（否则返回时它还开着），会话页盖在最上层
+                                chat = ChatTarget(row.id, row.title, row.cwd, row.preset, row.running)
+                                scope.launch { drawerState.close() }
+                            },
+                        )
+
+                        when (page) {
+                            DrawerPage.Sessions -> Unit
+
+                            DrawerPage.More -> MorePanel(
+                                onBack = { page = DrawerPage.Sessions },
+                                onFonts = { page = DrawerPage.Fonts },
+                                onLicenses = {
+                                    licensesFrom = DrawerPage.More
+                                    page = DrawerPage.Licenses
+                                },
+                                onRepair = {
+                                    page = DrawerPage.Sessions
+                                    onRepair()
+                                },
+                            )
+
+                            DrawerPage.Fonts -> {
+                                // 每次打开都重新读一次设置：面板里改完立刻落盘，重开就是最新值
+                                val initial = remember { DshFontStore.load(app) }
+                                FontPanel(
+                                    app = app,
+                                    initial = initial,
+                                    onChanged = {
+                                        DshFontStore.save(app, it)
+                                        onFontsChanged()
+                                    },
+                                    onBack = { page = DrawerPage.More },
+                                    onLicenses = {
+                                        licensesFrom = DrawerPage.Fonts
+                                        page = DrawerPage.Licenses
+                                    },
+                                )
+                            }
+
+                            DrawerPage.Licenses -> LicensePanel(onBack = { page = licensesFrom })
+
+                            DrawerPage.New -> NewSessionPanel(
+                                app = app,
+                                onBack = { page = DrawerPage.Sessions },
+                                onCreated = {
+                                    page = DrawerPage.Sessions
+                                    reloadKey += 1
+                                    Toast.makeText(app, tCreated, Toast.LENGTH_SHORT).show()
+                                },
+                                onExpired = {
+                                    page = DrawerPage.Sessions
+                                    onExpired()
+                                },
+                            )
+                        }
+                    }
+                }
+            },
+        ) {
+            HomeScreen(
+                app = app,
+                onOpenDrawer = { scope.launch { drawerState.open() } },
+                // 真发第一步：建会话（宿主 /api/session **不吃 prompt**，所以必须两步）。
+                // 拿到 id 后进会话页，并把这句话当 initialPrompt 交给它 —— 会话页拿到第一帧快照后再发，
+                // 这样乐观回显与宿主的权威回显落在同一个地方。
+                onSend = { text, workspaceId, cwd ->
+                    if (!creating) {
+                        creating = true
+                        scope.launch {
+                            when (val r = Sessions.create(app, workspaceId, cwd)) {
+                                is CreateResult.Ok -> {
+                                    chat = ChatTarget(r.sessionId, text, cwd, null, true, text)
+                                    reloadKey += 1
+                                }
+                                is CreateResult.Rejected ->
+                                    Toast.makeText(app, tCreateFail + "：" + r.message, Toast.LENGTH_LONG).show()
+                                CreateResult.Expired -> onExpired()
+                                CreateResult.Unreachable ->
+                                    Toast.makeText(app, tCreateFail, Toast.LENGTH_LONG).show()
+                            }
+                            creating = false
+                        }
+                    }
+                },
+            )
+        }
+
+        // 会话页盖在首页与抽屉**之上**（不是替换）：首页与抽屉保持组合，
+        // 从会话页返回时列表不会重拉、滚动位置也不丢。
+        chat?.let { open ->
+            ChatScreen(
+                app = app,
+                target = open,
+                onBack = { chat = null },
+                onExpired = {
+                    chat = null
+                    onExpired()
                 },
             )
         }
     }
+
 }
 
 /** 重新配对 = 忘掉地址、指纹、票根与保存的密码。 */

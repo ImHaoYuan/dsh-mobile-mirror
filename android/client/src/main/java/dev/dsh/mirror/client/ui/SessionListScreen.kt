@@ -1,7 +1,6 @@
 package dev.dsh.mirror.client.ui
 
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -73,8 +72,11 @@ import dev.dsh.mirror.client.theme.Dsh
 fun SessionListScreen(
     app: Context,
     username: String,
+    reloadKey: Int,
+    onRefresh: () -> Unit,
+    onNew: () -> Unit,
+    onMore: () -> Unit,
     onExpired: () -> Unit,
-    onRepair: () -> Unit,
     onOpenSession: (SessionRow) -> Unit,
 ) {
     val collapse = remember { Collapse(app) }
@@ -84,9 +86,6 @@ fun SessionListScreen(
     var loadedOnce by remember { mutableStateOf(false) }
     var lastAt by remember { mutableStateOf(0L) }
     var error by remember { mutableStateOf("") }
-    var reloadKey by remember { mutableStateOf(0) }
-    var showNew by remember { mutableStateOf(false) }
-    var showMore by remember { mutableStateOf(false) }
 
     val tTitle = stringResource(R.string.list_title)
     val tLoading = stringResource(R.string.list_loading)
@@ -95,7 +94,6 @@ fun SessionListScreen(
     val tRetry = stringResource(R.string.list_retry)
     val tEmptyTitle = stringResource(R.string.list_empty_title)
     val tEmptyNote = stringResource(R.string.list_empty_note)
-    val tCreated = stringResource(R.string.new_created)
     val tTagAsk = stringResource(R.string.tag_ask)
     val tTagSub = stringResource(R.string.tag_sub)
     val tTagOn = stringResource(R.string.tag_on)
@@ -121,7 +119,7 @@ fun SessionListScreen(
 
     // 回到前台且距上次成功刷新超过 10 秒就自动刷一次（网页端 visibilitychange 的同义实现）
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        if (loadedOnce && System.currentTimeMillis() - lastAt > 10_000) reloadKey += 1
+        if (loadedOnce && System.currentTimeMillis() - lastAt > 10_000) onRefresh()
     }
 
     fun isCollapsed(key: String): Boolean = collapsed[key] ?: collapse.isCollapsed(key)
@@ -133,19 +131,15 @@ fun SessionListScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().background(Dsh.BgPage)) {
-        TopBar(
-            title = tTitle,
-            sub = username,
-            onNew = { showNew = true },
-            onRefresh = { reloadKey += 1 },
-            onMore = { showMore = true },
-        )
+        // 抽屉头部：标题 + 账号名 + 刷新 + 更多（首页把这三个键都让给了抽屉）
+        TopBar(title = tTitle, sub = username, onRefresh = onRefresh, onMore = onMore)
+        NewSessionRow(onNew)
 
         if (error.isNotEmpty()) {
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
                 DshError(error)
                 Spacer(Modifier.height(10.dp))
-                DshSecondaryButton(tRetry) { reloadKey += 1 }
+                DshSecondaryButton(tRetry) { onRefresh() }
             }
         }
 
@@ -177,38 +171,34 @@ fun SessionListScreen(
             }
         }
     }
+}
 
-    if (showNew) {
-        NewSessionSheet(
-            app = app,
-            onDismiss = { showNew = false },
-            onCreated = {
-                showNew = false
-                reloadKey += 1
-                Toast.makeText(app, tCreated, Toast.LENGTH_SHORT).show()
-            },
-            onExpired = {
-                showNew = false
-                onExpired()
-            },
+/** 抽屉里的「＋ 新建会话」一行（DeepSeek 抽屉顶部也有这么一个入口）。 */
+@Composable
+private fun NewSessionRow(onNew: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onNew)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("＋", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Dsh.Brand)
+        Spacer(Modifier.width(10.dp))
+        Text(
+            stringResource(R.string.new_title),
+            fontSize = 14.5f.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Dsh.ListFg,
         )
     }
-    if (showMore) {
-        MoreSheet(
-            onDismiss = { showMore = false },
-            onRepair = {
-                showMore = false
-                onRepair()
-            },
-        )
-    }
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Dsh.ListLine))
 }
 
 @Composable
 private fun TopBar(
     title: String,
     sub: String,
-    onNew: () -> Unit,
     onRefresh: () -> Unit,
     onMore: () -> Unit,
 ) {
@@ -220,20 +210,8 @@ private fun TopBar(
             Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold, color = Dsh.ListFg)
             if (sub.isNotEmpty()) Text(sub, fontSize = 12.sp, color = Dsh.ListDim3)
         }
-        GlyphButton("＋", onNew)
-        GlyphButton("⟳", onRefresh)
-        GlyphButton("⋯", onMore)
-    }
-}
-
-/** 顶栏的字符键。刻意用字形而不是图标资源：与网页端一致，且不必多引一个依赖。 */
-@Composable
-private fun GlyphButton(glyph: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(glyph, fontSize = 17.sp, color = Dsh.ListDim)
+        DshIconButton(R.drawable.ic_refresh, onRefresh, stringResource(R.string.cd_refresh))
+        DshIconButton(R.drawable.ic_more, onMore, stringResource(R.string.cd_more))
     }
 }
 

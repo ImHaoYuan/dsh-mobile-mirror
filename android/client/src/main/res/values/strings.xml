@@ -38,6 +38,9 @@
     <string name="login_err_unreachable">连不上电脑。请确认手机与电脑在同一 Wi-Fi，且电脑上的 DSH 正在运行</string>
     <string name="login_saved_hint">已记住账号密码，下次会自动登录</string>
 
+    <!-- 首页 -->
+    <string name="home_input_hint">在电脑上开一段对话</string>
+
     <!-- 会话列表 -->
     <string name="list_title">DSH镜像</string>
     <string name="list_loading">正在载入会话…</string>
@@ -66,4 +69,72 @@
     <!-- ⋯ 面板 -->
     <string name="more_title">更多</string>
     <string name="more_repair_note">重新配对会清掉保存的地址、证书指纹、登录票根和记住的账号密码，下次要重新登录。</string>
+    <string name="more_fonts">字体</string>
+    <string name="more_licenses">开源许可</string>
+
+    <!-- 字体 -->
+    <string name="font_title">字体</string>
+    <string name="font_note">三档都能换成内置字体、系统字体，或你自己导入的字体文件。导入的字体只存在本机，卸载即清；「删除」和「恢复默认」会连文件一起删掉。</string>
+    <string name="font_slot_ui">界面文字</string>
+    <string name="font_slot_ui_note">标题、按钮、标签、分组名</string>
+    <string name="font_slot_body">正文</string>
+    <string name="font_slot_body_note">会话里的长内容（M3 起才有效果）</string>
+    <string name="font_slot_mono">等宽</string>
+    <string name="font_slot_mono_note">代码块、证书指纹、路径</string>
+    <string name="font_builtin">内置</string>
+    <string name="font_builtin_ui">JetBrains Mono + 得意黑</string>
+    <string name="font_builtin_body">JetBrains Mono + 思源黑体</string>
+    <string name="font_builtin_mono">JetBrains Mono</string>
+    <string name="font_system">系统</string>
+    <string name="font_system_desc">系统字体</string>
+    <string name="font_file">文件…</string>
+    <string name="font_current">当前：%1$s</string>
+    <string name="font_importing">正在导入字体…</string>
+    <string name="font_import_failed">这个文件读不出字体，换一个 TTF / OTF 试试</string>
+    <string name="font_remove">删除</string>
+    <string name="font_reset">恢复默认</string>
+    <string name="license_title">开源许可</string>
+
+    <!-- 首页输入框（0.6）：框下面是文件夹，两个都在首页就地展开 -->
+    <string name="md_copy">复制</string>
+    <string name="md_path_copied">路径已复制</string>
+    <string name="md_copied">已复制</string>
+    <string name="md_code">代码</string>
+    <string name="md_image">图片</string>
+    <string name="chat_hint">输入消息…</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_stop">停止</string>
+    <string name="chat_stop_again">再点一次停止</string>
+    <string name="chat_stopped">已请求停止</string>
+    <string name="chat_too_fast">发得太快，稍等一下</string>
+    <string name="chat_send_failed">发送失败</string>
+    <string name="chat_create_failed">建会话失败</string>
+    <string name="chat_attach">（附件）</string>
+    <string name="chat_tool">工具</string>
+    <string name="chat_tool_error">工具报错</string>
+    <string name="chat_end_aborted">本轮已停止</string>
+    <string name="chat_end_interrupted">本轮被中断</string>
+    <string name="chat_end_maxtokens">本轮达到输出上限</string>
+    <string name="chat_end_blocked">本轮被拦截</string>
+    <string name="chat_turn_error">本轮出错</string>
+    <string name="chat_reconnecting">连接断开，正在重连（第 %1$d 次）</string>
+    <string name="chat_expired">登录已失效，请重新登录</string>
+    <string name="chat_page_failed">翻页失败：HTTP %1$d</string>
+    <string name="chat_unreachable">连不上电脑</string>
+    <string name="chat_loading_older">正在读取更早的消息…</string>
+    <string name="chat_running">运行中…</string>
+    <string name="chat_readonly">只读 · 发送与停止在 0.8 接上</string>
+    <string name="chat_think">思考 %1$d 字</string>
+    <string name="chat_interrupted">本轮被中断</string>
+    <string name="chat_empty">这个会话还没有可显示的内容</string>
+    <string name="chat_back">返回</string>
+    <string name="cd_refresh">刷新</string>
+    <string name="cd_more">更多</string>
+    <string name="cd_menu">打开侧栏</string>
+    <string name="home_folder_label">文件夹</string>
+    <string name="home_folder_pick">选择文件夹</string>
+    <string name="home_folder_new">选择新的文件夹</string>
+    <string name="home_folder_use">用这个文件夹</string>
+    <string name="home_path_bad">要填绝对路径，例如 D:\\VibeCoding\\项目 或 /home/me/project</string>
+    <string name="home_send_later">会话页在下一步（M3）实现，这句话先不发出去</string>
 </resources>

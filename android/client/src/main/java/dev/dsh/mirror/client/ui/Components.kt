@@ -3,6 +3,7 @@ package dev.dsh.mirror.client.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -33,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -42,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.theme.Dsh
+import dev.dsh.mirror.client.theme.LocalDshFonts
 
 /**
  * 配对页 / 登录页共用的版式：**整组垂直居中**，内容超高时自动滚动。
@@ -169,7 +173,7 @@ fun DshField(
         textStyle = TextStyle(
             fontSize = 15.sp,
             color = Dsh.LabelPrimary,
-            fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
+            fontFamily = if (monospace) LocalDshFonts.current.mono else FontFamily.Default,
         ),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = Dsh.Brand,
@@ -210,6 +214,59 @@ fun DshHint(text: String, center: Boolean = false) {
 }
 
 /**
+ * 顶栏的字符键。
+ *
+ * <p>只留给**内置字体确实有**的那几个字形：`←`(U+2190)、`↑`(ASCII) —— JBM 里都有，渲染正常。
+ * 像 `⟳`(U+27F3)、`⋯`(U+22EF)、`☰`(U+2630) 这些内置字体**没有**的，会掉到设备系统字体去画，
+ * 各家 ROM 粗细大小都不一样 —— 那些改用 [DshIconButton]。
+ */
+@Composable
+fun DshGlyphButton(
+    glyph: String,
+    onClick: () -> Unit,
+    size: Dp = 40.dp,
+    fontSize: Float = 17f,
+    color: Color = Dsh.ListDim,
+) {
+    Box(
+        modifier = Modifier.size(size).clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(glyph, fontSize = fontSize.sp, fontWeight = FontWeight.Medium, color = color)
+    }
+}
+
+/**
+ * 顶栏的图标键（刷新 / 更多 / 菜单）。
+ *
+ * <p>为什么手画矢量而不用现成图标：`material-icons` 没进本机 Gradle 缓存
+ * （`plugins.gradle.org` 连不上），拿不到 `Icons.Filled.Refresh`。
+ * 而且原先那三个字形内置字体里都没有、只能由设备系统字体兜底，观感完全不可控 ——
+ * 换成矢量后**大小与圆滑度都由我们定**：所有图标共用 [iconSize]，形状自带圆头线帽。
+ */
+@Composable
+fun DshIconButton(
+    icon: Int,
+    onClick: () -> Unit,
+    contentDescription: String? = null,
+    size: Dp = 40.dp,
+    iconSize: Dp = 20.dp,
+    color: Color = Dsh.ListDim,
+) {
+    Box(
+        modifier = Modifier.size(size).clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painter = painterResource(icon),
+            contentDescription = contentDescription,
+            tint = color,
+            modifier = Modifier.size(iconSize),
+        )
+    }
+}
+
+/**
  * 指纹展示：每 4 组一行（{@code AA:BB:CC:DD}），等宽字体、整体居中。
  *
  * <p>32 组挤成一行在手机上根本对不了；分组换行后一眼能扫。
@@ -225,7 +282,7 @@ fun DshFingerprint(hex: String) {
         for (line in lines) {
             Text(
                 line,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = LocalDshFonts.current.mono,
                 fontSize = 14.sp,
                 lineHeight = 22.sp,
                 letterSpacing = 0.5.sp,
