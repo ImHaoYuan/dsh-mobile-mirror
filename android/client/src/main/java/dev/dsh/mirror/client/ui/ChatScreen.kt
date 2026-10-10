@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import dev.dsh.mirror.ServerPrefs
+import dev.dsh.mirror.client.notify.MirrorNotify
 import dev.dsh.mirror.client.net.Download
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -175,6 +176,12 @@ fun ChatScreen(
     LaunchedEffect(target.id) { model.connect(scope) }
     LaunchedEffect(target.id) { hub.ensure() }
     LaunchedEffect(model.expired) { if (model.expired) onExpired() }
+    // 0.15：一旦有会话在跑，就把 :core 的前台服务拉起来（常驻通知 + 超级岛）。
+    // 触发源是"流里看到 turn/start"，所以**电脑上开跑的会话、手机正看着也一样接得上**。
+    // 只起不停 —— 服务空闲 30 秒会自己停。
+    LaunchedEffect(model.running) {
+        if (model.running) MirrorNotify.start(app)
+    }
     BackHandler { onBack() }
 
     // —— 下载文件（0.10）——

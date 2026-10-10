@@ -26,8 +26,11 @@ android {
         //   → 1.0 超级岛第 2 步收官 → **1.1 清掉验证脚手架、准备开源发布**
         //   → **1.1.1 跟随 :core 重建**：平台层多了「按请求指定读取超时」的重载（供原生客户端翻页），
         //     外壳行为与 1.1 完全一致，只是 dex 变了，所以跟着出一版。
-        versionCode = 9
-        versionName = "1.1.1"
+        //   → **1.1.2 跟随 :core 重建**（0.15/M6）：:core 的前台服务多了「按需模式」（extra
+        //     onDemand：没会话空闲 30 秒自停）与第二条「会话提醒」通知。**外壳不传这个 extra**
+        //     —— 常驻、START_STICKY、只发原来那一条，行为与 1.1.1 完全一致，同样只是 dex 变了。
+        versionCode = 10
+        versionName = "1.1.2"
 
         // app_name 刻意**不**写在 strings.xml 里 —— 那里写会和这里的 resValue 冲突
         // （重复资源，aapt2 直接报错）。manifest 的 android:label 引用它。

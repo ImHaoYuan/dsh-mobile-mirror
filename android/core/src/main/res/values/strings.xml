@@ -17,4 +17,15 @@
     <string name="island_notif_running">有会话正在运行</string>
     <string name="island_notif_done">会话已完成</string>
     <string name="island_notif_expired">登录态失效，打开 App 重新登录即可恢复</string>
+
+    <!--
+      0.15：第二条「提醒」通知的文案。只有**原生客户端**会开这条（起服务时传 onDemand）；
+      WebView 外壳不传，行为和 0.1.x 一模一样 —— 只是 :core 跟着重编了一版。
+    -->
+    <string name="notif_channel_alert">会话提醒</string>
+    <string name="notif_channel_alert_desc">有提问、或任务跑完时提醒你</string>
+    <string name="notif_alert_waiting_title">等你回答 · %1$s</string>
+    <string name="notif_alert_waiting_text">有会话在等你回答</string>
+    <string name="notif_alert_done_title">%1$s 已完成</string>
+    <string name="notif_alert_done_text">会话已经跑完了</string>
 </resources>

@@ -1,11 +1,15 @@
 package dev.dsh.mirror.client
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.core.app.ActivityCompat
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,7 +34,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import dev.dsh.mirror.ServerPrefs
+import dev.dsh.mirror.client.notify.MirrorNotify
 import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.net.LoginResult
 import dev.dsh.mirror.client.net.CreateResult
@@ -68,6 +75,10 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 13+ 没这个权限就什么都看不见：前台服务照跑，但通知栏里那条常驻通知
+        // 与超级岛都不显示，用户会以为坏了。拒绝了不拦着用 App，只是没有通知与岛；
+        // 系统只会真正弹一次，所以每次启动都调也无害。
+        requestNotificationPermission()
         setContent {
             // 改字体后 +1，重建整套 Typeface。思源黑体那个文件 17 MB，
             // 绝不能每次重组都重建一遍。
@@ -80,7 +91,28 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    /**
+     * 申请通知权限（Android 13+）。
+     *
+     * <p>没有它，前台服务照跑，但通知栏里那条常驻通知与超级岛都不显示 ——
+     * 用户会以为坏了。拒绝了也不影响 App 本体：只是没有通知与岛。
+     */
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val ok = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!ok) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                REQ_NOTIFY,
+            )
+        }
+    }
 }
+
+/** 通知权限的请求码，随便定的（没有结果回调要匹配）。 */
+private const val REQ_NOTIFY = 1001
 
 private enum class Screen { Boot, Pair, Login, Home }
 
@@ -101,6 +133,13 @@ private fun App(onFontsChanged: () -> Unit) {
     }
     // 抽屉头部的副标题用账号名（用户指定）。键是 screen：配对/重登之后会重新读一次保险箱。
     val username = remember(screen) { SecretVault.load(app)?.first ?: "" }
+
+    // 0.15：每次回到前台、以及每次进主页（含自动登录那一下），都查一次"有没有东西在跑" ——
+    // 有才把 :core 的前台服务拉起来（常驻通知 + 超级岛）。停不用这里管：服务空闲 30 秒自己停。
+    LifecycleEventEffect(Lifecycle.Event.ON_START) { MirrorNotify.ensure(app) }
+    LaunchedEffect(screen) {
+        if (screen == Screen.Home) MirrorNotify.ensure(app)
+    }
 
     // 键是 screen：配对完回到 Boot 时会重新跑一遍引导
     LaunchedEffect(screen) {

@@ -43,8 +43,13 @@ android {
         // 修版 0.14.1：① 相邻「工作过程」卡合成一张（一轮一卡，run_code 步骤一条不少）
         //       ② 翻页失败不再自动重发，顶部改成可点的「点这里重试」并显示等了多久，
         //          读取超时 30 → 90 秒；③ 「我的话」改名「已发消息」
-        versionCode = 30
-        versionName = "0.14.1"
+        // 0.15（M6）：把前台服务 + 常驻通知 + 超级岛接进原生客户端（复用 :core）。
+        //       **按需**：登录/回前台查一次，有会话在跑或有问题在等才起；空闲 30 秒自己停
+        //       （用户选的 A：没会话 = 完全停，连常驻通知一起消失）。
+        //       另发第二条「会话提醒」通知：提问带题面、跑完报完成，走 HIGH 渠道会响会弹。
+        //       release 同时打开 R8 与资源压缩；外壳行为不变，但 :core 变了 → 另出 1.1.2。
+        versionCode = 31
+        versionName = "0.15"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
         resValue("string", "app_name", "DSH镜像原生")
@@ -53,7 +58,15 @@ android {
     buildTypes {
         debug { isMinifyEnabled = false }
         release {
-            isMinifyEnabled = false
+            // 0.15 起打开 R8：摇树 + 改名 + 优化。字体那 20 MB 压不动（在 res/font 里且被
+            // noCompress 排除），这一刀砍的是代码与其余资源，预期 42 MB → 20 MB 上下。
+            // **必须装机验证**：R8 的坑全在运行时，构建永远成功。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             signingConfig = signingConfigs.getByName("debug")   // 自用，release 也走 debug 签名
         }
     }

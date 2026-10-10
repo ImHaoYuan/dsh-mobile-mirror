@@ -69,6 +69,13 @@ final class IslandMonitor {
         String right = "";
         int progress = 100;
         String color = IslandMonitor.BLUE;
+        /**
+         * 正在等回答的那道题的题干（只取第一条）。
+         *
+         * <p>0.15 加的：第二条「提醒」通知直接把题面写进通知栏 —— 不点开 App 也能看见
+         * 在问什么。空串 = 没有题、或没解析出来，通知退回一句通用文案。
+         */
+        String questionText = "";
 
         /**
          * 转成 {@link IslandSupport.Opts}；返回 {@code null} 表示<b>不该上岛</b>。
@@ -148,6 +155,8 @@ final class IslandMonitor {
 
     // —— 采集到的原始状态。只在主线程读写，避免加锁 ——
     private List<String> waitingIds = Collections.emptyList();
+    /** 正在等回答的第一道题的题干，见 {@link Snapshot#questionText}。 */
+    private String waitingText = "";
     private List<String> runningIds = Collections.emptyList();
     private final Map<String, String> titles = new HashMap<>();
     private final Set<String> prevRunning = new HashSet<>();
@@ -223,6 +232,7 @@ final class IslandMonitor {
         io.execute(() -> {
             final MirrorApi.Reply r = MirrorApi.get(ctx, "/api/questions", cookie);
             final List<String> ids = new ArrayList<>();
+            final List<String> texts = new ArrayList<>();
             if (r.ok()) {
                 try {
                     JSONArray items = new JSONObject(r.body).optJSONArray("items");
@@ -232,6 +242,15 @@ final class IslandMonitor {
                             if (q == null) continue;
                             String sid = q.optString("sessionId", "");
                             if (!sid.isEmpty()) ids.add(sid);
+                            // 0.15：顺手把题面抄下来，给第二条通知当正文用
+                            if (texts.isEmpty()) {
+                                JSONArray qs = q.optJSONArray("questions");
+                                JSONObject first = qs == null ? null : qs.optJSONObject(0);
+                                if (first != null) {
+                                    String text = first.optString("question", "");
+                                    if (!text.isEmpty()) texts.add(text);
+                                }
+                            }
                         }
                     }
                 } catch (Throwable ignored) {
@@ -243,6 +262,7 @@ final class IslandMonitor {
                 applyAuth(r);
                 if (r.ok()) {
                     waitingIds = ids;
+                    waitingText = texts.isEmpty() ? "" : texts.get(0);
                     // 从"没问题"变成"有问题"时，立刻补一次会话列表 ——
                     // 否则会话名要等到下一个 sessions tick 才拿得到（空闲时最长 20 秒）
                     if (!ids.isEmpty() && !sawQuestionBefore) {
@@ -357,6 +377,7 @@ final class IslandMonitor {
             s.left = shortTitle(titleOf(waitingIds.get(0)));
             s.right = ctx.getString(R.string.island_state_waiting);
             s.color = ORANGE;
+            s.questionText = waitingText;
         } else if (!runningIds.isEmpty()) {
             s.state = State.RUNNING;
             s.title = titleOf(runningIds.get(0));
@@ -375,7 +396,9 @@ final class IslandMonitor {
 
         // 标题也进签名：同一个状态换了会话（比如另一个会话开始跑）也要重发，
         // 否则岛上会一直挂着上一个会话的名字。
-        String sig = s.state + "|" + s.title + "|" + s.left + "|" + s.right + "|" + s.progress + "|" + s.color;
+        // 题面也进签名：同一个会话换了另一道题，也要重新提醒一次
+        String sig = s.state + "|" + s.title + "|" + s.left + "|" + s.right + "|" + s.progress
+                + "|" + s.color + "|" + s.questionText;
 
         // 状态签名没变就不重发通知。3 秒一次的重发会让通知栏抖，还费电。
         if (sig.equals(lastSignature)) return;
