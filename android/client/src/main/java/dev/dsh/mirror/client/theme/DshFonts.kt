@@ -173,14 +173,66 @@ object DshFonts {
      *         （即：宁可没有 emoji，也不能因为找不到而崩或整个字体链失效）。
      */
     private fun emojiFamily(): PlatformFontFamily? {
+        val f = emojiFontFile() ?: return null
+        return runCatching { PlatformFontFamily.Builder(f).build() }.getOrNull()
+    }
+
+    /**
+     * 挑出那个**彩色** emoji 字体文件（0.15.7：修「又变回黑块」）。
+     *
+     * <p>0.15.2 的第一版只写了 {@code firstOrNull { 名字含 "moji" }}，这在有的系统上会**挑错**：
+     * 黑白老字体 {@code NotoEmoji-Regular.ttf} 的名字里同样含 "moji"，而
+     * {@code SystemFonts.getAvailableFonts()} 的返回顺序**没有任何保证** —— 挑到黑白那条，
+     * 用户看到的就是又一次「黑色马赛克」。所以改成**按颜色优先排序后取第一个**：
+     *
+     * <ol>
+     *   <li>名字含 {@code color}：{@code NotoColorEmoji.ttf} / {@code ColorEmoji.ttf} / MIUI 那类；</li>
+     *   <li>其它含 {@code emoji} / {@code moji} 的；</li>
+     *   <li>最后才是 {@code NotoEmoji-*} 这种黑白兜底。</li>
+     * </ol>
+     *
+     * <p>再兜一层「直接扫 {@code /system/fonts} 目录」：极少数系统不把它登记进
+     * {@code SystemFonts}（或登记的条目拿不到文件），按文件名扫目录仍能找到。
+     *
+     * @return 找到的字体；都找不到返回 {@code null}（行为与 0.15.1 相同：没有 emoji 而已，不崩）。
+     */
+    private fun emojiFontFile(): PlatformFont? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        val listed = runCatching {
+            android.graphics.fonts.SystemFonts.getAvailableFonts()
+                .filter { matchesEmojiName(it.file?.name) }
+                .minByOrNull { emojiRank(it.file?.name) }
+        }.getOrNull()
+        if (listed != null) return listed
         return runCatching {
-            val f = android.graphics.fonts.SystemFonts.getAvailableFonts()
-                .firstOrNull { it.file?.name?.contains("moji", ignoreCase = true) == true }
-                ?: return@runCatching null
-            PlatformFontFamily.Builder(f).build()
+            File("/system/fonts").listFiles()
+                ?.filter { matchesEmojiName(it.name) }
+                ?.minByOrNull { emojiRank(it.name) }
+                ?.let { PlatformFont.Builder(it).build() }
         }.getOrNull()
     }
+
+    /** 名字像不像 emoji 字体。 */
+    private fun matchesEmojiName(name: String?): Boolean = name != null &&
+        (name.contains("emoji", ignoreCase = true) || name.contains("moji", ignoreCase = true))
+
+    /** 越小越优先：彩色 &gt; 名字普通 &gt; 黑白老字体（见 [emojiFontFile]）。 */
+    private fun emojiRank(name: String?): Int {
+        val n = name.orEmpty().lowercase()
+        return when {
+            n.contains("color") -> 0
+            n.contains("notoemoji") -> 2
+            else -> 1
+        }
+    }
+
+    /**
+     * 「emoji 兜底到底挑中了谁」—— 字体面板里那行小字用它自证（0.15.7 临时加的，诊断完就删）。
+     *
+     * <p>为什么要它：这条 bug 只在你手机上能看见，而我读不了截图。把 App 实际挑中的文件名
+     * 显示出来，一眼就能分清是「没找到彩色 emoji 字体」还是「找到了但没生效」。
+     */
+    fun emojiFontName(): String? = emojiFontFile()?.file?.name
 
     /**
      * 把一个字体资源包成平台字体族。

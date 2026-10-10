@@ -81,6 +81,8 @@
 
     <!-- 字体 -->
     <string name="font_title">字体</string>
+    <string name="fonts_emoji_note">Emoji 兜底：%1$s</string>
+    <string name="fonts_emoji_none">Emoji 兜底：未找到（系统里没有彩色 emoji 字体）</string>
     <string name="font_note">三档都能换成内置字体、系统字体，或你自己导入的字体文件。导入的字体只存在本机，卸载即清；「删除」和「恢复默认」会连文件一起删掉。</string>
     <string name="font_slot_ui">界面文字</string>
     <string name="font_slot_ui_note">标题、按钮、标签、分组名</string>

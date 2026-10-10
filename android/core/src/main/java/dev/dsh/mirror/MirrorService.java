@@ -60,6 +60,33 @@ public class MirrorService extends Service {
     public static final String EXTRA_ON_DEMAND = "dev.dsh.mirror.onDemand";
 
     /**
+     * 点通知 / 点岛要落到哪个会话（0.15.7）。
+     *
+     * <p>缺省不传 = 只打开 App（外壳版就是这个行为，一点不变）。
+     */
+    public static final String EXTRA_SESSION_ID = "dev.dsh.mirror.sessionId";
+
+    /** 同一个会话的标题；只让会话页顶栏在首帧快照到达前有字可显示。 */
+    public static final String EXTRA_SESSION_TITLE = "dev.dsh.mirror.sessionTitle";
+
+    /**
+     * 「App 正在前台」（0.15.7）。
+     *
+     * <p>用户要求：**在 App 内就不弹超级岛、也不发第二条提醒** —— 人都已经在看着了，
+     * 再飘一条到屏幕顶上没有意义，切出去还得手动划掉。
+     *
+     * <p>为什么用**进程级静态**：上报的是 Activity，拿不到 Service 实例；而两个 App
+     * 各跑各的进程，静态字段不会互相串。默认 {@code false} = 老行为（照旧弹岛、照旧提醒），
+     * 所以**不调这个方法的 WebView 外壳版行为一点不变**。
+     */
+    private static volatile boolean appVisible = false;
+
+    /** 客户端在 {@code ON_START} / {@code ON_STOP} 上报是否在前台，见 {@link #appVisible}。 */
+    public static void setAppVisible(boolean visible) {
+        appVisible = visible;
+    }
+
+    /**
      * 空闲持续这么久就自己停（只在按需模式）。
      *
      * <p>为什么要留 30 秒：8 秒的绿岛刚走完就停服，会让"已完成"那条提醒还没被看见
@@ -177,6 +204,10 @@ public class MirrorService extends Service {
      */
     private void alert(IslandMonitor.Snapshot s) {
         if (!onDemand) return;
+        // 0.15.7：App 正开着就不发第二条提醒 —— 人都已经在看着了。
+        // **刻意不动 lastAlertKey**：在前台"看过"不等于"知道"，切回后台后同样的状态
+        // 还该再提醒一次（要求原话：在 app 内就不弹，检测当前在 app 内就不弹）。
+        if (appVisible) return;
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm == null) return;
 
@@ -193,7 +224,7 @@ public class MirrorService extends Service {
                         ? getString(R.string.notif_alert_waiting_text)
                         : s.questionText.trim();
                 try {
-                    nm.notify(NOTIF_ID_ASK, buildAlert(title, text, false));
+                    nm.notify(NOTIF_ID_ASK, buildAlert(title, text, false, s.sessionId));
                 } catch (Throwable ignored) {
                     // 弹不出来不该让服务崩掉
                 }
@@ -212,7 +243,7 @@ public class MirrorService extends Service {
                         ? getString(R.string.island_state_done)
                         : getString(R.string.notif_alert_done_title, name);
                 try {
-                    nm.notify(NOTIF_ID_DONE, buildAlert(title, getString(R.string.notif_alert_done_text), true));
+                    nm.notify(NOTIF_ID_DONE, buildAlert(title, getString(R.string.notif_alert_done_text), true, s.sessionId));
                 } catch (Throwable ignored) {
                     // 同上
                 }
@@ -224,14 +255,18 @@ public class MirrorService extends Service {
         lastAlertKey = "";
     }
 
-    /** 一条「提醒」通知。{@code autoCancel} = 点一下自己消失（完成那条就该这样）。 */
-    private Notification buildAlert(String title, String text, boolean autoCancel) {
+    /**
+     * 一条「提醒」通知。{@code autoCancel} = 点一下自己消失（完成那条就该这样）。
+     *
+     * @param sessionId 这条提醒归属的会话；带上它，点通知就**直接进那个会话**（0.15.7）。
+     */
+    private Notification buildAlert(String title, String text, boolean autoCancel, String sessionId) {
         return new Notification.Builder(this, CHANNEL_ALERT)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(new Notification.BigTextStyle().bigText(text))
-                .setContentIntent(openIntent())
+                .setContentIntent(openIntent(sessionId, title, "alert"))
                 .setAutoCancel(autoCancel)
                 .setShowWhen(false)
                 .build();
@@ -294,7 +329,8 @@ public class MirrorService extends Service {
         Intent open = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
         if (open == null) open = new Intent(Intent.ACTION_MAIN).setPackage(ctx.getPackageName());
         open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pi = PendingIntent.getActivity(ctx, 0, open,
+        PendingIntent pi = PendingIntent.getActivity(
+                ctx, openRequestCode(null, "test"), open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         Notification.Builder b = new Notification.Builder(ctx, CHANNEL_ALERT)
@@ -319,7 +355,7 @@ public class MirrorService extends Service {
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(getString(R.string.notif_service_title))
                 .setContentText(s.notifText(this))
-                .setContentIntent(openIntent())
+                .setContentIntent(openIntent(s.sessionId, s.title, "svc"))
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)   // 状态变化时静默更新，不响不震（用户定的"只让岛变化"）
                 .setShowWhen(false)
@@ -327,7 +363,9 @@ public class MirrorService extends Service {
 
         // 必须在 build() 之后挂 extras —— 参考实现就是这么做的。
         // toOpts() 返回 null（空闲）时不挂，岛自然收起。
-        IslandSupport.Opts o = s.toOpts(this);
+        // 0.15.7：App 在前台时不挂岛参数 —— 常驻通知照旧（它是前台服务的载体，
+        // 撤掉系统会立刻补回来），只是不再往屏幕顶上飘。
+        IslandSupport.Opts o = appVisible ? null : s.toOpts(this);
         if (o != null) {
             String json = IslandSupport.buildParamJsonEx(o);
             // 岛图标用全彩的 launcher 图标 —— 真机验证过它能完整显示。
@@ -339,19 +377,39 @@ public class MirrorService extends Service {
     }
 
     /**
-     * 点通知 / 点岛 → 打开本 App。
+     * 点通知 / 点岛 → 打开本 App（能带会话就顺带把会话带上，0.15.7）。
      *
      * <p>按包名解析入口 Activity，**不写死 MainActivity.class** —— 这个类在 :core 里，
-     * 而两个 App（WebView 外壳 / 原生客户端）各有自己的入口 Activity。
+     * 而两个 App（WebView 外壳 / 原生客户端）各有自己的入口 Activity。外壳版的
+     * MainActivity 不读这个 extra，所以它只会"打开 App"，与 0.15 之前完全一样。
+     *
+     * <p><b>请求码必须按通知分开</b>：{@code PendingIntent} 的 {@code filterEquals} 只比
+     * 组件 / action / data / category，**不比 extras** —— 同一个请求码 + 同一个入口 Activity
+     * 会**复用同一个 PendingIntent 并覆盖 extras**，于是后面那条通知会偷走前面那条的会话。
+     * 所以按 (用途, 会话) 生成请求码。
+     *
+     * @param sessionId 目标会话；null / 空 = 只打开 App。
+     * @param title 会话标题（顶栏在快照到达前的占位）。
+     * @param slot 用途标识，避免同会话的常驻 / 提问 / 完成三条互相覆盖。
      */
-    private PendingIntent openIntent() {
+    private PendingIntent openIntent(String sessionId, String title, String slot) {
         Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
         if (open == null) {
             open = new Intent(Intent.ACTION_MAIN).setPackage(getPackageName());
         }
         open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        if (sessionId != null && !sessionId.isEmpty()) {
+            open.putExtra(EXTRA_SESSION_ID, sessionId);
+            if (title != null && !title.isEmpty()) open.putExtra(EXTRA_SESSION_TITLE, title);
+        }
         return PendingIntent.getActivity(
-                this, 0, open,
+                this, openRequestCode(sessionId, slot), open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    /** (用途, 会话) → PendingIntent 请求码。见 {@link #openIntent(String, String, String)} 的理由。 */
+    static int openRequestCode(String sessionId, String slot) {
+        int h = ((slot == null ? "" : slot) + "#" + (sessionId == null ? "" : sessionId)).hashCode();
+        return h == 0 ? 1 : h;
     }
 }

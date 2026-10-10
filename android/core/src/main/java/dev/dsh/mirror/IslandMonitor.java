@@ -78,6 +78,15 @@ final class IslandMonitor {
         String questionText = "";
 
         /**
+         * 当前状态**归属的会话 id**（0.15.7）。
+         *
+         * <p>只干一件事：点通知 / 点岛时把用户直接送到那个会话里 —— 通知的
+         * {@code contentIntent} 带上它，客户端读出来就开会话页。
+         * 空串 = 没有具体会话可归（空闲 / 登录失效），此时点开只打开 App。
+         */
+        String sessionId = "";
+
+        /**
          * 转成 {@link IslandSupport.Opts}；返回 {@code null} 表示<b>不该上岛</b>。
          *
          * <p>字段取值全部沿用真机验证过的配方（0.1.3 的 ① 与 ⑥）：
@@ -167,6 +176,8 @@ final class IslandMonitor {
     private String waitingText = "";
     private List<String> runningIds = Collections.emptyList();
     private final Map<String, String> titles = new HashMap<>();
+    /** 刚跑完那个会话的 id（0.15.7：点「已完成」那条通知直接进它）。 */
+    private String doneId = "";
     private final Set<String> prevRunning = new HashSet<>();
 
     private long doneUntil = 0L;
@@ -355,6 +366,7 @@ final class IslandMonitor {
                 if (now.contains(id)) continue;
                 String t = titles.get(id);
                 doneTitle = t == null ? "" : t;
+                doneId = id;
                 doneUntil = System.currentTimeMillis() + DONE_HOLD_MS;
                 break;   // 一次只报一个，避免多个同时结束时报花
             }
@@ -388,6 +400,7 @@ final class IslandMonitor {
             s.color = ORANGE;
             s.progress = 100;
             s.questionText = waitingText;
+            s.sessionId = waitingIds.get(0);
         } else if (!runningIds.isEmpty()) {
             s.state = State.RUNNING;
             s.title = titleOf(runningIds.get(0));
@@ -395,6 +408,7 @@ final class IslandMonitor {
             s.right = ctx.getString(R.string.island_state_running);
             s.color = BLUE;
             s.progress = RUNNING_PROGRESS;
+            s.sessionId = runningIds.get(0);
         } else if (System.currentTimeMillis() < doneUntil) {
             s.state = State.DONE;
             s.title = doneTitle;
@@ -402,6 +416,7 @@ final class IslandMonitor {
             s.right = ctx.getString(R.string.island_state_done);
             s.color = GREEN;
             s.progress = 100;
+            s.sessionId = doneId;
         } else {
             s.state = State.IDLE;
         }
@@ -410,7 +425,7 @@ final class IslandMonitor {
         // 否则岛上会一直挂着上一个会话的名字。
         // 题面也进签名：同一个会话换了另一道题，也要重新提醒一次
         String sig = s.state + "|" + s.title + "|" + s.left + "|" + s.right + "|" + s.progress
-                + "|" + s.color + "|" + s.questionText;
+                + "|" + s.color + "|" + s.questionText + "|" + s.sessionId;
 
         // 状态签名没变就不重发通知。3 秒一次的重发会让通知栏抖，还费电。
         if (sig.equals(lastSignature)) return;

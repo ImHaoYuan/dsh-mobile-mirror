@@ -1257,6 +1257,55 @@ seq 并在 `appendRows` 后搬移，LazyColumn 会在轮次中重排一次 —�
 
 **范围**：`:client` 的 `ui/ChatModel.kt` / `build.gradle.kts`；**`:core` 不动 → 外壳不用重出**。
 
+### 4.34 0.15.7（2026-10-10）：前台不弹岛 / 点通知进会话 / emoji 又变黑块
+
+用户一口气点的三件事：① 「在 app 内就不弹这个（会话已完成也是）」；② 点通知 / 点岛**跳到对应会话**
+（用户早就定的"下一轮"）；③ 「当初那个显示不了 ✅ 的 bug 又出现了」。
+
+**① App 在前台时不弹岛、不发第二条提醒**
+
+- `:core` 新增进程级静态 `appVisible`（默认 `false`）+ `public static void setAppVisible(boolean)`。
+  用静态是因为上报方是 Activity、拿不到 Service 实例；两个 App 各跑各的进程，静态不会串。
+- `buildNotification()`：前台时 `IslandSupport.Opts o = appVisible ? null : s.toOpts(this)` ——
+  **常驻通知照旧**（它是前台服务的载体，撤掉系统会立刻补回来），只是不再往屏幕顶上飘岛。
+- `alert()`：前台时提前 `return`，且**刻意不动 `lastAlertKey`** —— "在前台看过"不等于"知道"，
+  切回后台后同样的状态还该再提醒一次。
+- `:client` 在 `ON_START` / `ON_STOP` 上报（`ON_STOP` 必须显式收回，否则退到后台也以为你在前台，
+  第二条提醒就永远不来了）。
+- **外壳不调这个方法 ⇒ 外壳行为一点不变**（前台照旧弹岛）。这是 1.1.4 能"源码不动"的前提。
+
+**② 点通知 / 点岛跳到对应会话**
+
+- `:core` 新增 `EXTRA_SESSION_ID` / `EXTRA_SESSION_TITLE`，`openIntent(sessionId, title, slot)` 把它们
+  放进 launch intent。
+- **请求码必须按通知分开**：`PendingIntent` 的 `filterEquals` 只比组件 / action / data / category，
+  **不比 extras** —— 同一个请求码 + 同一个入口 Activity 会**复用同一个 PendingIntent 并覆盖 extras**，
+  于是后一条通知会偷走前一条的会话。所以用 `openRequestCode(sessionId, slot)`（slot = svc / alert / test）。
+- `IslandMonitor.Snapshot` 补 `sessionId`（提问取 `waitingIds.get(0)`、运行取 `runningIds.get(0)`、
+  完成取新加的 `doneId`），并进状态签名（目标会话换了也要重发通知，否则点开还是上一个）。
+- `:client`：manifest 加 `launchMode="singleTop"`；`onCreate` 与 `onNewIntent` 都读 extra 存进
+  `pendingOpen`；**进主页之后**才消费（Boot 自动登录 / Login 期间先挂着），抽屉先关、键盘先收，
+  再盖会话页。`cwd` / `preset` 留空 —— 首帧快照本来就会补；`blank` 取 `false` 是**保守**取值
+  （不知道这个会话跑没跑过，宁可不给"改模式"入口）。重新配对（票根作废）时丢弃 pending。
+- 取舍：**常驻通知**有唯一在跑的会话就直接进它，否则只打开 App；会话已被删除 → 沿用现有错误提示。
+
+**③ emoji「✅ 又变回黑色马赛克」**
+
+0.15.2 的第一版挑法是 `firstOrNull { 名字含 "moji" }` —— 它有个**顺序依赖**的坑：黑白老字体
+`NotoEmoji-Regular.ttf` 的名字里**同样含 "moji"**，而 `SystemFonts.getAvailableFonts()` 的返回顺序
+**没有任何保证**。挑中黑白那条，用户看到的就是又一次黑块。改法：
+
+1. 按**颜色优先**排序后取第一个：名字含 `color`（`NotoColorEmoji.ttf` / MIUI 那类）→ 其它含
+   `emoji`/`moji` 的 → 最后才是 `NotoEmoji-*` 黑白兜底；
+2. 再兜一层：`SystemFonts` 里找不到就**直接扫 `/system/fonts`** 目录按文件名匹配；
+3. 字体面板**临时**加一行自证：「Emoji 兜底：NotoColorEmoji.ttf」（未找到时写"未找到"）——
+   这条 bug 只有用户手机上看得见，而我读不了图，所以把"到底挑中了谁"显示出来，一眼分清
+   "没找到"还是"找到了没生效"。**诊断完就删。**
+
+**范围**：`:core` 的 `MirrorService.java` / `IslandMonitor.java`；`:client` 的 `MainActivity.kt` /
+`AndroidManifest.xml` / `theme/DshFonts.kt` / `ui/FontPanel.kt` / `res/values/strings.xml` /
+`build.gradle.kts`。**`:core` 变了 → 外壳重出 1.1.4**（`:app` 源码未动）。
+
 ## 5. 里程碑
 
 | 阶段 | 内容 | 状态 |
@@ -1944,6 +1993,19 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 | 外壳 | **不用重出**（`:core` 未变，1.1.3 继续有效） |
 | 真机复看 | **待用户**：找一条"present 之后还继续写了几段"的回复，确认手机端文件卡挂在**最末尾**（与电脑端一致） |
 
+## 7.37 0.15.7 验收证据（前台不弹岛 / 点通知进会话 / emoji 又黑块，2026-10-10）
+
+| 项 | 结果 |
+|---|---|
+| 构建 | `BUILD SUCCESSFUL in 1m 16s`（**220** actionable tasks：79 executed / 4 from cache / 137 up-to-date，含 `:app`） |
+| 单测 | **46 / 46**（FramePumpTest 2 / AskTest 17 / MarkdownTest 11 / ModelTest 16；failures + errors = 0） |
+| 客户端 **0.15.7**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.7.apk`，**23,831,882 B**，versionCode **38**，versionName **0.15.7**（`aapt2 dump badging` 已核对），SHA256 `FB0E9B3ED0CE3EA577AC9B625E2B61C8A65C4CC271D1784CF319F266AE9FF792` |
+| 客户端 0.15.7 debug（对照） | 44,818,374 B，SHA256 `14FDE3B3F8C378D7673BF882FD45FF5F9AD8DA4146586FBE5296B9ADAA341FF2` |
+| 外壳 **1.1.4**（**必须重出**：`:core` 变了） | `out/web-shell/dsh-mobile-mirror-1.1.4.apk`，**77,798 B**（沿用惯例：外壳交付的是 **debug** 构建 —— 它的 release 包两次同源构建哈希都不一样，不可复现），versionCode **12**，versionName **1.1.4**，SHA256 `995F648984ABB5F37FE4FCE262B8AEC6B140642DE855965C6CCAA3DDBCC27204` |
+| 「外壳没被改坏」的判据 | `git diff --stat` 里 **`:app` 的源码一个文件都没有**（改的只有 `app/build.gradle.kts` 的版本号）；外壳既不调 `setAppVisible`，也不读 `EXTRA_SESSION_ID` ⇒ 点通知仍是"只打开 App"、前台仍照旧弹岛 |
+| 体积 | release 23,830,990 → **23,831,882**（+892）、debug 44,801,094 → **44,818,374**（+17,280）、外壳 77,006 → **77,798**（+792）—— 这次三个都动了 |
+| 真机复看 | **待用户**：① 在 App 里看会话时**不出岛、不弹第二条提醒**，切到后台后该弹的还会弹；② 点「提问」「已完成」两条提醒应**直接进对应会话**，点常驻通知：有唯一在跑的会话就进它、多个/没有就回首页；③ 冷启动（进程被杀）点通知也能进；④ **✅ 是否正常** —— 字体面板底部临时那行「Emoji 兜底：…」会显示 App 实际挑中的字体文件名，把这行告诉我就知道该往哪修（诊断完这行要删） |
+
 ## 8. 待办
 
 - [x] **0.11：提问卡（底部弹出）+ `hold` 认领 + 会话列表实时角标**（2026-10-09，见 §4.19 / §7.22）
@@ -2025,8 +2087,10 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 - [x] 0.15.5 真机验收：抽屉文案「检验通知权限」与三条说明的位置**都对**；**停在主页点刷新能出岛**（用户 2026-10-10 确认）
 - [x] 0.15.4 真机看一眼：已被 0.15.5 覆盖，用户 2026-10-10 确认没问题
 - [x] 0.15.3 真机确认（用户 2026-10-10）：放后台 → 通知 → 回来，正文 Markdown 与文件卡**立刻**在（长消息也正常）
-- [ ] 「App 在前台时不弹岛 / 不发第二条提醒」（用户提，**方案已给待做**）：`:core` 静态 `appVisible` + `buildNotification()` 不挂岛参数 + `alert()` 提前 return；`:client` 用 `LifecycleEventEffect` 上报；外壳不调 → 行为不变，但 `:core` 变 → 外壳要出 **1.1.4**
-- [ ] 用户定的「下一轮」：点通知 / 点岛**跳到对应会话**（`PendingIntent` 带 sessionId，要动 `:core`）
+- [x] **「App 在前台时不弹岛 / 不发第二条提醒」**（0.15.7，见 §4.34 / §7.37）：`:core` 静态 `appVisible` + `buildNotification()` 前台不挂岛参数 + `alert()` 提前 return（**不动 `lastAlertKey`**）；`:client` 用 `LifecycleEventEffect(ON_START/ON_STOP)` 上报；外壳不调 → 行为不变，但 `:core` 变 → **外壳已跟随出 1.1.4**
+- [x] 用户定的「下一轮」：**点通知 / 点岛跳到对应会话**（0.15.7，见 §4.34 / §7.37）：`PendingIntent` 带 sessionId + 请求码按 (用途, 会话) 分开；客户端 `singleTop` + 进主页后开会话页
+- [ ] 0.15.7 真机复看：① 前台不出岛/不弹第二条提醒（切后台仍会弹）；② 点「提问」「已完成」「常驻」三条通知分别落到哪个会话；③ 冷启动点通知；④ **✅ 是否正常**（看字体面板底部「Emoji 兜底：…」那行并把文件名告诉我）
+- [ ] 0.15.7 收尾：emoji 诊断行（字体面板底部）**确认后删掉**
 - [x] **0.15 真机确认**（用户 2026-10-10）：① 有会话在跑时出现常驻通知与超级岛；② 岛的标题显示**会话名**（不是「DSH 镜像」）；③ 跑完 8 秒绿岛后连同通知一起消失；④ **R8 包能正常跑**
 - [ ] 0.15 剩下没专门确认的（用户没提，按"都没问题"从宽理解，先留个记录）：提问那条"额外弹"的通知响不响 / 通知栏里有没有题面 / 答完是否自动撤；跑完那条「已完成」是否留在通知栏；Android 13+ 首次进 App 的通知权限弹窗
 - [ ] 0.15 已知取舍（用户确认过的）：手机 App 不打开时，电脑上新开的会话在手机上不会有通知与岛（"没会话 = 完全停"的必然结果）；点通知/点岛只打开 App，**不落到对应会话**（用户定的下一轮做）

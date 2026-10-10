@@ -32,8 +32,12 @@ android {
         //   → **1.1.3 跟随 :core 重建**（0.15.1）：:core 多了「运行中进度环 50%」，
         //     并加了给原生客户端设置面板用的 notifyTest()。**这一版岛的行为确实变了**
         //     （以前 progress 恒为 100%，现在运行中显示 50%），不再是"只有 dex 变"。
-        versionCode = 11
-        versionName = "1.1.3"
+        // 1.1.4：**只为跟随 :core**（外壳源码一行未改）。
+        // 0.15.7 给共用层加了：appVisible（前台不弹岛/不提醒）、EXTRA_SESSION_ID（点通知进会话）。
+        // 外壳既不调 setAppVisible、也不读 sessionId extra ⇒ 点通知仍是"只打开 App"，
+        // 前台仍照旧弹岛 —— 行为与 1.1.3 完全一致，变的只是字节。
+        versionCode = 12
+        versionName = "1.1.4"
 
         // app_name 刻意**不**写在 strings.xml 里 —— 那里写会和这里的 resValue 冲突
         // （重复资源，aapt2 直接报错）。manifest 的 android:label 引用它。

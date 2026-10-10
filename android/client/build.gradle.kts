@@ -87,8 +87,21 @@ android {
         //       实测本会话日志：35 次 present 里 34 次天然落在该轮最后一条助手消息（看着正常），
         //       只有那一轮落在中途。改：**唯一挂点改成 turn/end**，语义与电脑端一致。
         //       纯 :client 改动 → 外壳不用重出。
-        versionCode = 37
-        versionName = "0.15.6"
+        // 修版 0.15.7：① **App 在前台时不弹岛、也不发第二条提醒**（用户要求"在 app 内就不弹"）——
+        //       :core 加进程级静态 appVisible（客户端 ON_START/ON_STOP 上报；外壳不调 = 老行为），
+        //       前台时 buildNotification() 不挂岛参数、alert() 提前 return 且**不动 lastAlertKey**
+        //       （切回后台后同样的状态还能再提醒一次）。
+        //       ② **点通知 / 点岛跳到对应会话** —— :core 新增 EXTRA_SESSION_ID，
+        //       PendingIntent 请求码按 (用途, 会话) 生成（filterEquals 不比 extras，
+        //       同一个请求码会让后一条通知偷走前一条的会话）；IslandMonitor.Snapshot 补 sessionId
+        //       （提问 / 运行 / 完成三条通知各自带对）；客户端 singleTop + onCreate/onNewIntent
+        //       读 extra → 进主页后再开会话页（Boot/Login 期间挂起）。
+        //       ③ 修 emoji「✅ 又变回黑色马赛克」：挑 emoji 字体时按**彩色优先**排序
+        //       （黑白老字体 NotoEmoji-Regular.ttf 名字里也含 "moji"，而 SystemFonts 顺序不保证），
+        //       再加一层直接扫 /system/fonts 的兜底；字体面板临时加一行自证（诊断完就删）。
+        //       :core 变了 → **外壳必须重出 1.1.4**（:app 源码未动，靠 extra 默认值保证行为不变）。
+        versionCode = 38
+        versionName = "0.15.7"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
         resValue("string", "app_name", "DSH镜像原生")

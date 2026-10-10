@@ -2,6 +2,7 @@ package dev.dsh.mirror.client
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -36,6 +37,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import dev.dsh.mirror.MirrorService
 import dev.dsh.mirror.ServerPrefs
 import dev.dsh.mirror.client.notify.MirrorNotify
 import dev.dsh.mirror.client.R
@@ -72,9 +74,22 @@ import kotlinx.coroutines.launch
  * <p>四个状态，没有导航库 —— 就四个页面，用不着引 navigation-compose：
  * {@code Boot}（判断该去哪）→ {@code Pair} / {@code Login} / {@code Home}。
  */
+/** 点通知 / 点岛带进来的「要打开哪个会话」（0.15.7）。 */
+private data class PendingOpen(val id: String, val title: String)
+
 class MainActivity : ComponentActivity() {
+
+    /**
+     * 点通知带进来的目标会话（0.15.7）。
+     *
+     * <p>为什么不在 {@code onCreate} 里直接开会话页：那条路径可能撞上 Boot（自动登录）或
+     * Login（票根过期）—— 会话页要等主页就绪才开得出来。所以先记下来，由界面在进主页后消费掉。
+     */
+    private val pendingOpen = mutableStateOf<PendingOpen?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        consumeOpenIntent(intent)
         // Android 13+ 没这个权限就什么都看不见：前台服务照跑，但通知栏里那条常驻通知
         // 与超级岛都不显示，用户会以为坏了。拒绝了不拦着用 App，只是没有通知与岛；
         // 系统只会真正弹一次，所以每次启动都调也无害。
@@ -87,7 +102,11 @@ class MainActivity : ComponentActivity() {
                 DshFonts.build(applicationContext, DshFontStore.load(applicationContext))
             }
             DshMirrorTheme(fonts) {
-                App(onFontsChanged = { fontRev += 1 })
+                App(
+                    onFontsChanged = { fontRev += 1 },
+                    pendingOpen = pendingOpen.value,
+                    onPendingOpenConsumed = { pendingOpen.value = null },
+                )
             }
         }
     }
@@ -97,6 +116,25 @@ class MainActivity : ComponentActivity() {
      * <p>没有它，前台服务照跑，但通知栏里那条常驻通知与超级岛都不显示 ——
      * 用户会以为坏了。拒绝了也不影响 App 本体：只是没有通知与岛。
      */
+    /**
+     * 已经在运行时又点了一条通知（{@code singleTop} + {@code CLEAR_TOP} 会走到这里）。
+     *
+     * <p>必须 {@code setIntent(intent)}：不换掉手里这份，后面再读 {@code intent} 还是第一次那个。
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeOpenIntent(intent)
+    }
+
+    /** 通知的 {@code EXTRA_SESSION_ID} → 待打开队列；没带（外壳版 / 只打开 App）就什么都不做。 */
+    private fun consumeOpenIntent(intent: Intent?) {
+        val id = intent?.getStringExtra(MirrorService.EXTRA_SESSION_ID).orEmpty()
+        if (id.isEmpty()) return
+        val title = intent?.getStringExtra(MirrorService.EXTRA_SESSION_TITLE).orEmpty()
+        pendingOpen.value = PendingOpen(id, title)
+    }
+
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT < 33) return
         val ok = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
@@ -125,7 +163,11 @@ private enum class Screen { Boot, Pair, Login, Home }
 private enum class DrawerPage { Sessions, More, Fonts, Licenses, New }
 
 @Composable
-private fun App(onFontsChanged: () -> Unit) {
+private fun App(
+    onFontsChanged: () -> Unit,
+    pendingOpen: PendingOpen?,
+    onPendingOpenConsumed: () -> Unit,
+) {
     val app = LocalContext.current.applicationContext
     val prefs = remember { ServerPrefs(app) }
     var screen by remember {
@@ -136,7 +178,13 @@ private fun App(onFontsChanged: () -> Unit) {
 
     // 0.15：每次回到前台、以及每次进主页（含自动登录那一下），都查一次"有没有东西在跑" ——
     // 有才把 :core 的前台服务拉起来（常驻通知 + 超级岛）。停不用这里管：服务空闲 30 秒自己停。
-    LifecycleEventEffect(Lifecycle.Event.ON_START) { MirrorNotify.ensure(app) }
+    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        MirrorNotify.ensure(app)
+        // 0.15.7：告诉 :core 的常驻服务「App 正在前台」—— 前台不弹岛、不发第二条提醒
+        MirrorService.setAppVisible(true)
+    }
+    // 必须显式收回来：否则退到后台也一直以为你在前台，第二条提醒就永远不来了
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { MirrorService.setAppVisible(false) }
     LaunchedEffect(screen) {
         if (screen == Screen.Home) MirrorNotify.ensure(app)
     }
@@ -165,14 +213,25 @@ private fun App(onFontsChanged: () -> Unit) {
             Screen.Login -> LoginScreen(
                 app,
                 onLoggedIn = { screen = Screen.Home },
-                onRepair = { forget(app, prefs); screen = Screen.Pair },
+                onRepair = {
+                    forget(app, prefs)
+                    // 票根作废 = 那条会话已经够不着了，别留着待打开
+                    onPendingOpenConsumed()
+                    screen = Screen.Pair
+                },
             )
             Screen.Home -> HomeWithDrawer(
                 app = app,
                 username = username,
                 onExpired = { screen = Screen.Login },
-                onRepair = { forget(app, prefs); screen = Screen.Pair },
+                onRepair = {
+                    forget(app, prefs)
+                    onPendingOpenConsumed()
+                    screen = Screen.Pair
+                },
                 onFontsChanged = onFontsChanged,
+                pendingOpen = pendingOpen,
+                onPendingOpenConsumed = onPendingOpenConsumed,
             )
         }
     }
@@ -194,6 +253,8 @@ private fun HomeWithDrawer(
     onExpired: () -> Unit,
     onRepair: () -> Unit,
     onFontsChanged: () -> Unit,
+    pendingOpen: PendingOpen?,
+    onPendingOpenConsumed: () -> Unit,
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -207,6 +268,25 @@ private fun HomeWithDrawer(
     val tCreateFail = stringResource(R.string.chat_create_failed)
     // 正在看的那条会话（0.7）：非空就把会话页盖在最上层
     var chat by remember { mutableStateOf<ChatTarget?>(null) }
+
+    // 点通知 / 点岛带进来的会话（0.15.7）：收键盘、关抽屉，再把会话页盖在最上层。
+    // 打开时机放在这里（而不是 App 里）是因为只有这里才知道"主页已经就绪"。
+    // cwd / preset 留空 —— 会话页的首帧快照本来就会把它们补上；blank 取 false 是**保守**取值：
+    // 我们不知道这个会话跑没跑过，宁可不给"改模式"这个入口。
+    LaunchedEffect(pendingOpen) {
+        val want = pendingOpen ?: return@LaunchedEffect
+        focus.clearFocus()
+        drawerState.close()
+        chat = ChatTarget(
+            want.id,
+            want.title.ifEmpty { want.id },
+            cwd = null,
+            preset = null,
+            running = false,
+            blank = false,
+        )
+        onPendingOpenConsumed()
+    }
     // 建会话是异步的，挡住连点（两次点击会建出两条会话）
     var creating by remember { mutableStateOf(false) }
     // 「显示详细工作过程」：设置面板改、会话页读，所以状态放在共同父级
