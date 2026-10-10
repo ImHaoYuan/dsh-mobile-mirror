@@ -89,7 +89,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        consumeOpenIntent(intent)
+        // 只在**全新启动**时读一次 intent。旋转屏幕 / 进程重建也会走 onCreate，
+        // 而那时 getIntent() 还是当初那条通知的 intent —— 不挡住的话，用户从会话页返回首页后
+        // 一转屏就又被弹回那个会话（savedInstanceState 非空就是重建，不是新启动）。
+        if (savedInstanceState == null) consumeOpenIntent(intent)
         // Android 13+ 没这个权限就什么都看不见：前台服务照跑，但通知栏里那条常驻通知
         // 与超级岛都不显示，用户会以为坏了。拒绝了不拦着用 App，只是没有通知与岛；
         // 系统只会真正弹一次，所以每次启动都调也无害。

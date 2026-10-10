@@ -1288,6 +1288,9 @@ seq 并在 `appendRows` 后搬移，LazyColumn 会在轮次中重排一次 —�
   再盖会话页。`cwd` / `preset` 留空 —— 首帧快照本来就会补；`blank` 取 `false` 是**保守**取值
   （不知道这个会话跑没跑过，宁可不给"改模式"入口）。重新配对（票根作废）时丢弃 pending。
 - 取舍：**常驻通知**有唯一在跑的会话就直接进它，否则只打开 App；会话已被删除 → 沿用现有错误提示。
+- **只在「全新启动」时读 intent**（`savedInstanceState == null`）：旋转屏幕 / 进程重建也会走 `onCreate`，
+  而那时 `getIntent()` 仍是当初那条通知的 intent —— 不挡住的话，用户从会话页返回首页后一转屏
+  就又被弹回那个会话。`singleTop` 的 `onNewIntent` 那条路不受影响。
 
 **③ emoji「✅ 又变回黑色马赛克」**
 
@@ -1997,13 +2000,13 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 
 | 项 | 结果 |
 |---|---|
-| 构建 | `BUILD SUCCESSFUL in 1m 16s`（**220** actionable tasks：79 executed / 4 from cache / 137 up-to-date，含 `:app`） |
+| 构建 | 第一次（含 `:app`）`BUILD SUCCESSFUL in 1m 16s`，**220** actionable tasks（79 executed / 4 from cache / 137 up-to-date）；补完「只在全新启动时读 intent」后仅重建客户端：`BUILD SUCCESSFUL in 1m 2s`，**142** tasks（16 executed / 126 up-to-date） |
 | 单测 | **46 / 46**（FramePumpTest 2 / AskTest 17 / MarkdownTest 11 / ModelTest 16；failures + errors = 0） |
-| 客户端 **0.15.7**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.7.apk`，**23,831,882 B**，versionCode **38**，versionName **0.15.7**（`aapt2 dump badging` 已核对），SHA256 `FB0E9B3ED0CE3EA577AC9B625E2B61C8A65C4CC271D1784CF319F266AE9FF792` |
-| 客户端 0.15.7 debug（对照） | 44,818,374 B，SHA256 `14FDE3B3F8C378D7673BF882FD45FF5F9AD8DA4146586FBE5296B9ADAA341FF2` |
+| 客户端 **0.15.7**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.7.apk`，**23,831,882 B**，versionCode **38**，versionName **0.15.7**（`aapt2 dump badging` 已核对），SHA256 `057C5AD3F4657A97E23B0EE871CFE0942B7026F9D923DAC4CDC02D58A7620337` |
+| 客户端 0.15.7 debug（对照） | 44,922,398 B，SHA256 `2BBD2531577F3DAA34A3B6BF796CC806CB80691E6D51904D566E854105E056E6` |
 | 外壳 **1.1.4**（**必须重出**：`:core` 变了） | `out/web-shell/dsh-mobile-mirror-1.1.4.apk`，**77,798 B**（沿用惯例：外壳交付的是 **debug** 构建 —— 它的 release 包两次同源构建哈希都不一样，不可复现），versionCode **12**，versionName **1.1.4**，SHA256 `995F648984ABB5F37FE4FCE262B8AEC6B140642DE855965C6CCAA3DDBCC27204` |
 | 「外壳没被改坏」的判据 | `git diff --stat` 里 **`:app` 的源码一个文件都没有**（改的只有 `app/build.gradle.kts` 的版本号）；外壳既不调 `setAppVisible`，也不读 `EXTRA_SESSION_ID` ⇒ 点通知仍是"只打开 App"、前台仍照旧弹岛 |
-| 体积 | release 23,830,990 → **23,831,882**（+892）、debug 44,801,094 → **44,818,374**（+17,280）、外壳 77,006 → **77,798**（+792）—— 这次三个都动了 |
+| 体积 | release 23,830,990 → **23,831,882**（+892）、debug 44,801,094 → **44,922,398**（+121,304）、外壳 77,006 → **77,798**（+792）—— 这次三个都动过。**但「体积不能当证据」第 8 次出现**：补完「只在全新启动时读 intent」这一行后，release 仍是 **23,831,882 B**（与改前**一模一样**）而 SHA256 变了 ⇒ 判据只看 SHA256 |
 | 真机复看 | **待用户**：① 在 App 里看会话时**不出岛、不弹第二条提醒**，切到后台后该弹的还会弹；② 点「提问」「已完成」两条提醒应**直接进对应会话**，点常驻通知：有唯一在跑的会话就进它、多个/没有就回首页；③ 冷启动（进程被杀）点通知也能进；④ **✅ 是否正常** —— 字体面板底部临时那行「Emoji 兜底：…」会显示 App 实际挑中的字体文件名，把这行告诉我就知道该往哪修（诊断完这行要删） |
 
 ## 8. 待办
