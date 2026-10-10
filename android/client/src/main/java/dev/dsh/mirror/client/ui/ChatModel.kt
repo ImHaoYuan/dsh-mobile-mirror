@@ -59,14 +59,15 @@ sealed class ChatRow {
     /**
      * 助手回复。
      *
-     * @param thinkChars 「思考」的字符数（展开工作过程时才显示一行）。
-     * @param work 这一轮的工作过程 —— 与思考折进**同一张**「工作中 / 工作过程」卡，
-     *   正文留在卡外（折叠的是过程，不是回答）。
+     * @param think 这一轮的思考**正文**（0.13 起存全文；0.9.3–0.12 只存了字符数，展开卡片
+     *   只有一行「思考 N 字」，等于把思考本身丢了）。
+     * @param work 这一轮的工作过程（工具步骤，按发生顺序）—— 与思考折进**同一张**
+     *   「工作中 / 工作过程」卡，正文留在卡外（折叠的是过程，不是回答）。
      */
     class Assistant(
         override val seq: Int,
         val text: String,
-        val thinkChars: Int,
+        val think: String,
         val work: List<WorkStep>,
         val interrupted: Boolean,
     ) : ChatRow()
@@ -77,7 +78,7 @@ sealed class ChatRow {
      * 与网页端 1.2.1 的修正一致：正文为空的气泡不渲染（约 68% 的助手消息只有思考 + 命令）。
      * 但**工作过程要留着** —— 折成一行「工作过程 · N 步」，点了能看它刚才在干什么。
      */
-    class Work(override val seq: Int, val steps: List<WorkStep>, val thinkChars: Int) : ChatRow()
+    class Work(override val seq: Int, val steps: List<WorkStep>, val think: String) : ChatRow()
 
     /**
      * 「文件」卡：电脑端把这一轮产出的文件挂在回复结尾（`present` 工具 → `deliverables/presented`）。
@@ -131,12 +132,12 @@ class ChatModel(
     /** 正在流式输出、还没落库的那条。 */
     var liveText by mutableStateOf("")
         private set
-    var liveThink by mutableStateOf(0)
+    var liveThink by mutableStateOf("")
         private set
     var liveTools by mutableStateOf<List<WorkStep>>(emptyList())
         private set
 
-    val liveVisible: Boolean get() = liveText.isNotEmpty() || liveThink > 0 || liveTools.isNotEmpty()
+    val liveVisible: Boolean get() = liveText.isNotEmpty() || liveThink.isNotEmpty() || liveTools.isNotEmpty()
 
     var running by mutableStateOf(running)
         private set
@@ -199,8 +200,8 @@ class ChatModel(
     private val liveToolsByIndex = TreeMap<Int, WorkStep>()
     /** 这一轮累积的工作过程，落到下一条助手消息上（没有正文就单独成一条 [ChatRow.Work]）。 */
     private val workAcc = ArrayList<WorkStep>()
-    /** 只有思考、没有正文的那些消息的思考字数，攒着并进工作过程。 */
-    private var workThink = 0
+    /** 只有思考、没有正文的那些消息的思考正文，攒着并进工作过程（0.13 起存全文）。 */
+    private val workThink = StringBuilder()
     /**
      * 这一轮 [deliverables/presented] 带来的文件，攒着**等这一轮说完**再挂出去。
      *
@@ -436,7 +437,10 @@ class ChatModel(
                     liveText = liveTextByIndex.values.joinToString("")
                 }
             }
-            "reason" -> liveThink += d.optString("t").length
+            "reason" -> {
+                val t = d.optString("t")
+                if (t.isNotEmpty()) liveThink += t
+            }
             "tool" -> {
                 val i = d.optInt("i", 0)
                 val name = d.optString("name").ifEmpty { liveToolsByIndex[i]?.name.orEmpty() }
@@ -457,7 +461,7 @@ class ChatModel(
         liveTextByIndex.clear()
         liveToolsByIndex.clear()
         liveText = ""
-        liveThink = 0
+        liveThink = ""
         liveTools = emptyList()
     }
 
@@ -529,26 +533,25 @@ class ChatModel(
             "assistant/message" -> {
                 val blocks = data.optJSONArray("blocks")
                 val text = textOf(blocks)
-                val think = thinkCharsOf(blocks)
+                val think = thinkOf(blocks)
                 val work = drainWork()
                 val base = if (text.isEmpty()) {
                     // 与网页端 1.2.1 的修正一致：约 68% 的助手消息只有思考 + 命令、没有正文，
                     // 这类整条不渲染（否则满屏空气泡）—— 但**工作过程要留下**，折成一行。
-                    workThink += think
+                    appendThink(think)
                     if (work.isEmpty()) {
                         emptyList()
                     } else {
-                        val row = ChatRow.Work(seq, work, workThink)
-                        workThink = 0
-                        listOf(row)
+                        listOf(ChatRow.Work(seq, work, drainThink()))
                     }
                 } else {
-                    val row = ChatRow.Assistant(
-                        seq, text, think + workThink, work,
-                        data.optBoolean("interrupted", false),
+                    // 顺序按发生先后：先并进攒下的（更早那些没正文的消息），再是这一条自己的
+                    listOf(
+                        ChatRow.Assistant(
+                            seq, text, joinThink(drainThink(), think), work,
+                            data.optBoolean("interrupted", false),
+                        ),
                     )
-                    workThink = 0
-                    listOf(row)
                 }
                 // 文件卡挂在**这一轮的最末尾**（电脑端也是：总结写完才挂文件）
                 base + takeFiles(seq)
@@ -589,9 +592,11 @@ class ChatModel(
             "turn/end" -> {
                 val out = ArrayList<ChatRow>(2)
                 val work = drainWork()
-                if (work.isNotEmpty()) {
-                    out.add(ChatRow.Work(seq, work, workThink))
-                    workThink = 0
+                val think = drainThink()
+                // 有思考也算一件 —— 一整轮只思考、没动手的，那张卡也得留下（网页端 bumpWork
+                // 同样把每段思考算一件，所以只思考的轮次卡片不会被收掉）
+                if (work.isNotEmpty() || think.isNotEmpty()) {
+                    out.add(ChatRow.Work(seq, work, think))
                 }
                 val err = data.optJSONObject("error")
                 if (err != null) {
@@ -628,6 +633,28 @@ class ChatModel(
         val out = ArrayList<WorkStep>(workAcc)
         workAcc.clear()
         return out
+    }
+
+    /** 把一段思考并进这一轮攒着的思考里（都存正文，段与段之间空一行）。 */
+    private fun appendThink(text: String) {
+        if (text.isEmpty()) return
+        if (workThink.isNotEmpty()) workThink.append("\n\n")
+        workThink.append(text)
+    }
+
+    /** 攒下的思考取走并清空。 */
+    private fun drainThink(): String {
+        if (workThink.isEmpty()) return ""
+        val out = workThink.toString()
+        workThink.setLength(0)
+        return out
+    }
+
+    /** 拼两段思考（都可能是空串），空的那段不占位置。 */
+    private fun joinThink(a: String, b: String): String = when {
+        a.isEmpty() -> b
+        b.isEmpty() -> a
+        else -> a + "\n\n" + b
     }
 
     /** 一步的默认文案：优先用参数里的 description（`run_code` 那句简短解释），否则退化成工具的中文名。 */
@@ -672,14 +699,19 @@ class ChatModel(
         return sb.toString()
     }
 
-    private fun thinkCharsOf(blocks: JSONArray?): Int {
-        if (blocks == null) return 0
-        var n = 0
+    /** 把一条消息里的思考块拼成**正文**（0.13 起要正文，不再只数字数）。 */
+    private fun thinkOf(blocks: JSONArray?): String {
+        if (blocks == null) return ""
+        val sb = StringBuilder()
         for (i in 0 until blocks.length()) {
             val b = blocks.optJSONObject(i) ?: continue
-            if (b.optString("type") == "reasoning") n += b.optString("text").length
+            if (b.optString("type") != "reasoning") continue
+            val t = b.optString("text")
+            if (t.isEmpty()) continue
+            if (sb.isNotEmpty()) sb.append("\n\n")
+            sb.append(t)
         }
-        return n
+        return sb.toString()
     }
 
     private fun firstLine(s: String): String {

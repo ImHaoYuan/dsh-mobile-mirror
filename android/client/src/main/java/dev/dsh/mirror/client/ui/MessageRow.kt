@@ -9,12 +9,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -27,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -89,8 +93,8 @@ private fun AssistantRow(
     onFile: ((String) -> Unit)? = null,
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        if (row.work.isNotEmpty() || row.thinkChars > 0) {
-            WorkBlock(row.thinkChars, row.work, detail, running)
+        if (row.work.isNotEmpty() || row.think.isNotBlank()) {
+            WorkBlock(row.think, row.work, detail, running)
             Spacer(Modifier.size(6.dp))
         }
         // 正文可选中（系统手势 + 手柄 + 工具条）
@@ -111,7 +115,7 @@ private fun AssistantRow(
 @Composable
 private fun WorkRow(row: ChatRow.Work, detail: Boolean, running: Boolean) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-        WorkBlock(row.thinkChars, row.steps, detail, running)
+        WorkBlock(row.think, row.steps, detail, running)
     }
 }
 
@@ -119,11 +123,14 @@ private fun WorkRow(row: ChatRow.Work, detail: Boolean, running: Boolean) {
  * 「工作过程」折叠卡：**思考与工具调用合成一条**。
  *
  * <p>默认收起（用户指定），收起时只占一行「工作中 · N 步」（跑完变「工作过程 · N 步」）。
- * 展开后是思考字数 + 每一步的**简短解释**；工具名与参数默认不显示 —— 会话里那串
+ * 展开后是**思考正文** + 每一步的**简短解释**；工具名与参数默认不显示 —— 会话里那串
  * `run_code {"code":"…"}` 就是这么藏起来的。设置里打开「显示详细工作过程」后才显示。
+ *
+ * <p>0.13 起思考存的是**正文**（0.9.3–0.12 只有「思考 N 字」那一行，等于把思考丢了），
+ * 而且**思考也算一件** —— 件数与网页端的「N 项」同口径（`app.js` 每段思考都 bumpWork）。
  */
 @Composable
-internal fun WorkBlock(thinkChars: Int, steps: List<WorkStep>, detail: Boolean, running: Boolean) {
+internal fun WorkBlock(think: String, steps: List<WorkStep>, detail: Boolean, running: Boolean) {
     // 展开状态**跟随设置**：开关打开就默认展开（用户要的正是这个），关着就默认收起。
     // 只 remember 一次是不够的 —— 在会话里现开开关时，已经渲染出来的卡片不会变，
     // 那正是"开关看着像坏了"的原因。
@@ -131,8 +138,13 @@ internal fun WorkBlock(thinkChars: Int, steps: List<WorkStep>, detail: Boolean, 
     LaunchedEffect(detail) { open = detail }
     val tRun = stringResource(R.string.chat_work_running)
     val tDone = stringResource(R.string.chat_work_done)
-    val tSteps = if (steps.isEmpty()) "" else stringResource(R.string.chat_work_steps, steps.size)
+    val tThink = stringResource(R.string.chat_think)
+    // 件数 = 工具步骤 + 思考（**思考也算一件**，与网页端的「N 项」同口径）
+    val n = steps.size + if (think.isNotBlank()) 1 else 0
+    val tSteps = if (n == 0) "" else stringResource(R.string.chat_work_steps, n)
     val title = (if (running) tRun else tDone) + (if (tSteps.isEmpty()) "" else " · " + tSteps)
+    // 思考正文的限高：窗口的 40%（等价于网页端 `.work-reason .reason-body { max-height:40vh }`）
+    val thinkMax = LocalConfiguration.current.screenHeightDp.dp * 0.4f
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -153,13 +165,28 @@ internal fun WorkBlock(thinkChars: Int, steps: List<WorkStep>, detail: Boolean, 
             FoldMark(open)
         }
         if (open) {
-            if (thinkChars > 0) {
+            if (think.isNotBlank()) {
                 Text(
-                    stringResource(R.string.chat_think, thinkChars),
-                    fontSize = 12.5.sp,
+                    tThink,
+                    fontSize = 11.5.sp,
                     color = Dsh.ListDim3,
                     fontFamily = LocalDshFonts.current.ui,
-                    modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 1.dp),
+                    modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 2.dp),
+                )
+                // 思考正文：纯文本（网页端也是 textContent，不走 Markdown），太长时自己滚。
+                // 字体用**正文档**而不是等宽档 —— 网页端那里是 mono，但思考是中文自然语言，
+                // 等宽档的中文会掉回设备系统字体，观感反而更差（"只要好看，可以不一致"）。
+                Text(
+                    think,
+                    fontSize = 12.5.sp,
+                    lineHeight = 20.sp,
+                    color = Dsh.ListDim,
+                    fontFamily = LocalDshFonts.current.body,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 12.dp, end = 4.dp, bottom = 2.dp)
+                        .heightIn(max = thinkMax)
+                        .verticalScroll(rememberScrollState()),
                 )
             }
             steps.forEach { step ->

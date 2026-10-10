@@ -131,7 +131,8 @@
     <string name="chat_loading_older">正在读取更早的消息…</string>
     <string name="chat_running">运行中…</string>
     <string name="chat_readonly">只读 · 发送与停止在 0.8 接上</string>
-    <string name="chat_think">思考 %1$d 字</string>
+    <!-- 0.13：思考存了正文，这一条从行内计数「思考 N 字」变成折叠卡里的小节标题 -->
+    <string name="chat_think">思考</string>
     <string name="files_title">文件</string>
     <string name="files_download">下载</string>
     <string name="dl_title">下载文件</string>

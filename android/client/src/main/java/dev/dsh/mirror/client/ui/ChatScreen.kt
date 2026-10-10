@@ -274,7 +274,7 @@ fun ChatScreen(
                     model.rows.size,
                     model.pending.size,
                     model.liveText.length,
-                    model.liveThink,          // 是"思考字符数"（Int），不是字符串
+                    model.liveThink.length,   // 用长度当 key：思考正文每来一小段就变一次
                     model.liveTools.size,
                 )
                 LaunchedEffect(contentKey) {
@@ -596,7 +596,7 @@ private fun DownloadDialog(
 private fun LiveRow(model: ChatModel, detail: Boolean) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         // 流式中的工作过程：与落库后**同一条折叠卡**，只是标题是「工作中」
-        if (model.liveThink > 0 || model.liveTools.isNotEmpty()) {
+        if (model.liveThink.isNotBlank() || model.liveTools.isNotEmpty()) {
             WorkBlock(model.liveThink, model.liveTools, detail, running = true)
             Spacer(Modifier.size(6.dp))
         }
