@@ -12,8 +12,12 @@ import dev.dsh.mirror.client.net.PageOutcome
 import dev.dsh.mirror.client.net.SendOutcome
 import dev.dsh.mirror.client.net.Session
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.TreeMap
@@ -142,13 +146,22 @@ class ChatModel(
     var running by mutableStateOf(running)
         private set
 
-    /** 非空 = 顶部那条提示（正在重连、翻页失败…）。 */
+    /** 非空 = 顶部那条提示（正在重连、发送失败…）。翻页不走这里了 —— 见 [olderError]。 */
     var status by mutableStateOf("")
         private set
 
     var hasMore by mutableStateOf(false)
         private set
     var loadingOlder by mutableStateOf(false)
+        private set
+
+    /**
+     * 往上翻失败了 —— 带上原因与"等了多久"；**非空时不再自动重发**，只认用户点一下重试。
+     *
+     * <p>一次翻页要宿主现场读整个会话日志，大会话上几十秒起步。滑到顶就自动发一次的话，
+     * 等于拿这个重活反复捶它（用户报的"一直显示正在读取、然后连不上电脑"就是这个）。
+     */
+    var olderError by mutableStateOf<String?>(null)
         private set
 
     /** 票根彻底失效 —— 由界面接手回登录页。 */
@@ -209,6 +222,13 @@ class ChatModel(
      * 直接按事件顺序渲染的话，文件卡会跑到总结上面去（用户报的就是这个）。
      */
     private val filesAcc = ArrayList<Deliverable>()
+    /**
+     * 投影（[note] + [rowsOf]）的互斥锁。
+     *
+     * <p>它们共用几份攒着的可变状态（`workAcc` / `workThink` / `filesAcc` / `firstSeq`）。
+     * 实时帧在主线程上跑、翻旧页的投影在 IO 线程上跑，不加锁就会互相抢。
+     */
+    private val projectLock = Mutex()
 
     fun connect(scope: CoroutineScope) {
         if (job != null) return
@@ -231,9 +251,11 @@ class ChatModel(
                         val seq = f.json.optInt("seq", 0)
                         if (seq in 1..lastSeq) return@collect
                         if (seq > lastSeq) lastSeq = seq
-                        note(f.json, live = true)
-                        val newRows = rowsOf(f.json, live = true)
-                        rows = rows + newRows
+                        val newRows = projectLock.withLock {
+                            note(f.json, live = true)
+                            rowsOf(f.json, live = true)
+                        }
+                        rows = appendRows(rows, newRows)
                         val row = newRows.lastOrNull()
                         status = ""
                         // 宿主回显了我发的那句 → 把乐观那条撤掉（权威版本已经进了 rows，位置不变）
@@ -254,37 +276,63 @@ class ChatModel(
      * ① **只收更早的**（{@code seq < before}）—— 宿主理论上不会回重叠，但真重叠了就是
      * 两行撞同一个 key，LazyColumn 会直接崩；网页端 `app.js` 的 `loadOlder` 也是这么筛的。
      * ② **服务端没给新东西就停**（{@code hasMore = false}）—— 否则会拿着同一个 before 反复重试。
-     * ③ 读取超时用 {@link Session#page} 里放宽过的 30 秒，不是默认的 6 秒。
+     * ③ 读取超时用 {@link Session#page} 里放宽过的 90 秒，不是默认的 6 秒。
+     * ④ **失败不再自动重发**（{@code auto = true} 那条路被 [olderError] 闩住）：一次翻页
+     * 要宿主现场读整个会话日志，滑到顶就自动发一次等于拿这个重活反复捶它。
      */
-    fun loadOlder(scope: CoroutineScope) {
+    fun loadOlder(scope: CoroutineScope, auto: Boolean = false) {
         if (loadingOlder || !hasMore || firstSeq == Int.MAX_VALUE) return
+        // 失败过一次就别再自动重发（见 olderError 的说明）；用户点重试才放行
+        if (auto && olderError != null) return
         val before = firstSeq
         loadingOlder = true
-        status = app.getString(R.string.chat_loading_older)
+        olderError = null
+        val t0 = System.currentTimeMillis()
         scope.launch {
             when (val r = Session.page(app, sessionId, before)) {
                 is PageOutcome.Ok -> {
                     val fresh = r.records.filter { it.optInt("seq", 0) in 1 until before }
-                    val older = ArrayList<ChatRow>(fresh.size)
-                    for (ev in fresh) {
-                        note(ev, live = false)
-                        older.addAll(rowsOf(ev, live = false))
+                    // 投影放 IO 线程：一页 200 条里有大会话的巨型正文，在主线程上会把界面卡住，
+                    // 「正在读取」也就迟迟不落地。锁保证它不和实时帧抢那份攒着的状态。
+                    val older = withContext(Dispatchers.IO) {
+                        projectLock.withLock {
+                            var acc: List<ChatRow> = emptyList()
+                            for (ev in fresh) {
+                                note(ev, live = false)
+                                acc = appendRows(acc, rowsOf(ev, live = false))
+                            }
+                            // 这一页最后一轮的文件卡别漏（它的总结可能在更早的一页里）
+                            appendRows(acc, takeFiles(before))
+                        }
                     }
-                    // 这一页最后一轮的文件卡别漏（它的总结可能在更早的一页里）
-                    older.addAll(takeFiles(before))
                     rows = older + rows
                     hasMore = r.hasMore && fresh.isNotEmpty()
-                    status = ""
+                    olderError = null
                 }
-                PageOutcome.Expired -> {
-                    status = ""
-                    expired = true
-                }
-                is PageOutcome.Failed -> status = app.getString(R.string.chat_page_failed, r.code)
-                PageOutcome.Unreachable -> status = app.getString(R.string.chat_unreachable)
+                PageOutcome.Expired -> expired = true
+                is PageOutcome.Failed -> olderError = failedAfter(
+                    app.getString(R.string.chat_page_failed, r.code), t0,
+                )
+                PageOutcome.Unreachable -> olderError = failedAfter(
+                    app.getString(R.string.chat_unreachable), t0,
+                )
             }
             loadingOlder = false
         }
+    }
+
+    /** 用户点了「重试」—— 手动放行一次（自动那条路被 [olderError] 挡着）。 */
+    fun retryOlder(scope: CoroutineScope) = loadOlder(scope, auto = false)
+
+    /**
+     * 失败原因 + **等了多久**。
+     *
+     * <p>带上秒数是刻意的：一眼能分清是"宿主读得慢"还是"当场就断了" ——
+     * 30 秒整基本就是超时，几秒就是连接问题。没这个数下次还得靠猜。
+     */
+    private fun failedAfter(why: String, t0: Long): String {
+        val secs = ((System.currentTimeMillis() - t0) / 1000).toInt().coerceAtLeast(0)
+        return app.getString(R.string.chat_older_failed, why, secs)
     }
 
     /**
@@ -375,7 +423,8 @@ class ChatModel(
         projections?.optJSONObject("modelSelection")?.optJSONObject("next")?.let { applyPick(it) }
 
         hasMore = d.optBoolean("hasMore", false)
-        val out = ArrayList<ChatRow>()
+        // 用 appendRows 而不是裸 addAll：快照窗口里往往有好几段"思考+命令"，它们要合成一张卡
+        var out: List<ChatRow> = emptyList()
         var lastStart = -1
         var lastEnd = -1
         val recs = d.optJSONArray("records")
@@ -389,11 +438,11 @@ class ChatModel(
                     "turn/end" -> lastEnd = ev.optInt("seq", 0)
                     else -> { }
                 }
-                out.addAll(rowsOf(ev, live = false))
+                out = appendRows(out, rowsOf(ev, live = false))
             }
         }
         // 快照窗口的最后一轮如果有文件卡，别漏在窗口边界上
-        out.addAll(takeFiles(lastSeq))
+        out = appendRows(out, takeFiles(lastSeq))
         rows = out
         // 水位跟着快照走（不是清零）：清成 -1 会让快照里已有的 seq 之后被重复接受
         // 快照里没有"在不在跑"这个字段，靠最后一条 turn/start 与 turn/end 谁更靠后来判断
@@ -625,6 +674,34 @@ class ChatModel(
         val row = ChatRow.Files(seq, ArrayList(filesAcc))
         filesAcc.clear()
         return listOf(row)
+    }
+
+    /**
+     * 追加新行；**紧挨着的两张「工作过程」卡合成一张**。
+     *
+     * <p>一轮里往往有 4–6 段"思考 + 命令"，每段各占一行的话手机上一屏全是
+     * 「工作过程 · 2 步」（用户报的就是这个）。网页端 `ensureWork()` 一轮只有一张卡，
+     * 后面的思考/命令都往里追加 —— 这里对齐它，`run_code` 那些步骤一条不少地接在后面。
+     *
+     * <p>合并时保留**先出现那条的 seq**：LazyColumn 的 key 里带着 seq，换了 key 列表会跳。
+     */
+    private fun appendRows(base: List<ChatRow>, add: List<ChatRow>): List<ChatRow> {
+        if (add.isEmpty()) return base
+        val out = ArrayList<ChatRow>(base.size + add.size)
+        out.addAll(base)
+        for (r in add) {
+            val last = out.lastOrNull()
+            if (r is ChatRow.Work && last is ChatRow.Work) {
+                out[out.size - 1] = ChatRow.Work(
+                    last.seq,
+                    last.steps + r.steps,
+                    joinThink(last.think, r.think),
+                )
+            } else {
+                out.add(r)
+            }
+        }
+        return out
     }
 
     /** 攒下的工作过程取走并清空。 */

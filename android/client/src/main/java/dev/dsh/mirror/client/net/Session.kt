@@ -1,7 +1,6 @@
 package dev.dsh.mirror.client.net
 
 import android.content.Context
-import dev.dsh.mirror.MirrorApi
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.TimeZone
@@ -38,7 +37,7 @@ sealed class SendOutcome {
  * <p><b>首屏不走这里</b>：{@code /api/page} 的 `before` 是**必填**（缺了 400 missing-before），
  * 所以首屏只能靠 `/api/follow` 的第一帧 snapshot。这个接口只用来**往上翻更早的历史**。
  *
- * <p><b>读取超时单独放宽</b>（{@link MirrorApi#PAGE_TIMEOUT_MS}）：宿主是现场读整个会话日志
+ * <p><b>读取超时单独放宽</b>（{@link #PAGE_TIMEOUT_MS}）：宿主是现场读整个会话日志
  * 再往前扫的，大会话上超过默认 6 秒很常见。
  */
 object Session {
@@ -47,13 +46,26 @@ object Session {
     const val PAGE = 200
 
     /**
+     * 翻页的**读取**超时：90 秒。
+     *
+     * <p>刻意不再用 `:core` 里的 `MirrorApi.PAGE_TIMEOUT_MS`（30 秒）：宿主 `/api/page` 是
+     * **现场读整个会话日志再往前扫**，大会话上 30 秒不够 —— 超时会被收敛成 `Unreachable`，
+     * 界面上就是「连不上电脑」（用户报的"一直显示正在读取、然后连不上电脑"）。
+     * 我们自己的会话日志已经是 **12.5 MB（zstd 压缩后）**。
+     *
+     * <p>为什么写在 `:client` 而不是改 `:core` 那个常量：`:core` 一变，**外壳 APK 就不再
+     * 逐字节一致**，而"外壳没被动过"这条不变量正是每次都能证明的东西。
+     */
+    const val PAGE_TIMEOUT_MS = 90_000
+
+    /**
      * 取 `before` 之前的一页历史。
      *
      * @param before 当前视图里**最早那条**的 seq —— 严格小于它的事件才会返回。
      */
     suspend fun page(ctx: Context, sessionId: String, before: Int, max: Int = PAGE): PageOutcome {
         val path = "/api/page?id=" + enc(sessionId) + "&before=" + before + "&max=" + max
-        return when (val r = MirrorSession.fetch(ctx, path, MirrorApi.PAGE_TIMEOUT_MS)) {
+        return when (val r = MirrorSession.fetch(ctx, path, PAGE_TIMEOUT_MS)) {
             is Fetch.Ok -> {
                 val o = try { JSONObject(r.body) } catch (_: Throwable) { return PageOutcome.Unreachable }
                 val arr = o.optJSONArray("records")

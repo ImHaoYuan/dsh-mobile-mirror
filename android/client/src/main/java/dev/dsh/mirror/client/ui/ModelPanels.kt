@@ -62,7 +62,7 @@ class PickReply(val message: String, val locked: Boolean = false)
  * <p>0.12 的模型 / 模式是一张盖住整屏的贴底大卡（带 32% 黑遮罩、没有入场动画），
  * 0.12.3 拆成两块、改成这个形态。
  */
-enum class ChipPanel { None, Model, Preset, Folder, Path }
+enum class ChipPanel { None, Model, Preset, Folder, Path, Jump }
 
 /** 面板展开 / 收起的动画时长（与首页文件夹清单一致）。 */
 const val PANEL_MS = 220

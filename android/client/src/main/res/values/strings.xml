@@ -128,11 +128,20 @@
     <string name="chat_expired">登录已失效，请重新登录</string>
     <string name="chat_page_failed">翻页失败：HTTP %1$d</string>
     <string name="chat_unreachable">连不上电脑</string>
-    <string name="chat_loading_older">正在读取更早的消息…</string>
+    <!-- 0.14.1：翻页的秒数是刻意露出来的 —— 30 秒整基本就是超时，几秒就是连接断了 -->
+    <string name="chat_loading_older">正在读取更早的消息… %1$d 秒</string>
+    <string name="chat_older_failed">%1$s（等了 %2$d 秒）</string>
+    <string name="chat_older_retry">读取更早的消息失败：%1$s\n点这里重试</string>
     <string name="chat_running">运行中…</string>
     <string name="chat_readonly">只读 · 发送与停止在 0.8 接上</string>
     <!-- 0.13：思考存了正文，这一条从行内计数「思考 N 字」变成折叠卡里的小节标题 -->
     <string name="chat_think">思考</string>
+    <!-- 0.14：「已发消息」清单（顶栏入口 + 就地展开的面板 + 右下角的「上一句」浮键）
+         0.14.1 改的名字：原来叫「我的话」，用户要求换成「已发消息」 -->
+    <string name="cd_sent">已发消息</string>
+    <string name="sent_title">已发消息</string>
+    <string name="sent_count">%1$d 条</string>
+    <string name="sent_empty">还没有你发过的消息</string>
     <string name="files_title">文件</string>
     <string name="files_download">下载</string>
     <string name="dl_title">下载文件</string>

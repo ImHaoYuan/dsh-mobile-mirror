@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -59,6 +60,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -128,6 +130,47 @@ fun ChatScreen(
     // 是否"贴在底部"（对齐网页端 state.stick）。初始 true：进会话页就该看到最新一条。
     var stick by remember(target.id) { mutableStateOf(true) }
     val stickGap = with(LocalDensity.current) { 80.dp.toPx() }   // 网页端 STICK_GAP = 80
+    val density = LocalDensity.current
+
+    /**
+     * 0.14「已发消息」：我自己发出去的每一条 + 它在会话列表里的 item 下标。
+     *
+     * <p>会话列表是**倒排**的（index 0 在屏幕最下），前面还压着「正在输出」与「乐观回显」
+     * 两块，所以 item 下标 = 前缀 + 它在倒排行里的位置。乐观回显**不算**（还没落库，
+     * 位置随后会跳一次 —— 与网页端刻度条同款判据）。顺序是**由新到旧**：要找的通常
+     * 是刚发出去的那条。
+     */
+    val sent = remember(model.rows, model.pending.size, model.liveVisible) {
+        val prefix = (if (model.liveVisible) 1 else 0) + model.pending.size
+        model.rows.asReversed().mapIndexedNotNull { i, r ->
+            if (r is ChatRow.User) SentEntry(r.text, prefix + i) else null
+        }
+    }
+    val sentItems = remember(sent) { sent.map { it.item } }
+
+    /**
+     * 跳到某条消息。
+     *
+     * <p>倒排列表里 `scrollToItem` 会把目标放在**底边**，而"回头看"要的是它落在
+     * **顶边附近**（这样它下面紧接着就是当轮的回复）。目标高度只能估 —— 估小一点
+     * 没关系（落点略低于顶边也看得见），估大了会把目标顶出屏幕外。
+     */
+    val jumpTo: (Int) -> Unit = { item ->
+        panel = ChipPanel.None
+        stick = false
+        scope.launch {
+            val vh = listState.layoutInfo.viewportSize.height
+            // 目标高度：看得见就直接量，看不见按字数估。**宁可估高** —— 估低了会把
+            // 这句的开头顶出屏幕外（长提示词很常见），估高只是落点偏低一点。
+            val known = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == item }?.size
+            val est = known ?: run {
+                val n = sent.firstOrNull { it.item == item }?.text?.length ?: 0
+                val lines = n / 18 + 1
+                with(density) { (46 + lines * 20).coerceAtMost(320).dp.roundToPx() }
+            }
+            listState.animateScrollToItem(item, scrollOffset = (vh - est).coerceAtLeast(0))
+        }
+    }
 
     LaunchedEffect(target.id) { model.connect(scope) }
     LaunchedEffect(target.id) { hub.ensure() }
@@ -183,7 +226,12 @@ fun ChatScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize().background(Dsh.BgPage)) {
-            ChatTopBar(model, onBack)
+            ChatTopBar(
+                model = model,
+                onBack = onBack,
+                hasSent = sent.isNotEmpty(),
+                onSent = { panel = if (panel == ChipPanel.Jump) ChipPanel.None else ChipPanel.Jump },
+            )
 
             if (model.status.isNotEmpty()) StatusStrip(model.status)
 
@@ -217,7 +265,13 @@ fun ChatScreen(
                     }
                     if (model.loadingOlder) {
                         item(key = "older") {
-                            DimLine(stringResource(R.string.chat_loading_older))
+                            OlderLoadingRow()
+                        }
+                    } else if (model.olderError != null) {
+                        // 失败后不再自动重发（一次翻页要宿主现场读整个会话日志），
+                        // 所以这里必须给一个**能点**的出口
+                        item(key = "olderErr") {
+                            OlderFailedRow(model.olderError!!) { model.retryOlder(scope) }
                         }
                     }
                     if (shown.isEmpty() && !model.liveVisible && !model.loadingOlder) {
@@ -229,28 +283,36 @@ fun ChatScreen(
 
                 // 用户滚上去看历史时，右下角浮一个"回到底部"键（网页端 btnBottom）。
                 // 它和列表是叠着的：Box 的右下角就是输入框上方。
+                // 往上翻的时候右下角浮两个键：↑ 跳到我说的**上一句**（0.14 的 B 兜底），
+                // ↓ 回到底部（原有）。叠在一起而不是并排 —— 并排会压到消息正文。
                 if (!stick) {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(end = 16.dp, bottom = 12.dp)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(Dsh.BgPage)
-                            .border(1.dp, Dsh.ListLine, CircleShape)
-                            .clickable {
-                                stick = true
-                                scope.launch { listState.animateScrollToItem(0) }
-                            },
-                        contentAlignment = Alignment.Center,
+                            .padding(end = 16.dp, bottom = 12.dp),
+                        horizontalAlignment = Alignment.End,
                     ) {
-                        Text(
-                            text = "↓",
-                            fontSize = 18.sp,
-                            lineHeight = 18.sp,
-                            color = Dsh.ListDim,
-                            fontFamily = LocalDshFonts.current.ui,
-                        )
+                        PrevSentButton(listState, sentItems, jumpTo)
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Dsh.BgPage)
+                                .border(1.dp, Dsh.ListLine, CircleShape)
+                                .clickable {
+                                    stick = true
+                                    scope.launch { listState.animateScrollToItem(0) }
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "↓",
+                                fontSize = 18.sp,
+                                lineHeight = 18.sp,
+                                color = Dsh.ListDim,
+                                fontFamily = LocalDshFonts.current.ui,
+                            )
+                        }
                     }
                 }
 
@@ -288,7 +350,8 @@ fun ChatScreen(
                         val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
                         last to info.totalItemsCount
                     }.collect { (last, total) ->
-                        if (total > 0 && last >= total - 2) model.loadOlder(scope)
+                        // auto = true：失败过就不再自动重发，交给顶部那行的「点这里重试」
+                        if (total > 0 && last >= total - 2) model.loadOlder(scope, auto = true)
                     }
                 }
             }
@@ -365,6 +428,12 @@ fun ChatScreen(
                         },
                         onDismiss = { panel = ChipPanel.None },
                     )
+                    ChipPanel.Jump -> SentPanel(
+                        entries = sent,
+                        listState = listState,
+                        maxHeight = halfScreen,
+                        onJump = jumpTo,
+                    )
                     else -> {}
                 }
             }
@@ -376,7 +445,13 @@ fun ChatScreen(
 }
 
 @Composable
-private fun ChatTopBar(model: ChatModel, onBack: () -> Unit) {
+private fun ChatTopBar(
+    model: ChatModel,
+    onBack: () -> Unit,
+    /** 0.14：有「已发消息」可列时才显示入口 —— 点开一片空的比没有入口更让人困惑。 */
+    hasSent: Boolean,
+    onSent: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 6.dp, end = 20.dp, top = 14.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -402,6 +477,9 @@ private fun ChatTopBar(model: ChatModel, onBack: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+        }
+        if (hasSent) {
+            DshIconButton(R.drawable.ic_sent, onSent, stringResource(R.string.cd_sent))
         }
     }
 }
@@ -591,6 +669,43 @@ private fun DownloadDialog(
     }
 }
 
+/**
+ * 0.14 的 B 兜底键：跳到我**当前视口之上**最近的那条「已发消息」。
+ *
+ * <p>上面没有了就整颗不显示（不是灰着 —— 灰键在手机上只会让人反复戳）。
+ * 状态放在这个小组件里：视口一变只有它重组，不会把整屏拖下水。
+ */
+@Composable
+private fun PrevSentButton(listState: LazyListState, items: List<Int>, onJump: (Int) -> Unit) {
+    var prev by remember(items) { mutableStateOf(-1) }
+    LaunchedEffect(listState, items) {
+        snapshotFlow { centerItemOf(listState) }.collect { c ->
+            val anchor = anchorOf(items, c)
+            // 倒排列表里 index 越大越旧：比我这条更旧的里面，取最近的那个
+            prev = items.filter { it > anchor }.minOrNull() ?: -1
+        }
+    }
+    if (prev < 0) return
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(Dsh.BgPage)
+            .border(1.dp, Dsh.ListLine, CircleShape)
+            .clickable { onJump(prev) },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "↑",
+            fontSize = 18.sp,
+            lineHeight = 18.sp,
+            color = Dsh.ListDim,
+            fontFamily = LocalDshFonts.current.ui,
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+}
+
 /** 正在流式输出的那条。 */
 @Composable
 private fun LiveRow(model: ChatModel, detail: Boolean) {
@@ -619,5 +734,51 @@ private fun DimLine(text: String) {
         horizontalArrangement = Arrangement.Center,
     ) {
         Text(text, fontSize = 12.5.sp, color = Dsh.ListDim3, fontFamily = LocalDshFonts.current.ui)
+    }
+}
+
+/**
+ * 列表顶部那一行「正在读取更早的消息… N 秒」。
+ *
+ * <p>秒数是**刻意**露出来的：一次翻页要宿主现场读整个会话日志再往前扫，大会话上几十秒
+ * 起步 —— 没有这个数，用户只会觉得"卡死了"（0.14.1 之前就是这个体感）。也正因为慢，
+ * 读取超时从 30 秒放宽到了 90 秒（见 Session.PAGE_TIMEOUT_MS）。
+ */
+@Composable
+private fun OlderLoadingRow() {
+    var secs by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            secs++
+        }
+    }
+    DimLine(stringResource(R.string.chat_loading_older, secs))
+}
+
+/**
+ * 翻页失败那一行：**可以点**，点了重试。
+ *
+ * <p>失败之后自动那条路就被闩住了（见 [ChatModel.olderError]）—— 一次请求要宿主读一遍
+ * 整个会话日志，滑一下自动发一次等于拿重活反复捶它。所以这里必须有个出口，
+ * 而且要把"等了多久"写出来：30 秒整基本就是超时，几秒就是连接断了。
+ */
+@Composable
+private fun OlderFailedRow(text: String, onRetry: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onRetry)
+            .padding(horizontal = 24.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            stringResource(R.string.chat_older_retry, text),
+            fontSize = 12.5.sp,
+            lineHeight = 18.sp,
+            color = Dsh.ListDim,
+            fontFamily = LocalDshFonts.current.ui,
+            textAlign = TextAlign.Center,
+        )
     }
 }
