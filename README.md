@@ -21,11 +21,6 @@ JSON 路由给桌面设置面板取地址）。
 > **其他 DSH 版本、其他 ROM、其他 Android 机型都没有验证过。**
 > 插件接入用的都是公开接口（`dsh.bundle.patch` 与 `dsh.client`），换版本理论上也能装，但没测过就是没测过。
 >
-> ### ⚠️ 1.0 起包名去掉了 `dev.`
-> 两个 APK 的包名现在是 **`dsh.mirror`**（外壳）与 **`dsh.mirror.client`**（原生），显示名都是「**DSH镜像**」。
-> 对 1.0 之前装过的人来说，这是**两个新 App**：**旧包要手动卸载**，配对与登录状态要**重来一次**
-> （状态存在旧包名下），系统里的通知权限（含 HyperOS 的「焦点通知」）也要重新给。
-
 ---
 
 ## 目录
@@ -54,7 +49,7 @@ JSON 路由给桌面设置面板取地址）。
 
 同一份协议、同一份数据，三种用法：
 
-| | 网页端 | WebView 外壳 APK | 原生客户端 APK |
+| | 网页端 | WebView 版 APK | 原生客户端 APK |
 |---|---|---|---|
 | **是什么** | 手机浏览器打开手机页面 | 把手机页面装进 App | Kotlin + Compose 重写的原生界面 |
 | **装什么** | 什么都不用装 | `dsh-mobile-mirror-1.1.6.apk`（**78 KB**） | `dsh-mobile-mirror-client-1.0.apk`（**23.8 MB**） |
@@ -67,7 +62,7 @@ JSON 路由给桌面设置面板取地址）。
 
 ## 截图
 
-左边是**网页端**（手机浏览器），右边是**原生客户端**（装 APK）。两边看到的是**同一份数据**。
+左边是**网页端/WebView版APK**，右边是**原生客户端**。两边看到的是**同一份数据**。
 
 | 网页端 · 登录 | 原生客户端 · 登录 |
 |---|---|
@@ -277,7 +272,7 @@ plugin_manager install_bundle  target = link:<你克隆到的绝对路径>
 
 ## 装 APK（可选）
 
-只有想用**通知 / 超级岛**（或想要原生界面）才需要。**本仓库不提交构建产物**，需要自行构建。
+只有想用**通知 / 超级岛**（或想要原生界面）才需要。
 
 ### 该装哪一支
 
@@ -488,7 +483,7 @@ dsh-mobile-mirror/
 ### 平台与资料
 
 - **DSH（DeepSeek Harness）** —— 本插件接入的两种方式（`dsh.bundle.patch` 与 `dsh.client`）
-  以及 `lib/client.js` 那份**手写 bundle** 的格式，是照着官方客户端 bundle 与社区插件
+  以及 `lib/client.js` 那份**手写 bundle** 的格式，是照着官方客户端 bundle 与其他插件
   （样板：`dsh-ctrl-enter-newline`）摸出来的。
 - **[ABK](https://github.com/xingguangcuican6666/ABK)（GPL-3.0）** —— 小米超级岛（焦点通知）的
   extras 键名与 `param_v2` JSON 结构**只作接口事实对照**（写错系统就静默丢弃，这些是 HyperOS 的接口事实），
@@ -507,7 +502,7 @@ dsh-mobile-mirror/
 
 许可原文：网页端在 `lib/web/fonts/OFL.txt`，原生端在 `android/client/src/main/assets/licenses/`，
 App 里也能从「字体 → 开源许可」看到。
-（**微软雅黑是专有字体**，不能内置也不能随包分发 —— 所以正文档用思源黑体替代。）
+
 
 ### 真机反馈
 
