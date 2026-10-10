@@ -87,7 +87,8 @@ sealed class ChatRow {
     /**
      * 「文件」卡：电脑端把这一轮产出的文件挂在回复结尾（`present` 工具 → `deliverables/presented`）。
      *
-     * 与电脑端放在**同一个位置**（事件所在处，也就是那条回复之后），不是钉在屏幕底部。
+     * 与电脑端放在**同一个位置**：这一轮的回复全部写完之后（0.15.6 起挂点就是 `turn/end`），
+     * 不是钉在屏幕底部，也不在轮次中途。
      */
     class Files(override val seq: Int, val files: List<Deliverable>) : ChatRow()
 
@@ -216,10 +217,15 @@ class ChatModel(
     /** 只有思考、没有正文的那些消息的思考正文，攒着并进工作过程（0.13 起存全文）。 */
     private val workThink = StringBuilder()
     /**
-     * 这一轮 [deliverables/presented] 带来的文件，攒着**等这一轮说完**再挂出去。
+     * 这一轮 [deliverables/presented] 带来的文件，攒着**等这一轮结束**（`turn/end`）再挂出去。
      *
      * <p>present 是工具调用，事件顺序上在总结文字**之前**；电脑端是特意把它挂到回复最末尾的。
      * 直接按事件顺序渲染的话，文件卡会跑到总结上面去（用户报的就是这个）。
+     *
+     * <p><b>唯一的挂点是 `turn/end`</b>（0.15.6 起）。0.10.1–0.15.5 挂在"present 之后的第一条
+     * 助手消息"下面：对"present 就是最后一步"的轮次看着没问题（那样也正好在最末尾），
+     * 但 present 完还继续干活的轮次就会挂到中途 —— 用户就是这么看出两边不一致的。
+     * 另外两处 [applySnapshot] / [loadOlder] 里的 `takeFiles` 是**窗口边界兜底**，别删。
      */
     private val filesAcc = ArrayList<Deliverable>()
     /**
@@ -619,8 +625,11 @@ class ChatModel(
                         ),
                     )
                 }
-                // 文件卡挂在**这一轮的最末尾**（电脑端也是：总结写完才挂文件）
-                base + takeFiles(seq)
+                // 0.15.6：这里**不再**挂文件卡。原来挂在"present 之后的第一条助手消息"下面，
+                // 一旦 present 完还接着干活（用户真机遇到的那一轮：present 后又补记忆、写总结），
+                // 卡片就落到这一轮**中途**，后面的正文全跑到它下面 —— 而电脑端一律挂在回复结尾。
+                // 现在唯一的挂点是 turn/end（见下面那条）。
+                base
             }
             "tool/call" -> {
                 val name = data.optString("name").ifEmpty { app.getString(R.string.chat_tool) }
@@ -677,7 +686,7 @@ class ChatModel(
                     }
                     if (label.isNotEmpty()) out.add(ChatRow.Notice(seq, label, false))
                 }
-                // 兜底：这一轮没有落库的助手消息时，文件卡也得挂出去
+                // 文件卡的**唯一挂点**（0.15.6）：本轮正文都发完了，挂到最末尾
                 out.addAll(takeFiles(seq))
                 out
             }
