@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 库模块不声明任何组件：前台服务由各 App 自己的 manifest 声明。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

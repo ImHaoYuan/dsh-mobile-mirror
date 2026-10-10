@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- app_name 刻意不在这里定义：由 build.gradle.kts 用 resValue 注入。 -->
+
+    <string name="boot_checking">正在连接…</string>
+    <string name="net_unreachable">连不上电脑</string>
+    <string name="action_repair">重新配对</string>
+
+    <!-- 配对 -->
+    <string name="pair_title">连接电脑</string>
+    <string name="pair_intro">输入电脑上插件显示的地址。</string>
+    <string name="pair_field_hint">192.168.1.5:19388</string>
+    <string name="pair_connect">连接</string>
+    <string name="pair_testing">正在测试连接…</string>
+    <string name="pair_err_empty">请填写地址</string>
+    <string name="pair_err_format">地址格式不对，应形如 192.168.1.5:19388</string>
+    <string name="pair_err_unreachable">连不上。请确认手机与电脑在同一 Wi-Fi，且地址正确</string>
+    <string name="pair_cert_title">确认证书指纹</string>
+    <string name="pair_cert_intro">此确认只需一次，之后不再询问。请与电脑上插件显示的指纹逐段比对，一致才继续：</string>
+    <string name="pair_cert_changed">（地址已变更）</string>
+    <string name="pair_cert_trust">指纹一致，记住并继续</string>
+    <string name="pair_cert_cancel">取消</string>
+    <string name="pair_mismatch_title">证书与记录不符</string>
+    <string name="pair_mismatch_intro">电脑上记录的指纹是：</string>
+    <string name="pair_mismatch_now">这次拿到的是：</string>
+    <string name="pair_mismatch_hint">如果电脑上重新生成过证书（例如局域网 IP 变了），需要重新配对。</string>
+
+    <!-- 登录 -->
+    <string name="login_title">登录</string>
+    <string name="login_user">账号</string>
+    <string name="login_pass">密码</string>
+    <string name="login_submit">登录</string>
+    <string name="login_busy">正在登录…</string>
+    <string name="login_err_bad">账号或密码不对</string>
+    <string name="login_err_locked">尝试过于频繁，请 %1$d 秒后重试</string>
+    <string name="login_err_missing">请填写账号和密码</string>
+    <string name="login_err_unconfigured">电脑上还没设置账号密码。请先在电脑上打开插件的设置页设置一次。</string>
+    <string name="login_err_unreachable">连不上电脑。请确认手机与电脑在同一 Wi-Fi，且电脑上的 DSH 正在运行</string>
+    <string name="login_saved_hint">已记住账号密码，下次会自动登录</string>
+
+    <!-- 首页 -->
+    <string name="home_input_hint">在电脑上开一段对话</string>
+
+    <!-- 会话列表 -->
+    <string name="list_title">DSH镜像</string>
+    <string name="list_loading">正在载入会话…</string>
+    <string name="list_broken">服务端返回的数据看不懂，可能是插件与客户端版本不一致</string>
+    <string name="list_retry">重试</string>
+    <string name="list_empty_title">还没有会话</string>
+    <string name="list_empty_note">在电脑上开一段对话，这里就会出现它的镜像。</string>
+    <string name="list_chat_later">会话页在下一步（M3）实现</string>
+    <string name="tag_ask">待回答</string>
+    <string name="tag_on">运行中</string>
+    <string name="tag_no_agent">无 agent</string>
+    <string name="tag_blank">空白</string>
+    <!-- 长按删除（归档）：只有空白会话能删 -->
+    <string name="del_title">删除这个空白会话？</string>
+    <string name="del_note">它会从列表里消失。会话文件还在电脑上，电脑端的「已归档」里找得回来。</string>
+    <string name="del_confirm">删除</string>
+    <string name="del_cancel">取消</string>
+    <string name="del_blank_only">只有空白会话能长按删除</string>
+
+    <!-- 新建会话 -->
+    <string name="new_title">新建会话</string>
+    <string name="new_pick">选一个文件夹，新会话就在那里开始。</string>
+    <string name="new_none">还没找到任何文件夹，下面手输一个绝对路径也行。</string>
+    <string name="new_other">其他路径…（必须是绝对路径）</string>
+    <string name="new_path_hint">D:\\项目\\新文件夹</string>
+    <string name="new_create">在这个文件夹新建</string>
+    <string name="new_need_path">先填一个文件夹路径</string>
+    <string name="new_creating">正在新建…</string>
+
+    <!-- ⋯ 面板 -->
+    <string name="more_title">设置</string>
+    <string name="more_repair_note">重新配对会清掉保存的地址、证书指纹、登录票根和记住的账号密码，下次要重新登录。</string>
+    <string name="more_fonts">字体设置</string>
+    <string name="settings_detail">显示详细工作过程</string>
+    <string name="settings_detail_note">打开后，「工作过程」默认展开，并显示工具名与完整参数（含代码）；关闭时默认收起，只显示每一步的简短说明。</string>
+    <string name="more_licenses">开源许可</string>
+
+    <!-- 字体 -->
+    <string name="font_title">字体</string>
+    <string name="font_note">三档都能换成内置字体、系统字体，或你自己导入的字体文件。导入的字体只存在本机，卸载即清；「删除」和「恢复默认」会连文件一起删掉。</string>
+    <string name="font_slot_ui">界面文字</string>
+    <string name="font_slot_ui_note">标题、按钮、标签、分组名</string>
+    <string name="font_slot_body">正文</string>
+    <string name="font_slot_body_note">会话里的长内容（M3 起才有效果）</string>
+    <string name="font_slot_mono">等宽</string>
+    <string name="font_slot_mono_note">代码块、证书指纹、路径</string>
+    <string name="font_builtin">内置</string>
+    <string name="font_builtin_ui">JetBrains Mono + 得意黑</string>
+    <string name="font_builtin_body">JetBrains Mono + 思源黑体</string>
+    <string name="font_builtin_mono">JetBrains Mono</string>
+    <string name="font_system">系统</string>
+    <string name="font_system_desc">系统字体</string>
+    <string name="font_file">文件…</string>
+    <string name="font_current">当前：%1$s</string>
+    <string name="font_importing">正在导入字体…</string>
+    <string name="font_import_failed">这个文件读不出字体，换一个 TTF / OTF 试试</string>
+    <string name="font_remove">删除</string>
+    <string name="font_reset">恢复默认</string>
+    <string name="license_title">开源许可</string>
+
+    <!-- 首页输入框（0.6）：框下面是文件夹，两个都在首页就地展开 -->
+    <string name="md_copy">复制</string>
+    <string name="md_path_copied">路径已复制</string>
+    <string name="md_copied">已复制</string>
+    <string name="md_code">代码</string>
+    <string name="md_image">图片</string>
+    <string name="chat_hint">输入消息…</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_stop">停止</string>
+    <string name="chat_stop_again">再点一次停止</string>
+    <string name="chat_stopped">已请求停止</string>
+    <string name="chat_too_fast">发得太快，稍等一下</string>
+    <string name="chat_send_failed">发送失败</string>
+    <string name="chat_create_failed">建会话失败</string>
+    <string name="chat_attach">（附件）</string>
+    <string name="chat_tool">工具</string>
+    <string name="chat_tool_error">工具报错</string>
+    <string name="chat_end_aborted">本轮已停止</string>
+    <string name="chat_end_interrupted">本轮被中断</string>
+    <string name="chat_end_maxtokens">本轮达到输出上限</string>
+    <string name="chat_end_blocked">本轮被拦截</string>
+    <string name="chat_turn_error">本轮出错</string>
+    <string name="chat_reconnecting">连接断开，正在重连（第 %1$d 次）</string>
+    <string name="chat_expired">登录已失效，请重新登录</string>
+    <string name="chat_page_failed">翻页失败：HTTP %1$d</string>
+    <string name="chat_unreachable">连不上电脑</string>
+    <!-- 0.14.1：翻页的秒数是刻意露出来的 —— 30 秒整基本就是超时，几秒就是连接断了 -->
+    <string name="chat_loading_older">正在读取更早的消息… %1$d 秒</string>
+    <string name="chat_older_failed">%1$s（等了 %2$d 秒）</string>
+    <string name="chat_older_retry">读取更早的消息失败：%1$s\n点这里重试</string>
+    <string name="chat_running">运行中…</string>
+    <string name="chat_readonly">只读 · 发送与停止在 0.8 接上</string>
+    <!-- 0.13：思考存了正文，这一条从行内计数「思考 N 字」变成折叠卡里的小节标题 -->
+    <string name="chat_think">思考</string>
+    <!-- 0.14：「已发消息」清单（顶栏入口 + 就地展开的面板 + 右下角的「上一句」浮键）
+         0.14.1 改的名字：原来叫「我的话」，用户要求换成「已发消息」 -->
+    <string name="cd_sent">已发消息</string>
+    <string name="sent_title">已发消息</string>
+    <string name="sent_count">%1$d 条</string>
+    <string name="sent_empty">还没有你发过的消息</string>
+    <string name="files_title">文件</string>
+    <string name="files_download">下载</string>
+    <string name="dl_title">下载文件</string>
+    <string name="dl_ask">是否下载文件（%1$s）？\n\n会保存到系统的「下载」目录。</string>
+    <string name="dl_start">开始下载</string>
+    <string name="dl_cancel">取消</string>
+    <string name="dl_running">正在下载 %1$s</string>
+    <string name="dl_progress">已完成 %1$d%%</string>
+    <string name="dl_progress_unknown">已下载 %1$d KB</string>
+    <string name="dl_done">已保存到系统的「下载」目录：%1$s</string>
+    <string name="dl_open">打开</string>
+    <string name="dl_ok">知道了</string>
+    <string name="dl_no_app">没有能打开这个文件的应用</string>
+    <string name="chat_work_running">工作中</string>
+    <string name="chat_work_done">工作过程</string>
+    <string name="chat_work_steps">%1$d 步</string>
+    <string name="tool_run_code">运行代码</string>
+    <string name="tool_read">读取文件</string>
+    <string name="tool_write">写入文件</string>
+    <string name="tool_edit">修改文件</string>
+    <string name="tool_shell">执行命令</string>
+    <string name="tool_search">查找文件</string>
+    <string name="tool_web">联网查询</string>
+    <string name="tool_plan">更新计划</string>
+    <string name="chat_interrupted">本轮被中断</string>
+    <string name="chat_empty">这个会话还没有可显示的内容</string>
+    <string name="chat_back">返回</string>
+    <!-- 提问卡（0.11）：宿主一次提问可能带多道题，答案必须一次交齐 -->
+    <string name="ask_title">需要你回答</string>
+    <string name="ask_later">稍后</string>
+    <string name="ask_more">还有 %1$d 个问题等着</string>
+    <string name="ask_submit">提交</string>
+    <string name="ask_submitting">提交中…</string>
+    <string name="ask_need_answer">每道题都要选一个选项，或者写一句自己的答案</string>
+    <string name="ask_custom_hint">也可以自己写一个答案…</string>
+    <string name="ask_custom_only">输入你的答案…</string>
+    <string name="ask_pill">有 %1$d 个问题待回答</string>
+    <string name="ask_reconnecting">提问通道断开，正在重连（第 %1$d 次）</string>
+    <!-- 模型 / 模式 / 文件夹面板（0.12.3 起就地展开，不再是全屏卡片，所以没有标题与「关闭」） -->
+    <string name="model_loading">正在读取模型目录…</string>
+    <string name="model_retry">重试</string>
+    <string name="model_section_failed">读不到的 provider</string>
+    <string name="model_preset_locked">这个会话已经跑过至少一轮，模式不能再改了（DSH 的规则）</string>
+    <string name="model_preset_none">这台电脑上还没有可用的模式</string>
+    <string name="model_switched">已切换为 %1$s</string>
+    <string name="model_capsule">模型</string>
+    <string name="model_preset_default">默认模式</string>
+    <string name="cd_refresh">刷新</string>
+    <string name="cd_more">更多</string>
+    <string name="cd_menu">打开侧栏</string>
+    <string name="home_folder_label">文件夹</string>
+    <string name="home_folder_pick">选择文件夹</string>
+    <string name="home_folder_use">用这个文件夹</string>
+    <string name="home_path_bad">要填绝对路径，例如 D:\\VibeCoding\\项目 或 /home/me/project</string>
+    <string name="home_send_later">会话页在下一步（M3）实现，这句话先不发出去</string>
+    <!-- 0.15.1：设置面板里的「检测通知」 -->
+    <string name="more_notify_test">检验通知权限</string>
+    <string name="more_notify_test_note">发一条测试提醒，确认通知权限和「会话提醒」渠道是通的</string>
+    <string name="more_notify_test_ok">测试通知已发出，下拉通知栏看一眼</string>
+    <string name="more_notify_test_denied">发不出去：本应用的通知被系统关掉了，去系统设置里打开</string>
+</resources>

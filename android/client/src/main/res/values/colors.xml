@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 只做浅色主题（用户指定），不提供 values-night。 -->
+    <color name="window_bg">#F6F7F9</color>
+    <!-- 图标底色：外壳版是蓝（#2C5CE6），原生版按用户要求改成黑。 -->
+    <color name="icon_bg">#000000</color>
+</resources>

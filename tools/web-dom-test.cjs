@@ -603,6 +603,7 @@ async function main() {
   await scenarioTurnFailure();
   await scenarioRail();
   await scenarioWorkFold();
+  await scenarioDeliverables();
 
   summary();
 }
@@ -1797,35 +1798,39 @@ async function scenarioI() {
   }
 }
 
-/* ===================== 场景 J：子智能体的标记与排序 ===================== */
+/* ===================== 场景 J：子智能体在侧栏里不显示 ===================== */
 /**
- * 用户反馈「手机镜像看不到子智能体」。
+ * 这条需求**反转过一次**，历史留在注释里，免得下次又照老注释改回去：
+ *   - 0.5.x：用户反馈「手机镜像看不到子智能体」→ 给子会话加标记 + 缩进 + 排到父会话后面；
+ *   - 0.15.8：用户要求「把侧栏的子智能体彻底隐藏」→ 侧栏渲染时整类滤掉。
  *
- * 查证下来 DSH 是**会**返回它们的：`sessionController.list()` 对活动会话完全不筛，
- * 只对冷会话要求有 `cwd`；实测两个子智能体会话的 `cwd` 都是有值的。而
- * `mirror.js` 的 `normalizeSummary()` 也把 `origin` / `parentSessionId` 透传了出来。
- * 缺的只是**网页端从来没用过这两个字段** —— 所以子会话长得和普通会话一模一样，
- * 混在列表里认不出来。
+ * 数据层一个字都不用改：DSH 本来就会返回子会话，`mirror.js` 的 `normalizeSummary()`
+ * 也照旧透传 `origin` / `parentSessionId`。改的只是**侧栏渲染**。
  *
- * 这个场景钉住三件事：标记、缩进、排在父会话后面；外加一条"排序绝不能吃掉会话"。
+ * 这个场景钉住四件事：
+ *   ① `origin='subagent'` 与带 `parentSessionId` 的会话都不出现；
+ *   ② 过滤后为空的分组整块丢掉（不留一个只写着 "0" 的分组头）；
+ *   ③ 分组头的会话数与运行圆点都只按**看得见的行**算；
+ *   ④ 剩下的会话照常能点进对话页。
  */
 async function scenarioSubagent() {
-  console.log('\n[场景 J] 子智能体：标记 / 缩进 / 排在父会话后面');
+  console.log('\n[场景 J] 子智能体：在侧栏里彻底不显示');
   buildDom('yes');
 
-  // 服务端按 updatedAt 降序给。子会话比父会话新，所以**天然会排在父会话前面** ——
-  // 这正是要修的情况，靠断言把"排到父后面"钉死。
   const child = { id: 'c1', title: '子任务', running: true, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha', origin: 'subagent', parentSessionId: 'p1' };
   const other = { id: 'o1', title: '普通会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 3000, cwd: 'D:\\proj\\alpha' };
-  // 父会话不在本组的孤儿子会话：必须照常显示，不能被排序吃掉
+  // 父会话不在本组的孤儿子会话：照样藏（判据只看它自己）
   const orphan = { id: 'c2', title: '孤儿子会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 4000, cwd: 'D:\\proj\\alpha', parentSessionId: 'not-here' };
   const parent = { id: 'p1', title: '父会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 5000, cwd: 'D:\\proj\\alpha' };
+  // 整个分组里只有子会话 → 这一块要整块消失
+  const kidOnly = { id: 'c3', title: '另一个子任务', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 6000, cwd: 'D:\\work\\kids', origin: 'subagent' };
 
   const items = [child, other, orphan, parent];
 
   routes = {
     '/api/sessions': () => resp({ items: items, groups: [
-      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: items, updatedAt: NOW - 1000, running: true }
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: items, updatedAt: NOW - 1000, running: true },
+      { key: 'd:\\work\\kids', name: 'kids', path: 'D:\\work\\kids', items: [kidOnly], updatedAt: NOW - 6000, running: false }
     ] }),
     '/api/questions': () => resp({ items: [] }),
     '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
@@ -1835,29 +1840,31 @@ async function scenarioSubagent() {
   loadApp();
   await tick(); await tick();
 
-  const rows = findAll(registry['list'], 'session');
-  eq('四条会话一条不少（排序没有吃掉任何会话）', rows.length, 4);
+  const list = registry['list'];
+  const rows = findAll(list, 'session');
+  eq('子会话不进列表（4 条里只剩 2 条）', rows.length, 2);
 
   const titles = rows.map(function (r) {
     const t = findAll(r, 'session-title')[0];
     return t ? t.textContent : '';
   });
-  eq('子会话紧跟父会话，其它会话相对顺序不变', titles.join('|'), '普通会话|孤儿子会话|父会话|子任务');
+  eq('留下的是普通会话与父会话', titles.join('|'), '普通会话|父会话');
 
-  eq('子会话带 session-child（缩进 + 引导线）', rows[3]._classes.has('session-child'), true);
-  eq('孤儿子会话也带 session-child', rows[1]._classes.has('session-child'), true);
-  eq('普通会话不带 session-child', rows[0]._classes.has('session-child'), false);
-  eq('父会话不带 session-child', rows[2]._classes.has('session-child'), false);
+  eq('没有任何一条带 session-child（缩进 + 引导线）', findAll(list, 'session-child').length, 0);
+  eq('没有任何「子智能体」标签', findAll(list, 'tag-sub').length, 0);
 
-  eq('子会话有「子智能体」标签', findAll(rows[3], 'tag-sub').length, 1);
-  eq('标签文案', findAll(rows[3], 'tag-sub')[0].textContent, '子智能体');
-  eq('父会话没有子智能体标签', findAll(rows[2], 'tag-sub').length, 0);
-  eq('普通会话没有子智能体标签', findAll(rows[0], 'tag-sub').length, 0);
+  const heads = findAll(list, 'group-head');
+  eq('全是子会话的分组整块消失', heads.length, 1);
+  eq('分组头的会话数只数看得见的行', findAll(list, 'group-count')[0].textContent, '2');
+  eq('分组名只剩 alpha', findAll(list, 'group-name')[0].textContent, 'alpha');
 
-  // 子会话仍然可以点进去（不能因为缩进/标记把交互弄坏）
-  rows[3].dispatch('click');
+  // alpha 里跑着的只有那个被滤掉的子会话 → 圆点不该亮（"亮了却找不到谁在跑"更糟）
+  eq('圆点按看得见的行重算：没有行在跑就不亮', findAll(heads[0], 'dot').length, 0);
+
+  // 剩下的行照常能点进去
+  rows[1].dispatch('click');
   await tick();
-  eq('点子会话能进对话页', registry['view-chat'].hidden, false);
+  eq('点父会话能进对话页', registry['view-chat'].hidden, false);
 }
 
 /* ===================== 场景 K：轮次失败的报错正文 ===================== */
@@ -2269,6 +2276,142 @@ async function scenarioWorkFold() {
   eq('历史思考进了历史那张卡', findAll(twoCards[0], 'work-reason')[0].textContent.indexOf('更早的思考') !== -1, true);
   eq('历史那张卡是收起来的', twoCards[0].open, false);
   eq('当前这一轮还是 1 件工作（没被历史污染）', findAll(twoCards[1], 'work-reason').length, 1);
+}
+
+/* ===================== 场景 N：助手产出的文件卡（present） =====================
+ *
+ * 原生端早就能渲染「文件」卡（FilesRow）：小标题 + 一行一个文件 + 右侧「下载」。
+ * 网页端以前完全没有这条事件的处理 —— 事件落到"未知类型直接忽略"，页面上什么都不显示，
+ * 于是同一个会话：电脑上有文件、浏览器里没有。这个场景把那块补齐：
+ * 卡片要出现、文件名/说明要对、下载链接要能直接点（两个参数都编码过），
+ * 而且空清单、脏数据、别的事件都不能凭空多出一张卡、也不能把原有渲染搞坏。
+ */
+async function scenarioDeliverables() {
+  console.log('\n[场景 N] 助手产出的文件卡（present）');
+  buildDom('yes');
+
+  const s1 = { id: 's1', title: '交活儿', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha' };
+  routes = {
+    '/api/sessions': () => resp({ items: [s1], groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: [s1], updatedAt: NOW - 1000, running: false }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  const stream = registry['stream'];
+
+  // 路径刻意同时带「反斜杠 + 空格 + 中文 + #」：编码漏一处，href 就是坏的
+  const P1 = 'D:\\proj\\alpha\\out\\报告 最终#1.md';
+  const D1 = '把这一轮的改动整理成了报告，可以直接发给同事看。';
+
+  // ---- 1. 助手挂出一个文件：出现一张文件卡，标题 + 文件名 + 说明 + 下载都在 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: NOW - 4900, data: { role: 'assistant', blocks: [{ type: 'text', text: '整理好了' }] } },
+    { type: 'deliverables/presented', seq: 3, time: NOW - 4800, data: { turn: 1, files: [{ path: P1, description: D1 }] } }
+  ], 3));
+  await tick();
+  const cards = findAll(stream, 'files-card');
+  eq('有文件卡出现', cards.length, 1);
+  eq('小标题写着「文件」', findAll(cards[0], 'files-title')[0].textContent, '文件');
+  const rows = findAll(cards[0], 'file-row');
+  eq('一个文件一行', rows.length, 1);
+  eq('文件名取路径最后一段（反斜杠也要切）', findAll(rows[0], 'file-name')[0].textContent, '报告 最终#1.md');
+  eq('说明原样显示', findAll(rows[0], 'file-desc')[0].textContent, D1);
+  eq('右侧写着「下载」', findAll(rows[0], 'file-download')[0].textContent, '下载');
+
+  // ---- 2. 下载链接：两个参数都在，而且都编码过 ----
+  const href = rows[0].getAttribute('href');
+  eq('href 指向下载路由，两个参数都编码', href,
+    '/api/file?id=' + encodeURIComponent('s1') + '&path=' + encodeURIComponent(P1));
+  ok('href 同时含 /api/file?id= 与 path=', href.indexOf('/api/file?id=') !== -1 && href.indexOf('&path=') !== -1, href);
+  eq('空格与 # 都被编码走了（值里不残留原文）', href.indexOf(' ') === -1 && href.indexOf('#') === -1, true);
+  eq('带 download 属性（存盘而不是在标签页里打开）', rows[0].getAttribute('download'), '报告 最终#1.md');
+  eq('整行就是那个下载链接（点卡片任意位置都能下）', rows[0].tagName, 'A');
+
+  // ---- 3. 多个文件 / 说明为空 ----
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 10, time: NOW, data: { turn: 2, files: [
+      { path: '/srv/build/a.js', description: '' },
+      { path: 'C:\\tmp\\b.txt', description: '  说明带空格  ' }
+    ] } }
+  ], 10));
+  await tick();
+  const cards2 = findAll(stream, 'files-card');
+  eq('多个文件也只出一张卡', cards2.length, 1);
+  const rows2 = findAll(cards2[0], 'file-row');
+  eq('两个文件两行', rows2.length, 2);
+  eq('正斜杠路径也能切出文件名', findAll(rows2[0], 'file-name')[0].textContent, 'a.js');
+  eq('说明为空时那一块不渲染', findAll(rows2[0], 'file-desc').length, 0);
+  eq('反斜杠路径也切了', findAll(rows2[1], 'file-name')[0].textContent, 'b.txt');
+  eq('说明去掉首尾空白', findAll(rows2[1], 'file-desc')[0].textContent, '说明带空格');
+
+  // ---- 4. 空清单 / 脏数据：一张卡都不渲染（前端再兜一层） ----
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 20, time: NOW, data: { turn: 3, files: [] } }
+  ], 20));
+  await tick();
+  eq('files 为空时不出现卡片', findAll(stream, 'files-card').length, 0);
+  eq('也没留下空气行', findAll(stream, 'file-row').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 21, time: NOW, data: { turn: 3 } }
+  ], 21));
+  await tick();
+  eq('缺 files 字段时不出现卡片', findAll(stream, 'files-card').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 22, time: NOW, data: { turn: 3, files: 'oops' } }
+  ], 22));
+  await tick();
+  eq('files 不是数组时不出现卡片', findAll(stream, 'files-card').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 23, time: NOW, data: { turn: 3, files: [
+      null, 'not-an-object', { path: '   ' }, { description: '只有说明没有路径' }
+    ] } }
+  ], 23));
+  await tick();
+  eq('全是不合法条目时也不出现卡片', findAll(stream, 'files-card').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 24, time: NOW, data: { turn: 3, files: [
+      { path: '  /srv/build/keep.js  ', description: null }, { path: '' }
+    ] } }
+  ], 24));
+  await tick();
+  const kept = findAll(stream, 'files-card');
+  eq('脏数据里挑得出的一条就渲染一条', kept.length, 1);
+  eq('只留合法的那一条', findAll(kept[0], 'file-row').length, 1);
+  eq('路径首尾空白已去掉', findAll(kept[0], 'file-name')[0].textContent, 'keep.js');
+  eq('说明不是字符串时当没有说明', findAll(kept[0], 'file-desc').length, 0);
+
+  // ---- 5. 其它事件类型不受影响：文件卡只是多出来的一张，不挤掉任何东西 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 30, time: NOW, data: { turn: 9 } },
+    { type: 'user/message', seq: 31, time: NOW, data: { role: 'user', blocks: [{ type: 'text', text: '还在吗' }] } },
+    { type: 'assistant/message', seq: 32, time: NOW, data: { role: 'assistant', blocks: [{ type: 'text', text: '在' }] } },
+    { type: 'tool/call', seq: 33, time: NOW, data: { callId: 'c9', name: 'read_file', args: '{"path":"a.js"}' } },
+    { type: 'deliverables/presented', seq: 34, time: NOW, data: { turn: 9, files: [{ path: 'D:\\proj\\alpha\\out\\z.md', description: '收尾' }] } },
+    { type: 'no/such-event', seq: 35, time: NOW, data: { whatever: '不该出现' } }
+  ], 35));
+  await tick();
+  eq('用户消息照常渲染', findAll(stream, 'me').length, 1);
+  eq('助手正文照常渲染', findAll(stream, 'assistant').length, 1);
+  eq('工具调用照常收进工作过程', findAll(stream, 'work').length, 1);
+  eq('未知事件仍然什么都不渲染', dump(stream).indexOf('不该出现'), -1);
+  eq('文件卡和其它事件并存', findAll(stream, 'files-card').length, 1);
+  const kids = stream.childNodes.filter((n) => n.nodeType === 1);
+  const iWork = kids.findIndex((n) => n._classes.has('work'));
+  const iCard = kids.findIndex((n) => n._classes.has('files-card'));
+  ok('文件卡排在「工作过程」之后（挂在回复结尾）', iCard > iWork && iWork !== -1, 'work=' + iWork + ' card=' + iCard);
 }
 
 function summary() {

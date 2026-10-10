@@ -1,7 +1,12 @@
 # APK 方案：WebView 外壳
 
 > **状态：已实现并真机验证。** 外壳（A1）、通知（A2）、小米超级岛（A3）均已落地，
-> APK 版本 **1.1**（`versionCode 8`，已清掉验证脚手架），源码在 `android/`。
+> APK 版本 **1.1.6**（`versionCode 14`），包名 **`dsh.mirror`**，应用名「DSH镜像」（与原生客户端同名）。
+> 1.1 清掉了验证脚手架；**1.1.1～1.1.5 都是「跟随 `:core` 的重建」**（外壳逻辑一行未改，只是 dex 变了）；
+> **1.1.6 是外壳自身的一次真实变更**：包名去掉 `dev.`（`dev.dsh.mirror` → `dsh.mirror`）+ 应用名统一，
+> 同时跟随 `:core`（共用层也去了 `dev.`，三个 extra 键一起改）。**代价：换包名 = 换了 App**，
+> 旧外壳要手动卸载、WebView 里的登录态要重来一次（见 [client-plan.md](client-plan.md) §4.36）。
+> 源码在 `android/`。
 >
 > 本文档是**当初的施工依据与设计记录**，保留下来说明「为什么这么做」。
 > 其中 §4「构建环境要求」、§11「分步计划」里带有作者本机当时的痕迹；
@@ -411,7 +416,7 @@ sdk.dir=D\:\\AndroidStudio\\SDK
 1. 准备 `gradlew`、`gradlew.bat`、`gradle/wrapper/gradle-wrapper.jar`（**已随仓库提交**，无需自备）
 2. 写 `settings.gradle.kts` / 根 `build.gradle.kts` / `gradle.properties` / `local.properties`
    —— 版本坐标取已验证的组合：AGP 8.5.2、Gradle 8.9
-3. `app/build.gradle.kts`：`namespace dev.dsh.mirror`、minSdk 29、compileSdk/targetSdk 36、
+3. `app/build.gradle.kts`：`namespace dsh.mirror`（1.1.6 起去掉了 `dev.` 前缀，见 client-plan.md §4.36）、minSdk 29、compileSdk/targetSdk 36、
    **零 dependencies**
 4. `AndroidManifest.xml` + 矢量图标 + 主题
 5. `ServerPrefs` + `activity_setup.xml`：首次配置界面 + 测试连接

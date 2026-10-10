@@ -22,8 +22,9 @@ import {
   normalizeModelCatalog, createCatalogCache, loadModelCatalog, loadPresetRoster,
   validateModelSwitch, switchModel, validatePresetSwitch, switchPreset,
   validateAnswers, createQuestionHub, createQuestionAnswerer, MAX_ANSWER_CHARS,
-  // P4：新建会话
+  // P4：新建会话 / 归档
   normalizeWorkspaces, listRegisteredWorkspaces, validateSessionCreate, createSession,
+  archiveSession, archivedSessionIdsOf,
   // P5：隐藏系统消息
   isInjectedUserMessage, stripInjectedBlocks,
 } from '../lib/mirror.js'
@@ -86,6 +87,35 @@ eq('正文兜底：content 是裸字符串',
   projectEvent({ type: 'user/message', seq: 1, time: 1, data: { content: 'D' } }).data.blocks[0].text, 'D')
 eq('正文兜底：都没有则为空数组，不炸',
   projectEvent({ type: 'user/message', seq: 1, time: 1, data: { nothing: 1 } }).data.blocks.length, 0)
+
+const presented = projectEvent({
+  type: 'deliverables/presented', seq: 9, time: 1,
+  data: {
+    turn: 2,
+    files: [
+      { path: 'D:\\a\\x.apk', description: '安装包' },
+      { path: '   ' },
+      'junk',
+      null,
+    ],
+  },
+})
+eq('presented 下发文件清单', presented.data.files.length, 1)
+eq('presented 保留路径', presented.data.files[0].path, 'D:\\a\\x.apk')
+eq('presented 保留说明', presented.data.files[0].description, '安装包')
+eq('presented 不再走未知事件分支', presented.unknown, undefined)
+eq('presented 空清单整条不下发',
+  projectEvent({ type: 'deliverables/presented', seq: 9, time: 1, data: { files: [] } }), null)
+eq('presented 条数封顶 20',
+  projectEvent({
+    type: 'deliverables/presented', seq: 9, time: 1,
+    data: { files: Array.from({ length: 50 }, (_, i) => ({ path: '/x/' + i })) },
+  }).data.files.length, 20)
+eq('presented 路径超长截断',
+  projectEvent({
+    type: 'deliverables/presented', seq: 9, time: 1,
+    data: { files: [{ path: 'a'.repeat(900) }] },
+  }).data.files[0].path.length, 512)
 
 const headerEvent = projectEvent({
   type: 'request/header', seq: 2, time: 20,
@@ -407,6 +437,8 @@ const RAW_EVENTS = [
 ]
 
 let followRequest = null
+// 翻页请求原样留一份：throughSeq / beforeSeq 传错会让手机端"往上翻就断"
+let pageRequest = null
 let promptCalls = []
 let promptSignals = []
 let cancelCalls = []
@@ -496,7 +528,8 @@ function fakeController() {
       return { sessionId: 'session-new-1', agentPreset: request.agentPreset || 'standard' }
     },
     async page(request) {
-      return { records: [{ type: 'event', event: { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '更早' }] } } }], hasMore: false, _echo: request }
+      pageRequest = request
+      return { records: [{ type: 'event', event: { type: 'user/message', seq: 0, time: 1, data: { content: [{ type: 'text', text: '更早' }] } } }], hasMore: false }
     },
     follow(request, signal) {
       followRequest = request
@@ -557,13 +590,23 @@ const fakeAgents = {
  * 伪造 workspaceRegistry（list() 是**同步**的，形状对齐 app.asar 1090460）。
  * 故意包含一个和已有会话重复的目录（D:\a）：合并后应该只剩一条，且以登记表那条为准。
  */
+let archiveCalls = []
+/** 注入一次归档失败（测 404 / 409 两条错误分支）。用完置回 null。 */
+let archiveFailure = null
 const fakeRegistry = {
+  // 归档集合：宿主把它放在 workspaceRegistry 上，controller.list() 看不到。
+  archivedSessionIds: [],
   list() {
     return [
       { id: 'ws-1', path: 'D:\\proj\\alpha', title: 'alpha 项目' },
       { id: 'ws-2', path: 'D:\\proj\\empty', title: '' },
       { id: 'ws-3', path: 'D:\\a', title: '会话里也有的目录' },
     ]
+  },
+  async archiveSession(sessionId) {
+    archiveCalls.push(sessionId)
+    if (archiveFailure) throw archiveFailure
+    if (!this.archivedSessionIds.includes(sessionId)) this.archivedSessionIds.push(sessionId)
   },
 }
 
@@ -1028,6 +1071,12 @@ eq('模式清单：条数', presetsPure.length, 5)
 eq('模式清单：内置模式补上中文名', presetsPure.find((p) => p.id === 'cordis').label, '创造模式')
 eq('模式清单：自建模式用自己的名字', presetsPure.find((p) => p.id === 'custom-one').label, '我的模式')
 eq('模式清单：服务缺失时返回空数组', (await loadPresetRoster(null)).length, 0)
+// 「没有」一律是 JSON null，不是空串、也不是缺字段。客户端那边 org.json 的 optString
+// 会把 JSON null 变成**字符串 "null"**（0.12 就是因此每行底下写着 null），所以这条形状
+// 得钉死：要么改这里，要么客户端改解析，不能悄悄换一种"没有"的表示法。
+eq('模式清单：没有描述的行是 JSON null', presetsPure.find((p) => p.id === 'ptc').description, null)
+eq('模式清单：没有 broken 的行是 JSON null', presetsPure.find((p) => p.id === 'ptc').broken, null)
+eq('模式清单：有描述就原样带出', presetsPure.find((p) => p.id === 'custom-one').description, '自己写的')
 
 const presetAgent = { id: 'sess-1', ctx: {}, session: {} }
 const presetPure = await switchPreset(fakePresets, { get: () => presetAgent }, { sessionId: 'sess-1', preset: 'ptc' })
@@ -1658,6 +1707,161 @@ check('路径穿越拿不到配置',
   traversalFont.status !== 200 && !traversalFont.text.includes('passwordHash'),
   `${traversalFont.status} ${traversalFont.text.slice(0, 40)}`)
 
+
+// ==================== 二·四、归档会话（0.12.1） ====================
+console.log('\n———— 归档会话 ————')
+{
+  // 纯函数：读归档集合
+  eq('读不到 registry → 空集', archivedSessionIdsOf(null).size, 0)
+  eq('registry 没这个属性 → 空集', archivedSessionIdsOf({}).size, 0)
+  eq('registry 抛错 → 空集',
+    archivedSessionIdsOf({ get archivedSessionIds() { throw new Error('坏了') } }).size, 0)
+  check('读到归档集合', archivedSessionIdsOf({ archivedSessionIds: ['a', 'b'] }).has('b'))
+
+  // 纯函数：archiveSession 的错误映射
+  const noWs = await archiveSession(null, 'x')
+  eq('工作区服务缺失 → 503', noWs.status, 503)
+  eq('工作区服务缺失错误码', noWs.error, 'workspace-service-unavailable')
+  eq('没有 archiveSession 方法也算缺失', (await archiveSession({ list() {} }, 'x')).status, 503)
+  eq('空 id → 400', (await archiveSession(fakeRegistry, '   ')).status, 400)
+  eq('空 id 错误码', (await archiveSession(fakeRegistry, '   ')).error, 'missing-session-id')
+
+  archiveFailure = Object.assign(new Error('no such session'), { name: 'WorkspaceUnknownSessionError' })
+  const gone = await archiveSession(fakeRegistry, 'sess-x')
+  eq('会话不存在 → 404', gone.status, 404)
+  eq('会话不存在错误码', gone.error, 'session-not-found')
+
+  archiveFailure = Object.assign(new Error('还有活在跑'), {
+    name: 'WorkspaceActiveSessionError', activity: [{ kind: 'turn', name: '第 3 轮' }],
+  })
+  const busy = await archiveSession(fakeRegistry, 'sess-x')
+  eq('有活在跑 → 409', busy.status, 409)
+  eq('有活在跑错误码', busy.error, 'session-active')
+  eq('把在跑的东西带出来', busy.activity[0].name, '第 3 轮')
+
+  // 宿主可能从 Remote 层抛（那时只有 code），两条路都要认
+  archiveFailure = Object.assign(new Error('remote'), { code: 'session/not-found' })
+  eq('认 Remote 的 code 也算不存在', (await archiveSession(fakeRegistry, 'sess-x')).status, 404)
+  archiveFailure = Object.assign(new Error('别的坏了'), { code: 'boom' })
+  eq('其它异常 → 502', (await archiveSession(fakeRegistry, 'sess-x')).status, 502)
+  archiveFailure = null
+
+  // 路由：成功 + 列表里真的少一行
+  const before = await req('/api/sessions', { headers: { Cookie: cookie } })
+  const beforeIds = before.body.items.map((i) => i.id)
+  check('归档前列表里有 sess-2', beforeIds.includes('sess-2'))
+
+  const ok = await req('/api/session/archive', {
+    method: 'POST', headers: { Cookie: cookie }, json: { sessionId: 'sess-2' },
+  })
+  eq('归档 → 200', ok.status, 200)
+  eq('归档返回 archived', ok.body.archived, true)
+  eq('归档打到宿主', archiveCalls[archiveCalls.length - 1], 'sess-2')
+
+  const after = await req('/api/sessions', { headers: { Cookie: cookie } })
+  eq('归档后列表里没有它', after.body.items.some((i) => i.id === 'sess-2'), false)
+  eq('只少了那一条', after.body.items.length, beforeIds.length - 1)
+  eq('分组里也没有了',
+    after.body.groups.every((g) => g.items.every((s) => s.id !== 'sess-2')), true)
+  eq('别人的行还在', after.body.items.some((i) => i.id === SESSION_ID), true)
+
+  // 复原，免得影响后面的用例
+  fakeRegistry.archivedSessionIds = []
+
+  // 路由：入参 / 权限闸门
+  eq('没有 sessionId → 400',
+    (await req('/api/session/archive', { method: 'POST', headers: { Cookie: cookie }, json: {} })).status, 400)
+  eq('未登录归档 → 401',
+    (await req('/api/session/archive', { method: 'POST', json: { sessionId: 'sess-2' } })).status, 401)
+  eq('归档用表单类型 → 415（CSRF 闸门）',
+    (await req('/api/session/archive', {
+      method: 'POST', headers: { Cookie: cookie }, body: { sessionId: 'sess-2' },
+      contentType: 'application/x-www-form-urlencoded',
+    })).status, 415)
+}
+
+// ==================== 二·五、下载文件（0.10）—— 主服务关闭前测 ====================
+console.log('\n———— 下载文件 ————')
+{
+  // 自己造一个临时工作区，并把 registry / controller 换成指向它的替身
+  // （deps 是普通对象，路由每次调用都现读，所以换完立即生效）
+  const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-dl-'))
+  fs.mkdirSync(path.join(WS, 'out'))
+  const payload = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('假装是个 APK', 'utf8'), Buffer.alloc(300, 0x78)])
+  const apk = path.join(WS, 'out', 'dsh-mobile-mirror-client-0.10.apk')
+  fs.writeFileSync(apk, payload)
+  fs.writeFileSync(path.join(WS, 'note.txt'), '你好')
+
+  const origList = fakeRegistry.list
+  const origController = deps.controller
+  fakeRegistry.list = () => [{ id: 'ws-dl', path: WS, title: '下载测试' }]
+  deps.controller = {
+    async list() {
+      return {
+        items: [{
+          sessionId: 'sess-dl', running: false, updatedAt: 1, cwd: WS, blank: false,
+          projections: { values: { title: '下载测试' } },
+        }],
+      }
+    },
+  }
+
+  const rel = 'out/dsh-mobile-mirror-client-0.10.apk'
+  const ok = await reqRaw(`/api/file?id=sess-dl&path=${encodeURIComponent(rel)}`, { headers: { Cookie: cookie } })
+  eq('相对路径 → 200', ok.status, 200)
+  eq('字节一字不差', ok.buf.equals(payload), true)
+  eq('按扩展名给 MIME', ok.headers['content-type'], 'application/vnd.android.package-archive')
+  check('声明为附件并带文件名', /attachment; filename="dsh-mobile-mirror-client-0\.10\.apk"/.test(String(ok.headers['content-disposition'])), String(ok.headers['content-disposition']))
+  eq('声明支持 Range', ok.headers['accept-ranges'], 'bytes')
+
+  const abs = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie } })
+  eq('绝对路径 → 200', abs.status, 200)
+  eq('绝对路径字节正确', abs.buf.equals(payload), true)
+
+  const head = await req(`/api/file?path=${encodeURIComponent(apk)}`, { method: 'HEAD', headers: { Cookie: cookie } })
+  eq('HEAD → 200', head.status, 200)
+  eq('HEAD 给长度', head.headers['content-length'], String(payload.length))
+
+  const part = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie, Range: 'bytes=2-9' } })
+  eq('Range → 206', part.status, 206)
+  eq('Range 字节正确', part.buf.equals(payload.subarray(2, 10)), true)
+  eq('Range 头正确', part.headers['content-range'], `bytes 2-9/${payload.length}`)
+
+  const tail = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie, Range: 'bytes=-4' } })
+  eq('后缀 Range → 206', tail.status, 206)
+  eq('后缀 Range 取到末尾 4 字节', tail.buf.equals(payload.subarray(payload.length - 4)), true)
+
+  const bad = await reqRaw(`/api/file?path=${encodeURIComponent(apk)}`, { headers: { Cookie: cookie, Range: 'bytes=99999-' } })
+  eq('越界 Range → 416', bad.status, 416)
+
+  const outside = await reqRaw(`/api/file?path=${encodeURIComponent(path.join(WS, '..', 'outside.txt'))}`, { headers: { Cookie: cookie } })
+  eq('工作区之外 → 403', outside.status, 403)
+  const outsideBody = (() => { try { return JSON.parse(outside.buf.toString('utf8')) } catch { return {} } })()
+  eq('越界错误码', outsideBody.error, 'outside-workspace')
+
+  const trav = await reqRaw(`/api/file?id=sess-dl&path=${encodeURIComponent('../../../../Windows/win.ini')}`, { headers: { Cookie: cookie } })
+  eq('相对路径往上越界 → 403', trav.status, 403)
+
+  const missing = await reqRaw(`/api/file?path=${encodeURIComponent(path.join(WS, 'nope.txt'))}`, { headers: { Cookie: cookie } })
+  eq('文件不存在 → 404', missing.status, 404)
+
+  const dir = await reqRaw(`/api/file?path=${encodeURIComponent(WS)}`, { headers: { Cookie: cookie } })
+  eq('目录 → 404', dir.status, 404)
+
+  const noPath = await reqRaw('/api/file', { headers: { Cookie: cookie } })
+  eq('缺 path → 400', noPath.status, 400)
+
+  const noId = await reqRaw(`/api/file?path=${encodeURIComponent(rel)}`, { headers: { Cookie: cookie } })
+  eq('相对路径缺会话 id → 400', noId.status, 400)
+
+  const txt = await reqRaw(`/api/file?id=sess-dl&path=${encodeURIComponent('note.txt')}`, { headers: { Cookie: cookie } })
+  eq('文本文件内容正确', txt.buf.toString('utf8'), '你好')
+  eq('文本 MIME 带 charset', txt.headers['content-type'], 'text/plain; charset=utf-8')
+
+  fakeRegistry.list = origList
+  deps.controller = origController
+  fs.rmSync(WS, { recursive: true, force: true })
+}
 await mirror.close()
 
 // ==================== 三·六、只读模式（enablePrompt=false） ====================
@@ -1756,6 +1960,13 @@ const listed = await listSessions(controller, new AbortController().signal)
 eq('listSessions 排序', listed[0].id, 'sess-2')
 const paged = await pageBack(controller, SESSION_ID, 5, 20, new AbortController().signal)
 eq('pageBack 投影', paged.records[0].data.blocks[0].text, '更早')
+// 翻页参数必须对：宿主 paginate() 里 end = min(throughSeq + 1, beforeSeq)，throughSeq 是**上界**。
+// 1.3.2 曾传 -1（当成"会话头"）→ end = 0 → 空页 + hasMore=false，界面"翻页什么都不出"。
+eq('pageBack 的 throughSeq 是上界（当前最早那条）', pageRequest.throughSeq, 5)
+eq('pageBack 的 beforeSeq 是当前最早那条', pageRequest.beforeSeq, 5)
+eq('pageBack 的 throughSeq 与 beforeSeq 相同', pageRequest.throughSeq, pageRequest.beforeSeq)
+await pageBack(controller, SESSION_ID, 5, 999, new AbortController().signal)
+eq('pageBack 把 maxMessages 夹到 200', pageRequest.maxMessages, 200)
 
 const iterator = openFollow(controller, SESSION_ID, { maxMessages: 999 }, new AbortController().signal)
 const first = await iterator[Symbol.asyncIterator]().next()

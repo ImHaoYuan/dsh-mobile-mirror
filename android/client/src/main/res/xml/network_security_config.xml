@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 全局禁止明文流量。只连自签 HTTPS，证书校验走 CertPinner 的指纹固定（TOFU）。 -->
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知与超级岛用到的文案。两个 App 共用，所以放在 :core 而不是某个 App 里。 -->
+<resources>
+    <string name="notif_channel_service">后台连接</string>
+    <string name="notif_channel_service_desc">保持与电脑的连接，便于随时收发</string>
+    <string name="notif_service_title">DSH 镜像</string>
+    <string name="notif_service_text">正在保持连接</string>
+
+    <!-- 超级岛：岛右边显示的文字，按状态切换。 -->
+    <string name="island_state_waiting">等你回答</string>
+    <string name="island_state_running">运行中</string>
+    <string name="island_state_done">已完成</string>
+    <string name="island_state_expired">登录失效</string>
+
+    <!-- 通知栏正文，同样跟状态走 -->
+    <string name="island_notif_waiting">有会话在等你回答</string>
+    <string name="island_notif_running">有会话正在运行</string>
+    <string name="island_notif_done">会话已完成</string>
+    <string name="island_notif_expired">登录态失效，打开 App 重新登录即可恢复</string>
+
+    <!--
+      0.15：第二条「提醒」通知的文案。只有**原生客户端**会开这条（起服务时传 onDemand）；
+      WebView 外壳不传，行为和 0.1.x 一模一样 —— 只是 :core 跟着重编了一版。
+    -->
+    <string name="notif_channel_alert">会话提醒</string>
+    <string name="notif_channel_alert_desc">有提问、或任务跑完时提醒你</string>
+    <string name="notif_alert_waiting_title">等你回答 · %1$s</string>
+    <string name="notif_alert_waiting_text">有会话在等你回答</string>
+    <string name="notif_alert_done_title">%1$s 已完成</string>
+    <string name="notif_alert_done_text">会话已经跑完了</string>
+    <!-- 0.15.1：设置面板里的「检测通知」发的那一条 -->
+    <string name="notif_test_title">检测通知 · 测试</string>
+    <string name="notif_test_text">看到这条说明「会话提醒」渠道是通的 —— 以后有提问、跑完都会用它提醒你。</string>
+</resources>
