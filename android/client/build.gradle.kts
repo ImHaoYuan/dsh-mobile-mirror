@@ -11,11 +11,11 @@ plugins {
 
 android {
     // 包名不能含 `native`（Java 关键字），模块名、目录、包名统一都用 client。
-    namespace = "dev.dsh.mirror.client"
+    namespace = "dsh.mirror.client"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.dsh.mirror.client"
+        applicationId = "dsh.mirror.client"
         minSdk = 29          // 与外壳一致：指纹固定要用 SslCertificate.getX509Certificate()（API 29）
         // targetSdk 与外壳一致停在 34：35+ 强制 edge-to-edge，Compose 也要自己处理 inset。
         targetSdk = 34
@@ -106,11 +106,21 @@ android {
         //       改法：可见性一变就自己补一次重发。② 侧栏彻底不显示子智能体。
         //       ③ 删掉 0.15.7 那行 emoji 自证行（用户真机确认 ✅ 已正常）。
         //       :core 变了 → 外壳跟随出 1.1.5（外壳不调 setAppVisible，行为与 1.1.4 一致）。
-        versionCode = 39
-        versionName = "0.15.8"
+        // 1.0：版本号从这一版起改用「正式版」口径（不再跟 0.x 的小步快跑走）。三件事一起做：
+        //   ① **包名去掉 dev**：dev.dsh.mirror.client → dsh.mirror.client，应用名改「DSH镜像」。
+        //      注意这是**换了一个 App**：新包名与旧包不能共存（抽屉里会并排两个），旧包要手动卸载，
+        //      配对/登录状态存在旧包名下、会一起丢（要重新配对一次）。:core 也一起去了 dev
+        //      （共用层 → dsh.mirror，namespace dsh.mirror.core），三个 extra 键同步改；
+        //      **外壳因此必须重出 1.1.6**。
+        //   ② 主页输入框从「死高度 52dp + singleLine」改成与聊天页输入框同一套：最低 52dp、
+        //      最多 5 行、120dp 封顶后框内自滚（用户报的"字紧跟字后面、不换行不扩容"）。
+        //   ③ 网页端补「文件卡 + 下载」（原生早就有）—— 那条在网页侧实现，本模块不动。
+        versionCode = 40
+        versionName = "1.0"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
-        resValue("string", "app_name", "DSH镜像原生")
+        // 1.0：应用名与外壳统一成「DSH镜像」（不带空格，用户明确要求）。
+        resValue("string", "app_name", "DSH镜像")
     }
 
     buildTypes {

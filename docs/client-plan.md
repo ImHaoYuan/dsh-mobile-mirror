@@ -24,10 +24,10 @@ android/
 ├── settings.gradle.kts        :app / :core / :client
 ├── build.gradle.kts           AGP 8.5.2 + Kotlin 2.0.21 + compose 编译器插件
 ├── core/                      **两个客户端共用**的平台层（纯 Java，零第三方依赖）
-│   └── dev.dsh.mirror.{CertPinner, ServerPrefs, MirrorApi, MirrorService, IslandSupport, IslandMonitor}
+│   └── dsh.mirror.{CertPinner, ServerPrefs, MirrorApi, MirrorService, IslandSupport, IslandMonitor}
 ├── app/                       WebView 外壳（界面仍全在网页侧）
 └── client/                    原生 Compose 客户端
-    └── dev.dsh.mirror.client.*
+    └── dsh.mirror.client.*
 ```
 
 ### 2.1 为什么全都叫 `client` 而不是 `native`
@@ -39,8 +39,11 @@ Namespace 'dev.dsh.mirror.native' is not a valid Java package name
 ```
 
 一开始只有包名被迫改成 `.client`、模块仍叫 `:native`，于是出现 `:native` 与 `dev.dsh.mirror.client` 的错位。
-后来**统一成 client**：模块 `:client`、目录 `android/client/`、包 `dev.dsh.mirror.client`、文档 `docs/client-plan.md`。
+后来**统一成 client**：模块 `:client`、目录 `android/client/`、包 `dsh.mirror.client`、文档 `docs/client-plan.md`。
 "原生客户端"只在中文叙述里保留 —— 那是产品概念，不是标识符。
+
+**1.0 又去掉了 `dev.` 前缀**（用户要求「把前面的 dev 去掉」）：`dev.dsh.mirror*` → `dsh.mirror*`，
+三个模块一起去，所以连 applicationId 都变了 —— 那是**换了一个 App**，代价见 §4.36。
 
 ### 2.2 `:core` 的两处解耦
 
@@ -1363,6 +1366,55 @@ seq 并在 `appendRows` 后搬移，LazyColumn 会在轮次中重排一次 —�
 `lib/web/app.css` / `tools/web-dom-test.cjs`（场景 J 反转）。**`:core` 变了 → 外壳跟随出 1.1.5**
 （`:app` 源码一行未动）。插件 `package.json` **不动**：这次只改网页渲染，没有动任何接口。
 
+### 4.36 1.0（2026-10-10）：包名去掉 `dev` + 主页输入框换行扩容 + 网页端补文件卡/下载
+
+**用户一次提了四件事**：① 主页输入框字一多就"紧跟字后面"，不换行也不扩容；② 应用名「DSH镜像原生」要改名；
+③ 包名 `dev.dsh.mirror.client` 去掉 `dev`；④ 网页端也要像原生那样"把文件贴出来、能下载"。
+追问之后口径定死为四条：**两个 APK 的显示名都叫「DSH镜像」（不带空格）**、**`:core` 与外壳也一起去掉 `dev`**、
+**网页页面标题（「DSH 手机镜像」）不动**、**交付包文件名保持现状**（只换版本号）。
+
+**① 包名去掉 `dev`：`dev.dsh.mirror*` → `dsh.mirror*`**
+
+| 模块 | 包 / namespace | applicationId |
+|---|---|---|
+| `:core`（两个客户端共用） | `dsh.mirror`（namespace `dsh.mirror.core`） | — |
+| `:app`（外壳） | `dsh.mirror` | `dsh.mirror` |
+| `:client`（原生客户端） | `dsh.mirror.client` | `dsh.mirror.client` |
+
+- 机械改动：**4 个源码根目录整体搬迁**（`:core` 6 个 Java、`:app` 2 个 Java、`:client` 43 个 Kotlin 含测试），
+  再加 **56 个文件**的文本替换（`:core` 三个 extra 键 → `dsh.mirror.onDemand/sessionId/sessionTitle`、
+  两个 manifest 里的 `dsh.mirror.MirrorService`、`proguard-rules.pro` 的 keep 规则、三个 `build.gradle.kts`）。
+  改完 `android/` 里 `dev.dsh.mirror` 残留 **0 处**（脚本改的，不是手点）。
+- 动手前先查过：**`:core` 一处都没引用客户端的包名**，所以"两个客户端共用平台层"这条结构没被动到。
+- **代价（提前跟用户说清了）**：换 applicationId = **换了一个 App**。旧包（`dev.dsh.mirror` 外壳、
+  `dev.dsh.mirror.client` 原生）不会自动消失，要**手动卸载**；配对/登录状态存在旧包名下会一起丢，
+  **两个 App 都要重新配对一次**；系统里的通知权限、「悬浮通知」也要重新给（系统按包名记）。
+- **外壳因此必须重出 1.1.6**（`:core` 变了，且它自己的包名与名字也变了）。外壳**自身的逻辑一行未改**
+  —— 它既不读那三个会话 extra，也不调 `setAppVisible`。
+
+**② 主页输入框：死高度 + `singleLine` → 与聊天页同一套**
+
+原来是 `.height(52.dp)` 的**死高度** + `singleLine = true` ⇒ 盒子永远只有一行，字一长只能横向滚
+（正是用户说的"字紧跟字后面，不换行也不扩容"）。改成聊天页那套：`.heightIn(min = 52.dp)` +
+`verticalAlignment = Alignment.Bottom` + `maxLines = 5` + `.heightIn(max = 120.dp)` + 行高 22sp；
+到 5 行封顶后框内自己滚。两个副作用都来自"与聊天页对齐"：输入框实际高度 52 → 56dp
+（内边距 8+8 + 按钮 34 + 按钮下留 6），以及字多了会像键盘那样把 logo 往上顶。
+
+**③ 网页端补「文件卡 + 下载」**
+
+宿主的 `deliverables/presented`（`present` 工具）**插件侧一直在下发**（`lib/mirror.js` 的 case），
+原生客户端也一直渲染成文件卡（`MessageRow.FilesRow`），但**网页 `app.js` 里没有这个事件的处理**
+⇒ 用浏览器看会话时助手产出的文件根本不出现。这一版补上：文件卡（文件名 + 说明 + 「下载」）+
+同源 `<a href="/api/file?id=…&path=…">` 直接下载（`/api/file` 本来就是 `Content-Disposition: attachment`，
+同源 cookie 鉴权，所以一条链接就够）。
+
+**④ 应用名**：两个 APK 都叫「DSH镜像」（`resValue app_name`，不带空格）。
+
+**范围**：`:core`（6 Java + gradle）、`:app`（2 Java + gradle + manifest）、`:client`（43 Kotlin +
+gradle + manifest + proguard）；网页 `lib/web/app.js` / `lib/web/app.css` / `tools/web-dom-test.cjs` /
+`package.json`；文档 `docs/client-plan.md` / `docs/apk-plan.md` / `README.md`。
+**接口一个没改** —— 网页这次同样只碰渲染，所以主机不用重启，刷新页面即生效。
+
 ## 5. 里程碑
 
 | 阶段 | 内容 | 状态 |
@@ -1378,6 +1430,8 @@ seq 并在 `appendRows` 后搬移，LazyColumn 会在轮次中重排一次 —�
 | M4 | Markdown 渲染器（与网页端 `renderMarkdown` 逐条一致）+ 代码块语言名/复制 | ✅ 已完成（2026-10-09，**0.9**，单测 9/9） |
 | M5 | 工作过程折叠 / 提问卡（含 `hold` 认领）/ 模型与模式 / 右侧刻度条 / 浅色主题 | ✅ 已完成（2026-10-10）：**提问卡 + `hold` 认领 ✅（0.11）**、**模型与模式 ✅（0.12 → 修 bug + 长按删除 ✅ 0.12.1）**、**工作过程完整折叠 ✅（0.13）**、**右侧刻度条 → 改形态为「我的话」清单 ✅（0.14）** |
 | M6 | 通知 + 超级岛接入（复用 `:core`）+ release 打包（**要开 R8**）+ 真机验收 | ✅ 已完成（2026-10-10，**0.15**；按需监测 + 第二条提醒通知；R8 后 **22.72 MB**；外壳跟随出 **1.1.2**），真机验收待用户装包 |
+
+| **1.0 / M7** | 包名去掉 `dev`（`:core` / `:app` / `:client` 三个模块一起去）+ 两个 APK 同名「DSH镜像」+ 主页输入框换行扩容 + 网页端补「文件卡 + 下载」 | ✅ 已完成（2026-10-10）：客户端 **1.0**、外壳 **1.1.6**（`:core` 变了 + 自身包名变了，必须重出），网页 **1.3.5**；真机验收待用户 |
 
 ### 5.1 Markdown 的对齐口径
 
@@ -2079,6 +2133,24 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 | 0.15.7 遗留项 | ④「✅ 是否正常」**已由用户真机确认正常** ⇒ 诊断行按约删掉（§8 那两条收尾项关闭）；① ② ③ 三条真机复看**仍未做** |
 | 真机复看（**待用户**） | ① **退到后台就该立刻出岛**（不必再等一次状态跳变）、回到 App 岛立刻收起、在 App 里仍不弹第二条提醒；② 两个侧栏（原生客户端抽屉 + 网页）都**看不到子智能体**、分组头的会话数变小、分组圆点只在**看得见的行**有在跑时才亮；③ 顺带看：子会话真的在跑时，点提醒通知仍能进到那个会话 |
 
+## 7.39 1.0 验收证据（2026-10-10）
+
+| 项 | 结果 |
+|---|---|
+| 构建 | `BUILD SUCCESSFUL in 1m 29s`，**220** actionable tasks（98 executed / 9 from cache / 113 up-to-date）；任务集与前两轮相同。**改名后第一次编译一把过**（没出过任何"找不到符号"） |
+| 单测 | **52 / 52**（FramePump 2 / Sessions 6 / Ask 17 / Markdown 11 / Model 16；failures + errors = 0） |
+| 包名机械改动 | 4 个源码根目录整体搬迁（`:core` 6 Java + `:app` 2 Java + `:client` 43 Kotlin = **51** 个源文件）+ **56** 个文件文本替换；改完 `android/` 里 `dev.dsh.mirror` 残留 **0 处**（脚本改的） |
+| 客户端 **1.0**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-1.0.apk`，**23,830,582 B**，package **`dsh.mirror.client`**，versionCode **40**，versionName **1.0**，`application-label:'DSH镜像'`（`aapt2 dump badging` 已核对），SHA256 `3D92184C1A7E59CB52A50F89B03ED838728800D44C6BDA50ACB557E0E4790F19` |
+| 客户端 1.0 debug（对照） | 44,800,568 B，SHA256 `B77CB067B2BFACB6E1ADC7668BF72130AE34C60B21901A0BCDE683C4D6EE4864` |
+| 外壳 **1.1.6**（**必须重出**：`:core` 变了，且自身包名/名字也变了） | `out/web-shell/dsh-mobile-mirror-1.1.6.apk`，**77,882 B**（沿用惯例：外壳交付的是 **debug** 构建），package **`dsh.mirror`**，versionCode **14**，versionName **1.1.6**，`application-label:'DSH镜像'`，SHA256 `854663670F524651D595CD422E1C7885D69D904113D1565C9E389F1536853C9F` |
+| **包内自证**（不靠体积） | ① 两个包的 `aapt2 dump strings` 里 `dev.dsh.mirror` **0 处**；② 两个 manifest 的 service 都是 `dsh.mirror.MirrorService` —— 外壳与原生共用同一份 `:core`，两边对得上 |
+| 「外壳没被改坏」的判据 | `:app` 只有 2 个 Java，改的只有 `package` 声明与 import（`dev.dsh.mirror.*` → `dsh.mirror.*`）+ gradle 里的包名/名字/版本号；**它既不读那三个会话 extra，也不调 `setAppVisible`** ⇒ 行为与 1.1.5 一致 |
+| 体积 | release 23,830,614 → **23,830,582**（−32）、debug 44,817,106 → **44,800,568**（−16,538）、外壳 78,310 → **77,882**（−428）。**但「体积不能当证据」第 9 次出现**：改包名这种"应该几乎不变"的改动三个包都动了字节，判据只看包内包名/版本号 + SHA256 |
+| 插件测试 | 8 个脚本全过：cert **27/27**、smoke **32/32**、mirror **586/586**、host **83/83**、web **443/443**、client **61/61**、web-pure **189/189**、web-dom **489/489**（上轮 457 → +32 是本轮新场景 N）；另 `node --check lib/web/app.js` 通过 |
+| 网页新场景 N（**本轮新增**） | 文件卡出现且小标题「文件」；文件名取路径最后一段（**Windows 反斜杠也切**）+ 说明原样；`href` 逐字等于 `/api/file?id=s1&path=` + `encodeURIComponent`（路径含空格与 `#` 已编码）、带 `download`、**整行就是一个 `<a>`**；`files:[]` / 缺 `files` / 非数组 / 全脏条目 ⇒ 一张卡都不渲染、不留空气行（脏数据里合法的挑得出来）；`user/message`、`assistant/message`、`tool/call`（仍折叠进「工作过程」）、未知事件都不受影响，文件卡排在「工作过程」之后 |
+| 主页输入框（**本轮修**） | `.height(52.dp)` + `singleLine = true` → `.heightIn(min = 52.dp)` + `maxLines = 5` + `.heightIn(max = 120.dp)` + 行高 22sp + `Alignment.Bottom`（与聊天页同款）。**代码级已改，行为待真机** |
+| 真机复看（**待用户**） | ① 主页输入框：长文**自动换行**、到 5 行封顶后**框内自己滚**、发出去正常、字少时高度与以前一致；② 装机：**两个新 App 都叫「DSH镜像」**、旧的两个包要**手动卸载**、**两个 App 都要重新配对一次**、系统通知权限（含"悬浮通知"）要重新给；③ 网页：助手产出文件时出现文件卡、点一下能下载到手机（换设备/清 cookie 后要重新登录）；④ 原生客户端的文件卡与下载**行为不变** |
+
 ## 8. 待办
 
 - [x] **0.11：提问卡（底部弹出）+ `hold` 认领 + 会话列表实时角标**（2026-10-09，见 §4.19 / §7.22）
@@ -2175,3 +2247,7 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 - [x] **0.15.6：文件卡挂点改成「本轮结束」**（用户批准方案 A，2026-10-10，见 §4.33 / §7.36）：0.10.1–0.15.5 挂在"present 之后的第一条助手消息"下面 → present 完还继续干活的轮次会挂到中途
 - [ ] 0.15.6 真机复看：**同一条回复在电脑端与手机端文件卡都在最下面**（重点试"present 之后我还继续写了几段"的轮次）
 - [x] 真机验收欠账用户 2026-10-10 总确认：除我误写的一个含混词（「Run」）外**都确认没问题** —— 0.15.5 抽屉按钮与说明位置、停在主页点刷新出岛、0.15.1 焦点 bug 未复发、岛的标题是会话名、跑完 8 秒连通知一起收；0.12–0.14 的观感项也一并确认
+- [x] **1.0：包名去掉 `dev`（`:core` / `:app` / `:client` 三模块一起去）+ 两个 APK 同名「DSH镜像」+ 主页输入框换行扩容 + 网页端补「文件卡 + 下载」**（2026-10-10，见 §4.36 / §7.39；客户端 **1.0**、外壳 **1.1.6**、网页 **1.3.5**）
+- [ ] **1.0 待真机确认**：① 主页输入框长文自动换行、5 行封顶后框内自己滚；② 两个新 App（都叫「DSH镜像」）装机、**旧的两个包手动卸载**、**重新配对一次**；③ 网页上出现文件卡、点一下能下载到手机
+- [ ] **1.0 已知代价**：换 applicationId = 换了 App —— 配对/登录态存在旧包名下会一起丢，系统里的通知权限（含"悬浮通知"）也要重新给；网页页面标题仍叫「DSH 手机镜像」（用户要求不动）；交付包文件名保持原样
+- [x] 1.0 顺带修掉的文档陈旧项：`README.md` 的插件版本（1.2 → **1.3.5**）、APK 版本（1.1.5 → 外壳 1.1.6 / 客户端 1.0）、新增「贴文件 / 下载」特性行；`docs/apk-plan.md` 第 4 行的 APK 版本（1.1.1 / versionCode 9 → **1.1.6 / 14**）与 `namespace`

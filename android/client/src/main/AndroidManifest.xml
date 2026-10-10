@@ -31,7 +31,7 @@
 
         <!-- 前台服务在 :core 里（与外壳共用实现），由本 App 声明 -->
         <service
-            android:name="dev.dsh.mirror.MirrorService"
+            android:name="dsh.mirror.MirrorService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
     </application>

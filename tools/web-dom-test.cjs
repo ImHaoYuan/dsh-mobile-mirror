@@ -603,6 +603,7 @@ async function main() {
   await scenarioTurnFailure();
   await scenarioRail();
   await scenarioWorkFold();
+  await scenarioDeliverables();
 
   summary();
 }
@@ -2275,6 +2276,142 @@ async function scenarioWorkFold() {
   eq('历史思考进了历史那张卡', findAll(twoCards[0], 'work-reason')[0].textContent.indexOf('更早的思考') !== -1, true);
   eq('历史那张卡是收起来的', twoCards[0].open, false);
   eq('当前这一轮还是 1 件工作（没被历史污染）', findAll(twoCards[1], 'work-reason').length, 1);
+}
+
+/* ===================== 场景 N：助手产出的文件卡（present） =====================
+ *
+ * 原生端早就能渲染「文件」卡（FilesRow）：小标题 + 一行一个文件 + 右侧「下载」。
+ * 网页端以前完全没有这条事件的处理 —— 事件落到"未知类型直接忽略"，页面上什么都不显示，
+ * 于是同一个会话：电脑上有文件、浏览器里没有。这个场景把那块补齐：
+ * 卡片要出现、文件名/说明要对、下载链接要能直接点（两个参数都编码过），
+ * 而且空清单、脏数据、别的事件都不能凭空多出一张卡、也不能把原有渲染搞坏。
+ */
+async function scenarioDeliverables() {
+  console.log('\n[场景 N] 助手产出的文件卡（present）');
+  buildDom('yes');
+
+  const s1 = { id: 's1', title: '交活儿', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha' };
+  routes = {
+    '/api/sessions': () => resp({ items: [s1], groups: [
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: [s1], updatedAt: NOW - 1000, running: false }
+    ] }),
+    '/api/questions': () => resp({ items: [] }),
+    '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
+  };
+
+  fetchLog = [];
+  loadApp();
+  await tick(); await tick();
+  findAll(registry['list'], 'session')[0].dispatch('click');
+  await tick();
+  const es = lastES;
+  const stream = registry['stream'];
+
+  // 路径刻意同时带「反斜杠 + 空格 + 中文 + #」：编码漏一处，href 就是坏的
+  const P1 = 'D:\\proj\\alpha\\out\\报告 最终#1.md';
+  const D1 = '把这一轮的改动整理成了报告，可以直接发给同事看。';
+
+  // ---- 1. 助手挂出一个文件：出现一张文件卡，标题 + 文件名 + 说明 + 下载都在 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 1, time: NOW - 5000, data: { turn: 1 } },
+    { type: 'assistant/message', seq: 2, time: NOW - 4900, data: { role: 'assistant', blocks: [{ type: 'text', text: '整理好了' }] } },
+    { type: 'deliverables/presented', seq: 3, time: NOW - 4800, data: { turn: 1, files: [{ path: P1, description: D1 }] } }
+  ], 3));
+  await tick();
+  const cards = findAll(stream, 'files-card');
+  eq('有文件卡出现', cards.length, 1);
+  eq('小标题写着「文件」', findAll(cards[0], 'files-title')[0].textContent, '文件');
+  const rows = findAll(cards[0], 'file-row');
+  eq('一个文件一行', rows.length, 1);
+  eq('文件名取路径最后一段（反斜杠也要切）', findAll(rows[0], 'file-name')[0].textContent, '报告 最终#1.md');
+  eq('说明原样显示', findAll(rows[0], 'file-desc')[0].textContent, D1);
+  eq('右侧写着「下载」', findAll(rows[0], 'file-download')[0].textContent, '下载');
+
+  // ---- 2. 下载链接：两个参数都在，而且都编码过 ----
+  const href = rows[0].getAttribute('href');
+  eq('href 指向下载路由，两个参数都编码', href,
+    '/api/file?id=' + encodeURIComponent('s1') + '&path=' + encodeURIComponent(P1));
+  ok('href 同时含 /api/file?id= 与 path=', href.indexOf('/api/file?id=') !== -1 && href.indexOf('&path=') !== -1, href);
+  eq('空格与 # 都被编码走了（值里不残留原文）', href.indexOf(' ') === -1 && href.indexOf('#') === -1, true);
+  eq('带 download 属性（存盘而不是在标签页里打开）', rows[0].getAttribute('download'), '报告 最终#1.md');
+  eq('整行就是那个下载链接（点卡片任意位置都能下）', rows[0].tagName, 'A');
+
+  // ---- 3. 多个文件 / 说明为空 ----
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 10, time: NOW, data: { turn: 2, files: [
+      { path: '/srv/build/a.js', description: '' },
+      { path: 'C:\\tmp\\b.txt', description: '  说明带空格  ' }
+    ] } }
+  ], 10));
+  await tick();
+  const cards2 = findAll(stream, 'files-card');
+  eq('多个文件也只出一张卡', cards2.length, 1);
+  const rows2 = findAll(cards2[0], 'file-row');
+  eq('两个文件两行', rows2.length, 2);
+  eq('正斜杠路径也能切出文件名', findAll(rows2[0], 'file-name')[0].textContent, 'a.js');
+  eq('说明为空时那一块不渲染', findAll(rows2[0], 'file-desc').length, 0);
+  eq('反斜杠路径也切了', findAll(rows2[1], 'file-name')[0].textContent, 'b.txt');
+  eq('说明去掉首尾空白', findAll(rows2[1], 'file-desc')[0].textContent, '说明带空格');
+
+  // ---- 4. 空清单 / 脏数据：一张卡都不渲染（前端再兜一层） ----
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 20, time: NOW, data: { turn: 3, files: [] } }
+  ], 20));
+  await tick();
+  eq('files 为空时不出现卡片', findAll(stream, 'files-card').length, 0);
+  eq('也没留下空气行', findAll(stream, 'file-row').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 21, time: NOW, data: { turn: 3 } }
+  ], 21));
+  await tick();
+  eq('缺 files 字段时不出现卡片', findAll(stream, 'files-card').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 22, time: NOW, data: { turn: 3, files: 'oops' } }
+  ], 22));
+  await tick();
+  eq('files 不是数组时不出现卡片', findAll(stream, 'files-card').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 23, time: NOW, data: { turn: 3, files: [
+      null, 'not-an-object', { path: '   ' }, { description: '只有说明没有路径' }
+    ] } }
+  ], 23));
+  await tick();
+  eq('全是不合法条目时也不出现卡片', findAll(stream, 'files-card').length, 0);
+
+  es.emit('message', snapshot([
+    { type: 'deliverables/presented', seq: 24, time: NOW, data: { turn: 3, files: [
+      { path: '  /srv/build/keep.js  ', description: null }, { path: '' }
+    ] } }
+  ], 24));
+  await tick();
+  const kept = findAll(stream, 'files-card');
+  eq('脏数据里挑得出的一条就渲染一条', kept.length, 1);
+  eq('只留合法的那一条', findAll(kept[0], 'file-row').length, 1);
+  eq('路径首尾空白已去掉', findAll(kept[0], 'file-name')[0].textContent, 'keep.js');
+  eq('说明不是字符串时当没有说明', findAll(kept[0], 'file-desc').length, 0);
+
+  // ---- 5. 其它事件类型不受影响：文件卡只是多出来的一张，不挤掉任何东西 ----
+  es.emit('message', snapshot([
+    { type: 'turn/start', seq: 30, time: NOW, data: { turn: 9 } },
+    { type: 'user/message', seq: 31, time: NOW, data: { role: 'user', blocks: [{ type: 'text', text: '还在吗' }] } },
+    { type: 'assistant/message', seq: 32, time: NOW, data: { role: 'assistant', blocks: [{ type: 'text', text: '在' }] } },
+    { type: 'tool/call', seq: 33, time: NOW, data: { callId: 'c9', name: 'read_file', args: '{"path":"a.js"}' } },
+    { type: 'deliverables/presented', seq: 34, time: NOW, data: { turn: 9, files: [{ path: 'D:\\proj\\alpha\\out\\z.md', description: '收尾' }] } },
+    { type: 'no/such-event', seq: 35, time: NOW, data: { whatever: '不该出现' } }
+  ], 35));
+  await tick();
+  eq('用户消息照常渲染', findAll(stream, 'me').length, 1);
+  eq('助手正文照常渲染', findAll(stream, 'assistant').length, 1);
+  eq('工具调用照常收进工作过程', findAll(stream, 'work').length, 1);
+  eq('未知事件仍然什么都不渲染', dump(stream).indexOf('不该出现'), -1);
+  eq('文件卡和其它事件并存', findAll(stream, 'files-card').length, 1);
+  const kids = stream.childNodes.filter((n) => n.nodeType === 1);
+  const iWork = kids.findIndex((n) => n._classes.has('work'));
+  const iCard = kids.findIndex((n) => n._classes.has('files-card'));
+  ok('文件卡排在「工作过程」之后（挂在回复结尾）', iCard > iWork && iWork !== -1, 'work=' + iWork + ' card=' + iCard);
 }
 
 function summary() {

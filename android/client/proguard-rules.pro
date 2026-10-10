@@ -11,4 +11,4 @@
 -keepattributes SourceFile,LineNumberTable
 
 # 入口 Activity 由清单引用，AGP 本来就会保；显式再写一遍，免得以后有人改配置时踩空
--keep class dev.dsh.mirror.client.MainActivity { *; }
+-keep class dsh.mirror.client.MainActivity { *; }

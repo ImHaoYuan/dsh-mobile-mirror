@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.dsh.mirror.core"
+    namespace = "dsh.mirror.core"
     compileSdk = 36
 
     defaultConfig {
