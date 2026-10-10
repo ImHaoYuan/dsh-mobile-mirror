@@ -36,8 +36,12 @@ android {
         // 0.15.7 给共用层加了：appVisible（前台不弹岛/不提醒）、EXTRA_SESSION_ID（点通知进会话）。
         // 外壳既不调 setAppVisible、也不读 sessionId extra ⇒ 点通知仍是"只打开 App"，
         // 前台仍照旧弹岛 —— 行为与 1.1.3 完全一致，变的只是字节。
-        versionCode = 12
-        versionName = "1.1.4"
+        // 1.1.5：**只为跟随 :core**（外壳源码一行未改）。
+        // 0.15.8 给共用层加了：可见性变化时自己重发一次常驻通知（修「岛挂不上去 / 收不回来」）。
+        // 外壳从不调 setAppVisible，静态量恒为 false，值没变就不重发 ⇒ 岛与通知的行为
+        // 与 1.1.4 完全一致，变的只是字节。
+        versionCode = 13
+        versionName = "1.1.5"
 
         // app_name 刻意**不**写在 strings.xml 里 —— 那里写会和这里的 resValue 冲突
         // （重复资源，aapt2 直接报错）。manifest 的 android:label 引用它。

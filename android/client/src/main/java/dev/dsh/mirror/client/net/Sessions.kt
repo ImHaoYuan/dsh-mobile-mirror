@@ -257,37 +257,27 @@ object Sessions {
     }
 
     /**
-     * 把子会话排到它的父会话后面（网页端 {@code orderWithChildren} 的移植）。
+     * 侧栏里**彻底不显示子智能体**（用户要求，0.15.8）。
      *
-     * <p>服务端已经按 updatedAt 排好序了，这里**只做插入**：父会话留在原位，它的子会话
-     * 紧跟其后，其它会话的相对顺序一概不动。
+     * <p>判据就是 {@code SessionRow.isChild}（{@code origin == "subagent"}，或带着
+     * {@code parentSessionId}）。过滤完**空的分组整块丢掉** —— 否则会留下一个只写着
+     * 工作区名和 "0" 的分组头。分组的 {@code running} 圆点按**看得见的行**重算：
+     * 圆点点亮却找不到哪一行在跑，比不亮更让人困惑。
      *
-     * <p>结尾那个兜底循环是刻意的：父会话不在本组（跨工作区）、父链缺失、或者出现环，
-     * 都不能让任何一条会话从列表里消失 —— 宁可位置不对，也不能丢。
+     * <p>为什么放在数据层而不是渲染处：分组头的会话数（{@code group.items.size}）和
+     * "空列表"判断都得用同一份数据，两份数据必然走样。
+     *
+     * <p><b>监测不受影响</b>："有会话在跑就拉起服务"仍按服务端返回的**全量**数据判断
+     * （{@code SessionsResult.Ok.groups}），不因子会话被隐藏而丢掉超级岛与提醒。
      */
-    fun orderWithChildren(items: List<SessionRow>): List<SessionRow> {
-        val present = HashSet<String>()
-        for (it in items) present.add(it.id)
-
-        val kids = HashMap<String, MutableList<SessionRow>>()
-        val tops = ArrayList<SessionRow>()
-        for (it in items) {
-            val pid = it.parentSessionId ?: ""
-            if (pid.isNotEmpty() && present.contains(pid) && pid != it.id) {
-                kids.getOrPut(pid) { ArrayList() }.add(it)
-            } else {
-                tops.add(it)
+    fun withoutChildren(groups: List<SessionGroup>): List<SessionGroup> =
+        groups.mapNotNull { g ->
+            val items = g.items.filterNot { it.isChild }
+            when {
+                items.isEmpty() -> null
+                else -> g.copy(items = items, running = items.any { it.running })
             }
         }
-
-        val out = ArrayList<SessionRow>(items.size)
-        for (top in tops) {
-            out.add(top)
-            kids[top.id]?.let { out.addAll(it) }
-        }
-        for (it in items) if (!out.contains(it)) out.add(it)
-        return out
-    }
 
     /** 本地兜底分组（服务端没给 groups 时用）。 */
     private fun groupLocally(items: List<SessionRow>): List<SessionGroup> {

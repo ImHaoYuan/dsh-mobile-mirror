@@ -81,9 +81,32 @@ public class MirrorService extends Service {
      */
     private static volatile boolean appVisible = false;
 
-    /** 客户端在 {@code ON_START} / {@code ON_STOP} 上报是否在前台，见 {@link #appVisible}。 */
+    /**
+     * 当前活着的服务实例（进程内）。
+     *
+     * <p>存在的唯一理由：{@link #setAppVisible} 是**静态**的（上报方是 Activity，
+     * 拿不到 Service 实例），而"前台变了"必须**当场重发一次通知**才有效果 ——
+     * 岛参数是挂在某个 {@link Notification} 实例上的，不重发就永远是上一次那一份。
+     */
+    private static volatile MirrorService instance;
+
+    /**
+     * 客户端在 {@code ON_START} / {@code ON_STOP} 上报是否在前台，见 {@link #appVisible}。
+     *
+     * <p><b>为什么"值变了"必须重发通知（0.15.8 修的坑）</b>：0.15.7 只把这个标志读进
+     * {@link #buildNotification()}，却忘了通知**什么时候重发**是由 {@link IslandMonitor}
+     * 的状态签名去重决定的。于是前台时状态一变，重发出去的是不带岛参数的通知；退到后台
+     * 若没有新的状态跳变，就再没有一次重发 —— <b>岛彻底不出现</b>。反向同理：后台挂着岛
+     * 回到 App，岛也收不回去。所以可见性一变就自己补一次重发。
+     *
+     * <p>值没变直接返回：外壳版从不调这个方法，静态量恒为 {@code false}，
+     * <b>外壳行为因此与 1.1.x 完全一致</b>。
+     */
     public static void setAppVisible(boolean visible) {
+        if (appVisible == visible) return;
         appVisible = visible;
+        final MirrorService s = instance;
+        if (s != null) s.ui.post(s::publish);
     }
 
     /**
@@ -137,6 +160,7 @@ public class MirrorService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         ensureChannels(this);
 
         monitor = new IslandMonitor(this, s -> {
@@ -168,6 +192,7 @@ public class MirrorService extends Service {
 
     @Override
     public void onDestroy() {
+        if (instance == this) instance = null;
         if (monitor != null) monitor.stop();
         ui.removeCallbacks(idleStop);
         super.onDestroy();

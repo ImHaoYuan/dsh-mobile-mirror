@@ -33,7 +33,6 @@ import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.theme.LocalDshFonts
 import dev.dsh.mirror.client.theme.Dsh
 import dev.dsh.mirror.client.theme.DshFontStore
-import dev.dsh.mirror.client.theme.DshFonts
 import dev.dsh.mirror.client.theme.FontChoice
 import dev.dsh.mirror.client.theme.FontPrefs
 import dev.dsh.mirror.client.theme.FontSlot
@@ -79,9 +78,6 @@ fun FontPanel(
     val tLicenses = stringResource(R.string.more_licenses)
     val tRemove = stringResource(R.string.font_remove)
     val tNote = stringResource(R.string.font_note)
-    val tEmojiNone = stringResource(R.string.fonts_emoji_none)
-    // 系统字体列表只在第一次进面板时查一次
-    val emojiName = remember { DshFonts.emojiFontName() }
 
     // 局部函数必须写在用它的地方之前（Kotlin 不做提升），所以这三个先声明 —— picker 里要用
     fun choose(kind: SlotKind, slot: FontSlot) {
@@ -200,9 +196,6 @@ fun FontPanel(
         Spacer(Modifier.height(8.dp))
         DshSecondaryButton(tLicenses) { onLicenses() }
         Spacer(Modifier.height(8.dp))
-        // 0.15.7 临时自证行：把「emoji 兜底挑中了哪个字体文件」显出来。
-        // 用户报「✅ 又变成黑色马赛克」时，这一行能直接分清是"没找到"还是"找到了没生效"。
-        PanelNote(if (emojiName == null) tEmojiNone else stringResource(R.string.fonts_emoji_note, emojiName))
     }
 }
 

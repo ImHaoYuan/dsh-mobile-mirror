@@ -43,11 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -108,7 +104,6 @@ fun SessionListScreen(
     val tEmptyTitle = stringResource(R.string.list_empty_title)
     val tEmptyNote = stringResource(R.string.list_empty_note)
     val tTagAsk = stringResource(R.string.tag_ask)
-    val tTagSub = stringResource(R.string.tag_sub)
     val tTagOn = stringResource(R.string.tag_on)
     val tTagNoAgent = stringResource(R.string.tag_no_agent)
     val tTagBlank = stringResource(R.string.tag_blank)
@@ -195,6 +190,9 @@ fun SessionListScreen(
         collapse.set(key, next)
     }
 
+    // 子智能体在侧栏里彻底不显示（0.15.8）。分组头的会话数、"空列表"、运行圆点都用这一份。
+    val visible = Sessions.withoutChildren(groups)
+
     Column(modifier = Modifier.fillMaxSize().background(Dsh.BgPage)) {
         // 抽屉头部：标题 + 账号名 + 刷新 + 更多（首页把这三个键都让给了抽屉）
         TopBar(title = tTitle, sub = username, onRefresh = onRefresh, onMore = onMore)
@@ -209,24 +207,23 @@ fun SessionListScreen(
         }
 
         LazyColumn(modifier = Modifier.weight(1f)) {
-            if (groups.isEmpty() && error.isEmpty()) {
+            if (visible.isEmpty() && error.isEmpty()) {
                 item {
                     if (loading) HintLine(tLoading)
                     else EmptyState(tEmptyTitle, tEmptyNote)
                 }
             }
-            for (g in groups) {
+            for (g in visible) {
                 item(key = "group:" + g.key) {
                     GroupHead(group = g, collapsed = isCollapsed(g.key)) { toggle(g.key) }
                 }
                 if (!isCollapsed(g.key)) {
-                    // 父会话留在原位、子会话紧跟其后（服务端已按 updatedAt 排好序）
-                    items(Sessions.orderWithChildren(g.items), key = { it.id }) { row ->
+                    // 服务端已按 updatedAt 排好序；子智能体在上面 withoutChildren 里就滤掉了
+                    items(g.items, key = { it.id }) { row ->
                         SessionRowView(
                             row = row,
                             ask = row.pendingQuestion || questions.countFor(row.id) > 0,
                             tAsk = tTagAsk,
-                            tSub = tTagSub,
                             tOn = tTagOn,
                             tNoAgent = tTagNoAgent,
                             tBlank = tTagBlank,
@@ -365,7 +362,6 @@ private fun SessionRowView(
     /** 有提问等着我回答（服务端标记，或本地那条流刚推来的）。 */
     ask: Boolean,
     tAsk: String,
-    tSub: String,
     tOn: String,
     tNoAgent: String,
     tBlank: String,
@@ -373,39 +369,22 @@ private fun SessionRowView(
     /** 长按：只有空白会话会被真的删掉，其余给一句提示（判断在调用方）。 */
     onLongClick: () -> Unit,
 ) {
-    val child = row.isChild
-    // 子会话：内容左移 15dp（圆点正好落在引导线上），引导线画在整行的 15..17dp 处
-    val startPad = if (child) 35.dp else 20.dp
-    val guide = Dsh.ListLine2.copy(alpha = 0.75f)
-
     val tags = ArrayList<RowTag>(3)
     // 「待回答」放最前：它是唯一"需要你动手"的状态
     if (ask) tags.add(RowTag(tAsk, Dsh.AccentFg, Dsh.LineAsk, Dsh.Sel))
-    if (child) tags.add(RowTag(tSub, Dsh.ListFg, Dsh.ListLine2, Dsh.Chip))
     if (row.running) tags.add(RowTag(tOn, Dsh.Ok, Dsh.LineOk, Dsh.OkBg))
     if (!row.agentAvailable) tags.add(RowTag(tNoAgent, Dsh.ListDim, Dsh.ListLine, Color.Transparent))
     if (row.blank) tags.add(RowTag(tBlank, Dsh.ListDim, Dsh.ListLine, Color.Transparent))
 
     Box(
-        modifier = Modifier.fillMaxWidth().drawBehind {
-            if (!child) return@drawBehind
-            val top = 16.dp.toPx()
-            val h = (size.height - 32.dp.toPx()).coerceAtLeast(0f)
-            if (h <= 0f) return@drawBehind
-            drawRoundRect(
-                color = guide,
-                topLeft = Offset(35.dp.toPx(), top),
-                size = Size(2.dp.toPx(), h),
-                cornerRadius = CornerRadius(1.dp.toPx()),
-            )
-        },
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 56.dp)
                 .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                .padding(start = startPad, end = 20.dp, top = 12.dp, bottom = 12.dp),
+                .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(11.dp),
             verticalAlignment = Alignment.Top,
         ) {

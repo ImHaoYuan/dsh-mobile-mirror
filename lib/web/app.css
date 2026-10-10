@@ -244,17 +244,9 @@ a { color:var(--link); }
 .tag-on { color:var(--ok); border-color:var(--line-ok); background:var(--ok-bg); }
 .tag-warn { color:var(--warn); border-color:var(--line-warn); background:var(--warn-bg); }
 .tag-bad { color:var(--danger-fg); border-color:var(--line-bad); background:var(--bad-bg); }
-/* 子智能体（origin=subagent）。用户反馈"手机镜像看不到子智能体"——数据其实一直在
-   列表里，只是长得和普通会话一模一样，认不出来。 */
-.tag-sub { color:var(--fg); border-color:var(--line-2); background:var(--chip); }
-
-/* 子会话缩进 + 一条竖向引导线，挂在父会话下面，一眼能看出从属关系 */
-.session-child { position:relative; padding-left:30px; }
-.session-child::before {
-  content:''; position:absolute; left:15px; top:16px; bottom:16px;
-  width:2px; border-radius:1px; background:var(--line-2); opacity:.75;
-}
-.session-child .dot { margin-left:-15px; }
+/* 子智能体（origin=subagent）在侧栏里彻底不显示（0.15.8，用户要求）。
+   以前这里有 .tag-sub（标记）与 .session-child（缩进 + 引导线），现在整类会话在
+   visibleItems() 里被滤掉，这几条规则一并删掉。 */
 
 .dot { flex:0 0 auto; width:9px; height:9px; border-radius:50%; background:var(--line-2); }
 .dot.on { background:var(--ok); box-shadow:0 0 10px var(--ok-glow); animation:pulse 1.5s ease-in-out infinite; }

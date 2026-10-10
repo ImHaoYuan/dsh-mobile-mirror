@@ -100,8 +100,14 @@ android {
         //       （黑白老字体 NotoEmoji-Regular.ttf 名字里也含 "moji"，而 SystemFonts 顺序不保证），
         //       再加一层直接扫 /system/fonts 的兜底；字体面板临时加一行自证（诊断完就删）。
         //       :core 变了 → **外壳必须重出 1.1.4**（:app 源码未动，靠 extra 默认值保证行为不变）。
-        versionCode = 38
-        versionName = "0.15.7"
+        // 修版 0.15.8：① 修「0.15.7 之后超级岛彻底不显示」（用户报）—— 前台时重发出去的通知
+        //       不带岛参数，而通知只在"岛状态跳变"时重发，退到后台若没有新的跳变就再没有
+        //       一次重发，岛挂不上去；反向也一样（后台挂着岛，回到 App 收不回来）。
+        //       改法：可见性一变就自己补一次重发。② 侧栏彻底不显示子智能体。
+        //       ③ 删掉 0.15.7 那行 emoji 自证行（用户真机确认 ✅ 已正常）。
+        //       :core 变了 → 外壳跟随出 1.1.5（外壳不调 setAppVisible，行为与 1.1.4 一致）。
+        versionCode = 39
+        versionName = "0.15.8"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
         resValue("string", "app_name", "DSH镜像原生")

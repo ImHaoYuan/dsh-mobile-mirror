@@ -1797,35 +1797,39 @@ async function scenarioI() {
   }
 }
 
-/* ===================== 场景 J：子智能体的标记与排序 ===================== */
+/* ===================== 场景 J：子智能体在侧栏里不显示 ===================== */
 /**
- * 用户反馈「手机镜像看不到子智能体」。
+ * 这条需求**反转过一次**，历史留在注释里，免得下次又照老注释改回去：
+ *   - 0.5.x：用户反馈「手机镜像看不到子智能体」→ 给子会话加标记 + 缩进 + 排到父会话后面；
+ *   - 0.15.8：用户要求「把侧栏的子智能体彻底隐藏」→ 侧栏渲染时整类滤掉。
  *
- * 查证下来 DSH 是**会**返回它们的：`sessionController.list()` 对活动会话完全不筛，
- * 只对冷会话要求有 `cwd`；实测两个子智能体会话的 `cwd` 都是有值的。而
- * `mirror.js` 的 `normalizeSummary()` 也把 `origin` / `parentSessionId` 透传了出来。
- * 缺的只是**网页端从来没用过这两个字段** —— 所以子会话长得和普通会话一模一样，
- * 混在列表里认不出来。
+ * 数据层一个字都不用改：DSH 本来就会返回子会话，`mirror.js` 的 `normalizeSummary()`
+ * 也照旧透传 `origin` / `parentSessionId`。改的只是**侧栏渲染**。
  *
- * 这个场景钉住三件事：标记、缩进、排在父会话后面；外加一条"排序绝不能吃掉会话"。
+ * 这个场景钉住四件事：
+ *   ① `origin='subagent'` 与带 `parentSessionId` 的会话都不出现；
+ *   ② 过滤后为空的分组整块丢掉（不留一个只写着 "0" 的分组头）；
+ *   ③ 分组头的会话数与运行圆点都只按**看得见的行**算；
+ *   ④ 剩下的会话照常能点进对话页。
  */
 async function scenarioSubagent() {
-  console.log('\n[场景 J] 子智能体：标记 / 缩进 / 排在父会话后面');
+  console.log('\n[场景 J] 子智能体：在侧栏里彻底不显示');
   buildDom('yes');
 
-  // 服务端按 updatedAt 降序给。子会话比父会话新，所以**天然会排在父会话前面** ——
-  // 这正是要修的情况，靠断言把"排到父后面"钉死。
   const child = { id: 'c1', title: '子任务', running: true, blank: false, agentAvailable: true, updatedAt: NOW - 1000, cwd: 'D:\\proj\\alpha', origin: 'subagent', parentSessionId: 'p1' };
   const other = { id: 'o1', title: '普通会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 3000, cwd: 'D:\\proj\\alpha' };
-  // 父会话不在本组的孤儿子会话：必须照常显示，不能被排序吃掉
+  // 父会话不在本组的孤儿子会话：照样藏（判据只看它自己）
   const orphan = { id: 'c2', title: '孤儿子会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 4000, cwd: 'D:\\proj\\alpha', parentSessionId: 'not-here' };
   const parent = { id: 'p1', title: '父会话', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 5000, cwd: 'D:\\proj\\alpha' };
+  // 整个分组里只有子会话 → 这一块要整块消失
+  const kidOnly = { id: 'c3', title: '另一个子任务', running: false, blank: false, agentAvailable: true, updatedAt: NOW - 6000, cwd: 'D:\\work\\kids', origin: 'subagent' };
 
   const items = [child, other, orphan, parent];
 
   routes = {
     '/api/sessions': () => resp({ items: items, groups: [
-      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: items, updatedAt: NOW - 1000, running: true }
+      { key: 'd:\\proj\\alpha', name: 'alpha', path: 'D:\\proj\\alpha', items: items, updatedAt: NOW - 1000, running: true },
+      { key: 'd:\\work\\kids', name: 'kids', path: 'D:\\work\\kids', items: [kidOnly], updatedAt: NOW - 6000, running: false }
     ] }),
     '/api/questions': () => resp({ items: [] }),
     '/api/models': () => resp({ catalog: { default: null, routableProviders: [], groups: [], failures: [] } })
@@ -1835,29 +1839,31 @@ async function scenarioSubagent() {
   loadApp();
   await tick(); await tick();
 
-  const rows = findAll(registry['list'], 'session');
-  eq('四条会话一条不少（排序没有吃掉任何会话）', rows.length, 4);
+  const list = registry['list'];
+  const rows = findAll(list, 'session');
+  eq('子会话不进列表（4 条里只剩 2 条）', rows.length, 2);
 
   const titles = rows.map(function (r) {
     const t = findAll(r, 'session-title')[0];
     return t ? t.textContent : '';
   });
-  eq('子会话紧跟父会话，其它会话相对顺序不变', titles.join('|'), '普通会话|孤儿子会话|父会话|子任务');
+  eq('留下的是普通会话与父会话', titles.join('|'), '普通会话|父会话');
 
-  eq('子会话带 session-child（缩进 + 引导线）', rows[3]._classes.has('session-child'), true);
-  eq('孤儿子会话也带 session-child', rows[1]._classes.has('session-child'), true);
-  eq('普通会话不带 session-child', rows[0]._classes.has('session-child'), false);
-  eq('父会话不带 session-child', rows[2]._classes.has('session-child'), false);
+  eq('没有任何一条带 session-child（缩进 + 引导线）', findAll(list, 'session-child').length, 0);
+  eq('没有任何「子智能体」标签', findAll(list, 'tag-sub').length, 0);
 
-  eq('子会话有「子智能体」标签', findAll(rows[3], 'tag-sub').length, 1);
-  eq('标签文案', findAll(rows[3], 'tag-sub')[0].textContent, '子智能体');
-  eq('父会话没有子智能体标签', findAll(rows[2], 'tag-sub').length, 0);
-  eq('普通会话没有子智能体标签', findAll(rows[0], 'tag-sub').length, 0);
+  const heads = findAll(list, 'group-head');
+  eq('全是子会话的分组整块消失', heads.length, 1);
+  eq('分组头的会话数只数看得见的行', findAll(list, 'group-count')[0].textContent, '2');
+  eq('分组名只剩 alpha', findAll(list, 'group-name')[0].textContent, 'alpha');
 
-  // 子会话仍然可以点进去（不能因为缩进/标记把交互弄坏）
-  rows[3].dispatch('click');
+  // alpha 里跑着的只有那个被滤掉的子会话 → 圆点不该亮（"亮了却找不到谁在跑"更糟）
+  eq('圆点按看得见的行重算：没有行在跑就不亮', findAll(heads[0], 'dot').length, 0);
+
+  // 剩下的行照常能点进去
+  rows[1].dispatch('click');
   await tick();
-  eq('点子会话能进对话页', registry['view-chat'].hidden, false);
+  eq('点父会话能进对话页', registry['view-chat'].hidden, false);
 }
 
 /* ===================== 场景 K：轮次失败的报错正文 ===================== */

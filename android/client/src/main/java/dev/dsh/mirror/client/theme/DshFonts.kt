@@ -227,14 +227,6 @@ object DshFonts {
     }
 
     /**
-     * 「emoji 兜底到底挑中了谁」—— 字体面板里那行小字用它自证（0.15.7 临时加的，诊断完就删）。
-     *
-     * <p>为什么要它：这条 bug 只在你手机上能看见，而我读不了截图。把 App 实际挑中的文件名
-     * 显示出来，一眼就能分清是「没找到彩色 emoji 字体」还是「找到了但没生效」。
-     */
-    fun emojiFontName(): String? = emojiFontFile()?.file?.name
-
-    /**
      * 把一个字体资源包成平台字体族。
      *
      * <p>{@code wght} 非空时用 {@code Font.Builder.setFontVariationSettings} 取**可变字体的某个字重**：
