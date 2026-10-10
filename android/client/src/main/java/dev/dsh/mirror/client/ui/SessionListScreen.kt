@@ -63,6 +63,7 @@ import dev.dsh.mirror.client.net.SessionGroup
 import dev.dsh.mirror.client.net.SessionRow
 import dev.dsh.mirror.client.net.Sessions
 import dev.dsh.mirror.client.net.SessionsResult
+import dev.dsh.mirror.client.notify.MirrorNotify
 import dev.dsh.mirror.client.prefs.Collapse
 import dev.dsh.mirror.client.theme.LocalDshFonts
 import dev.dsh.mirror.client.theme.Dsh
@@ -120,6 +121,15 @@ fun SessionListScreen(
                 groups = r.groups
                 loadedOnce = true
                 lastAt = System.currentTimeMillis()
+                // 0.15.5：列表里有"在跑 / 等回答"的会话，就把 :core 的监测服务拉起来。
+                //
+                // 原先只有"回到前台"和"进主页那一下"会去 ensure()，而 ensure 是"**先查、查到有才起**"：
+                // 停在主页那一刻往往正好没有会话在跑 → 服务根本没起 → 之后电脑上新开一个会话，
+                // 手机上既不会自动刷新列表、也没有任何监测在跑，于是**怎么点刷新都不出岛**。
+                // 刷新这条路是"用户明确要看最新状态"，顺手把监测拉起来最自然。
+                if (r.groups.any { g -> g.items.any { it.running || it.pendingQuestion } }) {
+                    MirrorNotify.start(app)
+                }
             }
             is SessionsResult.Failed -> error = r.message
             SessionsResult.Expired -> onExpired()

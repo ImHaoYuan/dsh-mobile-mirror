@@ -3,6 +3,7 @@ package dev.dsh.mirror.client.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -155,6 +158,29 @@ fun DshSecondaryButton(text: String, enabled: Boolean = true, onClick: () -> Uni
         colors = ButtonDefaults.outlinedButtonColors(contentColor = Dsh.LabelSecondary),
     ) {
         Text(text, fontSize = 15.sp)
+    }
+}
+
+/**
+ * 次按钮 + 开关（0.15.4）。
+ *
+ * <p>与 [DshSecondaryButton] **同款**：1dp l4 描边、圆角 12、高 44，只是右侧放一个开关。
+ * 原先抽屉里的「详细模式」是一行裸文字 + 开关 —— 看上去不像个控件，和旁边的按钮也不一致。
+ */
+@Composable
+fun DshSecondarySwitch(text: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .clip(RoundedCornerShape(Dsh.RadiusMd))
+            .border(1.dp, Dsh.BorderL4, RoundedCornerShape(Dsh.RadiusMd))
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, modifier = Modifier.weight(1f), fontSize = 15.sp, color = Dsh.LabelSecondary)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

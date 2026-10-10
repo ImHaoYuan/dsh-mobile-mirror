@@ -1,6 +1,12 @@
 package dev.dsh.mirror.client.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -24,7 +30,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,10 +42,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import dev.dsh.mirror.MirrorService
 import dev.dsh.mirror.client.R
 import dev.dsh.mirror.client.net.CreateResult
 import dev.dsh.mirror.client.net.ModelPick
@@ -144,27 +152,60 @@ fun MorePanel(
     val tRepairNote = stringResource(R.string.more_repair_note)
     val tDetail = stringResource(R.string.settings_detail)
     val tDetailNote = stringResource(R.string.settings_detail_note)
+    val tNote = stringResource(R.string.more_notify_test_note)
+    val tNotify = stringResource(R.string.more_notify_test)
 
     DrawerPanel(tTitle, onBack) {
         DshSecondaryButton(tFonts) { onFonts() }
         Spacer(Modifier.height(14.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable { onDetail(!detail) },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(tDetail, fontSize = 14.5f.sp, fontWeight = FontWeight.SemiBold, fontFamily = LocalDshFonts.current.uiBold, color = Dsh.ListFg)
-                Spacer(Modifier.height(2.dp))
-                Text(tDetailNote, fontSize = 12.5f.sp, lineHeight = 20.sp, color = Dsh.ListDim)
-            }
-            Spacer(Modifier.width(12.dp))
-            Switch(checked = detail, onCheckedChange = { onDetail(it) })
-        }
+        NotifyTestButton(tNotify)
+        Spacer(Modifier.height(6.dp))
+        PanelNote(tNote)
+        Spacer(Modifier.height(14.dp))
+        DshSecondarySwitch(tDetail, detail) { onDetail(it) }
+        Spacer(Modifier.height(6.dp))
+        PanelNote(tDetailNote)
         Spacer(Modifier.height(14.dp))
         DshSecondaryButton(tLicenses) { onLicenses() }
         Spacer(Modifier.height(14.dp))
-        PanelNote(tRepairNote)
         DshSecondaryButton(tRepair) { onRepair() }
+        Spacer(Modifier.height(6.dp))
+        PanelNote(tRepairNote)
+    }
+}
+
+/**
+ * 「检验通知权限」按钮（0.15.1 加，0.15.4 改成和其他按钮同款，0.15.5 改名并修文案）。
+ *
+ * <p>点一下：通知权限没给就先要权限，已经给了就直接发一条测试提醒（走「会话提醒」渠道），
+ * 发不出去就**如实**说发不出去 —— 用户报"第二条提醒没出来"时，最后查到是系统里
+ * 把本应用的通知关了，这种事得能当场自证，不该让人猜。
+ *
+ * <p>0.15.4：原先它是"标题 + 说明"两行裸文字，看不出是个按钮。现在说明走 [PanelNote]、
+ * 本体走 [DshSecondaryButton]，与旁边的「字体 / 许可 / 修复」**完全一致**。
+ *
+ * <p>0.15.5 修两处：① 按钮文字要传 {@code more_notify_test}（0.15.4 误传了面板标题
+ * {@code more_title}，于是按钮上显示的是「设置」）；② 说明文字改放到**控件下面**。
+ */
+@Composable
+private fun NotifyTestButton(text: String) {
+    val ctx = LocalContext.current
+    val tOk = stringResource(R.string.more_notify_test_ok)
+    val tDenied = stringResource(R.string.more_notify_test_denied)
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        Toast.makeText(ctx, if (granted) tOk else tDenied, Toast.LENGTH_LONG).show()
+        if (granted) MirrorService.notifyTest(ctx)
+    }
+    DshSecondaryButton(text) {
+        val needPerm = Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        when {
+            needPerm -> ask.launch(Manifest.permission.POST_NOTIFICATIONS)
+            MirrorService.notifyTest(ctx) ->
+                Toast.makeText(ctx, tOk, Toast.LENGTH_LONG).show()
+            else -> Toast.makeText(ctx, tDenied, Toast.LENGTH_LONG).show()
+        }
     }
 }
 

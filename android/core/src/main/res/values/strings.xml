@@ -28,4 +28,7 @@
     <string name="notif_alert_waiting_text">有会话在等你回答</string>
     <string name="notif_alert_done_title">%1$s 已完成</string>
     <string name="notif_alert_done_text">会话已经跑完了</string>
+    <!-- 0.15.1：设置面板里的「检测通知」发的那一条 -->
+    <string name="notif_test_title">检测通知 · 测试</string>
+    <string name="notif_test_text">看到这条说明「会话提醒」渠道是通的 —— 以后有提问、跑完都会用它提醒你。</string>
 </resources>

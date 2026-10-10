@@ -197,4 +197,9 @@
     <string name="home_folder_use">用这个文件夹</string>
     <string name="home_path_bad">要填绝对路径，例如 D:\\VibeCoding\\项目 或 /home/me/project</string>
     <string name="home_send_later">会话页在下一步（M3）实现，这句话先不发出去</string>
+    <!-- 0.15.1：设置面板里的「检测通知」 -->
+    <string name="more_notify_test">检验通知权限</string>
+    <string name="more_notify_test_note">发一条测试提醒，确认通知权限和「会话提醒」渠道是通的</string>
+    <string name="more_notify_test_ok">测试通知已发出，下拉通知栏看一眼</string>
+    <string name="more_notify_test_denied">发不出去：本应用的通知被系统关掉了，去系统设置里打开</string>
 </resources>

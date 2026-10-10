@@ -29,8 +29,11 @@ android {
         //   → **1.1.2 跟随 :core 重建**（0.15/M6）：:core 的前台服务多了「按需模式」（extra
         //     onDemand：没会话空闲 30 秒自停）与第二条「会话提醒」通知。**外壳不传这个 extra**
         //     —— 常驻、START_STICKY、只发原来那一条，行为与 1.1.1 完全一致，同样只是 dex 变了。
-        versionCode = 10
-        versionName = "1.1.2"
+        //   → **1.1.3 跟随 :core 重建**（0.15.1）：:core 多了「运行中进度环 50%」，
+        //     并加了给原生客户端设置面板用的 notifyTest()。**这一版岛的行为确实变了**
+        //     （以前 progress 恒为 100%，现在运行中显示 50%），不再是"只有 dex 变"。
+        versionCode = 11
+        versionName = "1.1.3"
 
         // app_name 刻意**不**写在 strings.xml 里 —— 那里写会和这里的 resValue 冲突
         // （重复资源，aapt2 直接报错）。manifest 的 android:label 引用它。

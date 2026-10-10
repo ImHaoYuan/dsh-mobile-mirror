@@ -270,6 +270,23 @@ class ChatModel(
     }
 
     /**
+     * 回前台**重新同步**一次（0.15.3）。
+     *
+     * <p>为什么需要：后台期间这条流可能丢过帧（0.15.3 之前 64 槽 + trySend 会静默丢弃），
+     * 也可能因为别的原因没跟上。宿主**每次连接都先发一份全量 snapshot**，
+     * 所以"重开一条"就等于用户手动做的"退出会话重进"——把这一步替用户做掉。
+     *
+     * <p>首次进入由界面那边的 {@code LaunchedEffect} 负责连接，这里只管"已经在连、但可能
+     * 落后了"的情形，所以 job 为空时直接返回。
+     */
+    fun resync(scope: CoroutineScope) {
+        if (job == null) return
+        job?.cancel()
+        job = null
+        connect(scope)
+    }
+
+    /**
      * 往上翻一页更早的历史。
      *
      * <p>三条容易踩的坑，都在这儿挡住：

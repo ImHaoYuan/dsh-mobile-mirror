@@ -1013,6 +1013,215 @@ M6 的主体：把 `:core` 里现成的前台服务 / 超级岛接进原生客�
   `dev/dsh/mirror/client/MainActivity` 仍是原名（改了名服务就起不来）。
 - **真机验证是必需的**：R8 的坑全在运行时，构建永远成功。
 
+### 4.28 0.15.1（2026-10-10）：焦点收口 + 岛进度 + 检测通知
+
+用户在 0.15 装包后连着报了几件事，这一版一次做完。
+
+#### 4.28.1 焦点 bug（"点会话输入框，字却进了首页那个看不见的输入框"）
+
+**现象**：点首页输入框 → 点侧栏进一个会话 → 点会话页输入框，**有概率**会话页没有光标，
+而这时敲进去的字跑到了首页那个（已经看不见的）输入框里。**R8 包与 debug 包都有** → 与 R8 无关。
+
+**根因（结构，代码可证）**：
+
+1. 首页 + 抽屉**永远留在组合里**（这是 §4.4 起就定的：返回会话列表时不重拉、滚动位置不丢），
+   会话页只是同一个 `Box` 里的**同级覆盖物** —— 首页输入框一直活着、随时能持有焦点。
+2. `:client` 里**一处 `requestFocus` / `FocusRequester` 都没有**：会话页输入框能不能拿到焦点，
+   完全取决于"点得中不中"。
+3. 两个输入框在屏幕上**几乎同一位置**（都在底部、都是 52dp 圆角条），所以焦点一旦漏交接，
+   用户看到的是"我点了输入框"，实际持有焦点的是底下那个看不见的 —— **没光标 + 字进首页是同一件事**。
+
+另外证实了三处缺口：① 抽屉唯一会 `clearFocus()` 的入口是汉堡按钮，而 `ModalNavigationDrawer`
+没传 `gesturesEnabled`（默认允许**从左缘滑出**）→ 手势路径无 `clearFocus()`；
+② `NewSessionPanel.onCreated` 建完直接进会话、漏了 `clearFocus()`（旁边"从列表进会话"是有的）；
+③ `ChatScreen` 里没有 `LocalFocusManager` → 它的面板盖住输入框时也不收键盘。
+
+**改法（用户选的 B：按结构堵住整类问题）**，5 处，全在 `:client`：
+
+1. `ChatComposer` 挂 `FocusRequester`，进会话 `delay(120)` 后 `requestFocus()`（`runCatching` 包住）；
+2. `LaunchedEffect(drawerState.isOpen)` 收焦点 —— 兜住**手势开抽屉**那条路；
+3. `NewSessionPanel.onCreated` 补 `clearFocus()`；
+4. `ChatScreen` 补 `LocalFocusManager`，面板打开时 `clearFocus()`；
+5. 首页输入框加 `focusProperties { canFocus = focusEnabled }`，
+   `focusEnabled = chat == null && !drawerState.isOpen` —— 被盖住时连"能拿焦点"都关掉。
+   （参数**故意不叫 `canFocus`**：那是 `FocusProperties` 的接收者属性名，同名会变成自己赋给自己。）
+
+**没钉死的部分**：具体是哪一帧、哪个事件造成的漏交接，静态读代码做不到 —— 这类焦点 / 输入法竞态
+要真机时序日志。所以改法是从结构上堵整类问题，而不是"修那一帧"。
+
+#### 4.28.2 岛的进度环：运行中 50%，其余 100%（用户定的）
+
+`Snapshot.progress` **从来没被赋过值**（一直是字段默认的 100），所以环**只会变色**、看不出"在跑"。
+现在 `RUNNING → 50`，`EXPIRED / WAITING / DONE → 100`。`progress` 本来就在状态签名里，
+所以比例变化同颜色变化一样会重发通知。用户对"绿环不变绿"的判断是**岛的参数没法自动刷新** ——
+这一版按他的判断先试（真要还不行，下一步再试"完成时 cancel + 重发换 id 强制重建岛"）。
+
+#### 4.28.3 设置面板加「检测通知」
+
+用户报"第二条提醒通知没出来"，**最后确认是他自己在系统里把本应用的通知关了**（不是代码 bug）。
+既然如此，就该有个当场能自证的地方：抽屉 → 设置（更多）里多一行 **「检测通知」** ——
+权限没给先要权限，给了就直接走 `alert` 渠道发一条测试提醒，**发不出去就如实说发不出去**
+（`:core` 新增 `MirrorService.notifyTest()`，用 `areNotificationsEnabled()` 判定并返回 boolean）。
+
+#### 4.28.4 外壳 1.1.3（这一版岛的行为**确实变了**）
+
+`:core` 改了（进度环 50% + `notifyTest`），所以外壳跟随重出 **1.1.3**。
+与 1.1.2 不同的是：**这一次不是"只有 dex 变"** —— 运行中的岛会显示 50% 的进度环
+（用户要求；两个 App 共用 `:core`，所以外壳一起变）。以前那条"外壳字节变、行为不变"的说法
+**本版不适用**。
+
+#### 4.28.5 emoji（用户新报，**本版未改，先出方案**）
+
+用户说消息里的 ✅ 在手机上显示成**黑色马赛克**。查了字体链：`theme/DshFonts.kt` 的 `chainOf()`
+用 `Typeface.CustomFallbackBuilder`，只 `setSystemFallback("sans-serif")` —— 而 Android 的彩色 emoji
+是**独立的字体族**（emoji），这样拿不到 → 缺字形。
+
+**方案（未实施）**：用 `android.graphics.fonts.SystemFonts.getAvailableFonts()`（API 29+，
+客户端 minSdk 正好是 29）找 `familyName` 里含 `emoji` 的那个族，`addCustomFallback` 到链上
+—— **0 MB、不用下载、不涉许可**；不行再考虑内置 Noto Color Emoji（约 10 MB，且要在开源许可页
+补一条 OFL 声明）。
+
+### 4.29 0.15.2（2026-10-10）：emoji 兜底
+
+用户报：消息里的 ✅ 在手机上显示成**一片黑色马赛克**。
+
+**根因**：`theme/DshFonts.kt` 的 `chainOf()` 用 `Typeface.CustomFallbackBuilder`，而
+`CustomFallbackBuilder` **只会用"自己 addCustomFallback 进来的族"加最后 `setSystemFallback` 指定的
+那一个族名**；Android 的彩色 emoji 是系统里**单独一个族**（`fonts.xml` 里的 `emoji`），
+只给 `"sans-serif"` 是拿不到它的 → 缺字形。
+
+**改法（不往包里塞字体）**：`SystemFonts.getAvailableFonts()`（API 29+，客户端 minSdk 正好是 29）
+里**按文件名**挑出系统那个彩色 emoji 字体（文件名都含 `moji`：`NotoColorEmoji.ttf`、
+`NotoColorEmojiLegacy.ttf`，小米这边是 MIUIEmoji / XiaomiEmoji 一类），
+`addCustomFallback` 挂到链上。**0 MB、不下载、不涉许可**；`runCatching` 包住，
+找不到就返回 null（行为与 0.15.1 一致，不崩、不会连带整条字体链失效）。
+
+**两次编译失败（都是 API 记错，值得记下来）**：
+
+1. 第一版写 `it.familyName` → `Unresolved reference 'familyName'`：
+   `android.graphics.fonts.Font` **没有族名**，只暴露文件 / 字重 / 变体轴 → 改成认文件名。
+2. 改成 `it.file.name` → `Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable
+   receiver of type 'java.io.File?'`：`Font.getFile()` 可空 → 改成 `it.file?.name?.contains(...) == true`。
+
+**只动 `:client`** → **外壳不用重出**（`:core` 没变）。
+
+### 4.30 0.15.3（2026-10-10）：修「后台回来不刷新」—— SSE 帧泵静默丢帧
+
+**用户报的现象**（会话页待着 → 放后台 → 通知弹出 → 回来）：
+
+1. 流式预览一直挂着，**落库那条正文的 Markdown 不出现**；
+2. `apk` 之类的**文件卡没挂在会话最下面**；
+3. 会话页**没有**「正在重连」提示；
+4. **退出会话重进**就全好了；
+5. **只有长消息**才会中招（短消息正常）。
+
+**排查过程与排除项**：
+
+- "流式时没有 Markdown"**是设计**：`ChatScreen.LiveRow` 用的就是纯 `Text`（不是 MarkdownView），
+  落库后才换成渲染过的正文。所以真症状是**落库那条 `assistant/message` 没到**，
+  于是文件卡的挂载点（助手消息结尾 / `turn/end`）也一个都没跑到。
+- 插件侧正常：`projectEvent` 对 `deliverables/presented` 有专门分支（`lib/mirror.js`，
+  空清单整条不下发）、`projectSnapshot` / `encodeFollowFrame` 都会带上它、
+  文本只在 `MAX_TEXT = 100000` 处截断；`/api/page` 与 `/api/follow` 共用同一套投影。
+- 客户端读流侧正常：`Sse` 有 45 秒读超时看门狗（"两个心跳没到就重连"），
+  `Follow.stream` 在 `Dispatchers.IO` 上读。
+
+**根因（`net/Follow.kt`）**：`stream()` 是 `callbackFlow { … trySend(帧) … }`，**没配 `.buffer(…)`**。
+
+- `callbackFlow` = `channelFlow`，默认缓冲**只有 64 个元素**；
+- 而所有投递都走 **`trySend`** —— 非阻塞：**缓冲满了直接返回失败、帧被静默丢掉**；
+- 消费者是本流的 `collect` 方，也就是 `ChatModel.connect` 所在的 **Compose 作用域 = 主线程**；
+- 长消息的**流式预览排版很重**（一个不断变长的 `Text`），主线程一落后 → 64 槽满 →
+  后面那些帧（落库正文 / `deliverables/presented` / `turn/end`）**全被丢掉**；
+- **连接本身是健康的**（socket 没断），所以既不会重连、也没有任何提示 ——
+  这正好解释"等 45~60 秒也不会自己好"：看门狗管的是 socket，没有东西可触发。
+- **只有长消息**中招，只是因为它更容易把主线程拖慢、把 64 槽灌满。
+
+**复现（单测，`src/test/.../net/FramePumpTest.kt`）**：同形状的帧泵 + "消费者先卡 200 毫秒"的 A/B：
+
+| 测试 | 结果 |
+|---|---|
+| `dropsWithDefaultBuffer`（现在 `Follow.stream` 的形状） | ✅ passed —— 发 300 帧，收到的明显少于 300（**丢帧复现**） |
+| `keepsEveryFrameWithUnlimitedBuffer`（`.buffer(Channel.UNLIMITED)`） | ✅ passed —— 同样慢的消费者，**一帧不丢** |
+
+唯一变量就是缓冲区配置 —— 机制被钉死，不是靠猜。
+
+**改法（0.15.3）**：
+
+1. **治本**：`Follow.stream` 加 `.buffer(Channel.UNLIMITED)`。`channelFlow` 会与下游 `buffer`
+   **融合**成同一个通道，所以这里写的容量就是它的容量 —— 无上限之后 `trySend` 不再失败，
+   消费者慢只该导致排队，不该导致丢数据。
+2. **兜底**：`ChatModel.resync()`（丢掉旧连接重开一条，宿主每次连接先发全量 snapshot）
+   + `ChatScreen` 挂 `LifecycleEventEffect(ON_START)` —— 等于**自动替用户做"退出会话重进"**。
+   首次进入仍由原来的 `LaunchedEffect` 负责，`resync()` 在 job 为空时直接返回。
+3. **回归测试**：保留 `FramePumpTest`。
+
+**只动 `:client`** → 外壳不用重出。
+
+### 4.31 0.15.4（2026-10-10）：抽屉里两行「不像按钮」的改成按钮
+
+**用户诉求**：侧栏的「检测通知」看不出是个按钮，要用框框起来、和其他按钮一致；「详细模式」一并改。
+
+**现状**：这两行都是 `Modifier.clickable` 的**裸 `Row`**（「检测通知」= 标题 + 说明两行；
+「详细模式」= 标题 + 说明 + `Switch`），**没有底色也没有描边**；而同一面板里的
+「字体 / 许可 / 修复」都是 `DshSecondaryButton`（`OutlinedButton`：**1dp `Dsh.BorderL4` 描边、
+圆角 `Dsh.RadiusMd`、高 44**）。所以"看不出是按钮"是结构问题，不是颜色问题。
+
+**改法**：
+
+1. **新增 `Components.DshSecondarySwitch(text, checked, onCheckedChange)`** —— 与
+   `DshSecondaryButton` **同款**：同描边、同圆角、同高 44，只是右侧换成 `Switch`，整行可点。
+2. **`MorePanel`**：
+   - 「详细模式」→ `PanelNote(说明)` + `DshSecondarySwitch`；
+   - 「检测通知」→ `PanelNote(说明)` + `DshSecondaryButton`（原 `NotifyTestRow` 改名
+     `NotifyTestButton(text)`，**权限申请与 Toast 逻辑一行没动**）；
+   - 说明文字从行内**上移成 `PanelNote`** —— 这个结构是**照抄同面板「修复」那条**的，
+     所以改完以后整个面板的按钮结构完全一致。
+3. 清掉 `Panels.kt` 里因此不再使用的 `import androidx.compose.material3.Switch`。
+
+**范围**：`:client` 的 `ui/Components.kt` / `ui/Panels.kt` / `build.gradle.kts`（版本号）；
+**`:core` 不动 → 外壳不用重出**。
+
+**诚实说明**：纯 UI 改动，**我没有设备截图能自证**（要跑 adb 得先跟用户说）；这里的一致性
+是"结构上用同一个组件、同一套数值"保证的，**最终观感请用户在抽屉里看一眼**。
+
+### 4.32 0.15.5（2026-10-10）：抽屉文案返工 + 主页刷新后拉起监测（修「点刷新也不出岛」）
+
+**① 抽屉（0.15.4 的 bug）**
+
+0.15.4 把「检测通知」改成 `DshSecondaryButton` 时**传错了参数**：写成
+`NotifyTestButton(tTitle)`，而 `tTitle` 是**面板标题** `more_title` = 「设置」——
+所以按钮上显示的是「设置」，用户报的正是这个。改法：
+
+- 新增 `val tNotify = stringResource(R.string.more_notify_test)`，按钮改用 `tNotify`；
+- `more_notify_test` 由「检测通知」改为「**检验通知权限**」；
+- **说明文字从控件上面挪到控件下面**（0.15.4 套的是「修复」那条"说明在上"的结构，用户要求改）：
+  「检验通知权限」「显示详细工作过程」「重新配对」三条都改成"控件 + 说明"；
+- 面板最终顺序：**字体 → 检验通知权限（+说明）→ 显示详细工作过程（+说明）→ 许可 → 重新配对（+说明）**。
+
+**② 主页点刷新也不出岛（偶发）—— 根因链路**
+
+1. 客户端**只在两个时机**拉起 `:core` 的监测服务：`ON_START`（回前台）与**进入主页那一下**
+   （`MainActivity` 的 `LaunchedEffect(screen)`）。
+2. `MirrorNotify.ensure()` 是"**先查 `/api/sessions`，查到有在跑 / 等回答的才起**"——
+   查到没有就**不起**。
+3. 服务在按需模式下**空闲 30 秒自己停**（`IDLE_STOP_MS`）。
+
+于是：停在主页不动 → 进主页那一次查询往往正好"没会话在跑" → **服务根本没起** →
+之后电脑上新开一个会话，手机上既不会自动刷新列表、也**没有任何监测在跑** → 不会有岛；
+而**刷新这条路只重拉列表，没有任何代码去起服务** → 怎么点刷新都不出岛。
+这也解释了"偶发"：**进主页那一刻恰好有会话在跑，服务就是活的，于是有岛**。
+
+修法：`SessionListScreen` 的 `SessionsResult.Ok` 分支里加一句 —— 列表里只要有
+`running || pendingQuestion` 就 `MirrorNotify.start(app)`（不用再查一次，
+`start` 就是 `startOnDemand`）。点一下刷新，1~2 秒内出岛。
+
+**没做的（用户若要可再提）**：主页在前台时周期查询（能"完全不碰手机也出岛"，但与用户定的
+"没会话就完全停"冲突）；列表自动刷新（用户明确说"不自动刷新就算了"）。
+
+**范围**：`:client` 的 `ui/Panels.kt` / `ui/SessionListScreen.kt` / `res/values/strings.xml` /
+`build.gradle.kts`；**`:core` 不动 → 外壳不用重出**。
+
 ## 5. 里程碑
 
 | 阶段 | 内容 | 状态 |
@@ -1024,9 +1233,9 @@ M6 的主体：把 `:core` 里现成的前台服务 / 超级岛接进原生客�
 | **0.5** | 字体体系（三档 + 内置 JBM / 得意黑 / 思源黑体 + 自定义导入 + 开源许可，方案 §4.6）—— 刻意排在 M3 之前：M3/M4/M5 的排版都建立在它上面，M4 的代码块还要认领等宽档 | ✅ 已完成（2026-10-09，**0.5**） |
 | **0.7 / 0.8** | M3 拆两档（用户选）：**0.7 = 会话页只读**（`/api/follow` 首帧 snapshot 当首屏 + 实时流 + 重连 + 上翻更早）；**0.8 = 发送 / 停止 + 乐观回显 + 首页真发** | 0.7 ✅ / 0.7.1 ✅（图标修正）/ 0.8 ✅（2026-10-09） |
 | **0.6** | 抽屉四级页（新建会话 / 更多 / 字体 / 开源许可 全部搬进抽屉）+ 首页真输入框（含文件夹选择，方案 §4.7） | ✅ 已完成（2026-10-09，**0.6** → 修正 **0.6.1** → 图标/动画 **0.6.2**） |
-| M3 | 会话页（`/api/page` 首屏 + `/api/follow` SSE 三类帧、seq 排序、断线重连、切后台补齐）+ 发送（`requestId` 幂等 + 300ms 节流）/ 停止（两段式确认） | 待做 |
+| M3 | 会话页（`/api/page` 首屏 + `/api/follow` SSE 三类帧、seq 排序、断线重连、切后台补齐）+ 发送（`requestId` 幂等 + 300ms 节流）/ 停止（两段式确认） | ✅ 已完成（2026-10-09，**0.7 / 0.7.1 / 0.8** —— 见上一行拆档） |
 | M4 | Markdown 渲染器（与网页端 `renderMarkdown` 逐条一致）+ 代码块语言名/复制 | ✅ 已完成（2026-10-09，**0.9**，单测 9/9） |
-| M5 | 工作过程折叠 / 提问卡（含 `hold` 认领）/ 模型与模式 / 右侧刻度条 / 浅色主题 | 进行中：**提问卡 + `hold` 认领 ✅（0.11）**、**模型与模式 ✅（0.12 → 修 bug + 长按删除 ✅ 0.12.1）**、**工作过程完整折叠 ✅（0.13）**、**右侧刻度条 → 改形态为「我的话」清单 ✅（0.14）** |
+| M5 | 工作过程折叠 / 提问卡（含 `hold` 认领）/ 模型与模式 / 右侧刻度条 / 浅色主题 | ✅ 已完成（2026-10-10）：**提问卡 + `hold` 认领 ✅（0.11）**、**模型与模式 ✅（0.12 → 修 bug + 长按删除 ✅ 0.12.1）**、**工作过程完整折叠 ✅（0.13）**、**右侧刻度条 → 改形态为「我的话」清单 ✅（0.14）** |
 | M6 | 通知 + 超级岛接入（复用 `:core`）+ release 打包（**要开 R8**）+ 真机验收 | ✅ 已完成（2026-10-10，**0.15**；按需监测 + 第二条提醒通知；R8 后 **22.72 MB**；外壳跟随出 **1.1.2**），真机验收待用户装包 |
 
 ### 5.1 Markdown 的对齐口径
@@ -1623,6 +1832,70 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 - 内置字体在 `client/src/main/res/font/`（**不是 assets**），全靠 `R.font.*` 常量引用 ——
   这是"开资源压缩也安全"的依据；若哪天改成按名字查（`getIdentifier`），必须补 `keep.xml`。
 
+## 7.32 0.15.2 验收证据（emoji 兜底，2026-10-10）
+
+| 项 | 结果 |
+|---|---|
+| `:client:assembleDebug :client:assembleRelease :client:testDebugUnitTest` | `BUILD SUCCESSFUL`（142 actionable tasks；前两次失败见 §4.29 的两条 API 记错） |
+| 客户端单测 | **44 / 44**（AskTest 17 / MarkdownTest 11 / ModelTest 16） |
+| 客户端 **0.15.2**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.2.apk`，**23,830,986 B（22.73 MB）**，versionCode 33，SHA256 `E3653CA782B07F36DA9954F2386A582C71E434BFC0DBC9D2CA3F5CED7C570C93` |
+| 客户端 0.15.2 debug（对照） | 44,801,090 B，SHA256 `967005A09B1646528B0A6A8C98355246A5C5301CE055EEE96398F6790427D2AB` |
+| R8 包自检 | 解包后 `classes.dex` 里能搜到判定字符串 `moji` → 兜底逻辑确实进了 R8 产物（没被裁掉） |
+| 外壳 | **不用重出**（`:core` 未变；1.1.3 仍是当前外壳） |
+| **体积警告（第 5 次）** | 0.15.2 release **与 0.15.1 同为 23,830,986 B**、debug 同为 44,801,090 B —— 体积一模一样，但 SHA256 不同。「体积不能当证据」再次成立，凭证只认哈希 |
+| 真机验收 | ✅ **用户 2026-10-10 确认：符号正常了**（✅ 等 emoji 显示正常） |
+
+## 7.31 0.15.1 验收证据（焦点收口 + 岛进度 + 检测通知，2026-10-10）
+
+| 项 | 结果 |
+|---|---|
+| `:client:compileDebugKotlin` | ✅（中途一次 `Unresolved reference: inputFocus` —— 见 §4.28.1 第 1 条，改对归属后通过） |
+| 干净构建（clean + 5 个 target） | `BUILD SUCCESSFUL`，223 actionable tasks（164 executed / 47 from cache / 12 up-to-date） |
+| 客户端单测 | **44 / 44**（AskTest 17 / MarkdownTest 11 / ModelTest 16；failures 0、errors 0） |
+| 客户端 **0.15.1**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.1.apk`，**23,830,986 B（22.73 MB）**，versionCode 32，SHA256 `DEDFE893A8E163468D3D98CA5D528069BBBF3BD125A4A1641FD1ECE46EE2E940` |
+| 客户端 0.15.1 debug（对照） | 44,801,090 B（42.73 MB），SHA256 `9FFB11BB8CD0A4158232ACB075FC90FC9335445A57A481DDD31DB07460DABD91` |
+| **外壳 1.1.3** | `out/web-shell/dsh-mobile-mirror-1.1.3.apk`，**77,006 B**，versionCode 11，SHA256 `00268755C59D604ED2A791E986F101738E07BC98AEE3CB8CE2780C4C5BEF8B78`（1.1.2 是 76,094 B） |
+| R8 包自检（`aapt2 dump resources`） | `notif_test_title` / `notif_test_text` / `more_notify_test` 等 6 条新字符串都在 resources.arsc 里 |
+| 与上一版的体积差 | 23,830,986 − 23,828,254 = **+2,732 B**（版本号 + 3 条字符串 + 进度赋值 + `notifyTest()` 的净增量）—— 又一次印证"体积不能当证据"，所以哈希才是凭证 |
+| 真机验收（部分） | ✅ **用户 2026-10-10 确认：岛的 50% 方案正确 —— 有了进度变化，颜色就跟着更新了**。这条顺带**排除**了之前那个猜测（"HyperOS 只在岛创建时读颜色、之后不刷"）：只要每次状态变化都重发通知，颜色是会更新的。<br>⏳ 仍待复看：焦点 bug 是否还复现、设置里「检测通知」能否收到 |
+
+## 7.33 0.15.3 验收证据（SSE 帧泵丢帧修复，2026-10-10）
+
+| 项 | 结果 |
+|---|---|
+| 构建 | `BUILD SUCCESSFUL`，142 actionable tasks |
+| 单测 | **46 / 46**（**FramePumpTest 2** / AskTest 17 / MarkdownTest 11 / ModelTest 16；failures 0、errors 0）—— 新增的两条正是丢帧机制本身的 A/B 对照 |
+| 客户端 **0.15.3**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.3.apk`，**23,830,982 B**，versionCode 34，versionName **0.15.3**（`aapt2 dump badging` 已核对），SHA256 `CA4777E95B48712A21EEE9B7EA37E82C9DAB56FB8F2D892475BE24DD75F91EBD` |
+| 客户端 0.15.3 debug（对照） | 44,817,474 B，SHA256 `17452F87DDF31D84BEA1F86A3E6025453176A443F1416C1C8FE14BA8495D31A7` |
+| 与 0.15.2 的体积差 | 23,830,982 − 23,830,986 = **−4 B**（加了缓冲配置与 resync，release 反而小了 4 字节）—— 凭证仍只认哈希 |
+| 外壳 | **不用重出**（`:core` 未变） |
+| 诚实说明 | 这次的改动是**行为**（缓冲容量 / 重连时机），**没有可 grep 的字符串能自证** —— 所以真机复现验证比包内自检更重要 |
+| 真机验收（**已完成**） | ✅ **用户真机确认有效**（2026-10-10）：长消息 → 切后台 → 通知弹出 → 回来，正文 Markdown 与文件卡**立刻就在**，不用退出重进 —— 这条 bug 闭环 |
+
+## 7.34 0.15.4 验收证据（抽屉按钮统一，2026-10-10）
+
+| 项 | 结果 |
+|---|---|
+| 构建 | `BUILD SUCCESSFUL`（改完 import 又重建一次，142 actionable tasks） |
+| 单测 | **46 / 46**（FramePumpTest 2 / AskTest 17 / MarkdownTest 11 / ModelTest 16；failures+errors = 0）—— 本轮没动逻辑，单测是回归确认 |
+| 客户端 **0.15.4**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.4.apk`，**23,830,934 B**，versionCode **35**，versionName **0.15.4**（`aapt2 dump badging` 已核对），SHA256 `FA53CDF504D9205EFB2757E5816120593D78FEBEBF955475D14EBF905B7A9297` |
+| 客户端 0.15.4 debug（对照） | **45,658,618 B**，SHA256 `37044F3AF9D41CFBDF4831A5F8D1761BBE641658F0597061E71760D657896C50` |
+| 体积 / 哈希注意 | 本轮**同一份源码**（仅差一行未使用的 import）连编两次：release 体积**完全相同**（23,830,934 B）但 **SHA256 不同**；debug 体积还差了 **857,528 B**。第 6 次印证「体积不能当证据」，debug 尤其不能当参照 |
+| 外壳 | **不用重出**（`:core` 未变） |
+| 真机验收 | **待用户看一眼**：抽屉里「检测通知」「详细模式」是否和「字体 / 许可 / 修复」长得一样（描边 / 圆角 / 高度），点「检测通知」是否照常发测试通知 |
+
+## 7.35 0.15.5 验收证据（抽屉文案返工 + 主页刷新拉起监测，2026-10-10）
+
+| 项 | 结果 |
+|---|---|
+| 构建 | `BUILD SUCCESSFUL`（142 actionable tasks） |
+| 单测 | **46 / 46**（FramePumpTest 2 / AskTest 17 / MarkdownTest 11 / ModelTest 16；failures+errors = 0） |
+| 客户端 **0.15.5**（R8 release，**交付这个**） | `out/native-client/dsh-mobile-mirror-client-0.15.5.apk`，**23,830,990 B**，versionCode **36**，versionName **0.15.5**（`aapt2 dump badging` 已核对），SHA256 `099C0A3702FEF092564A0EA63704A4551E38874CAD0B2FA530E1C827763F6A0B` |
+| 客户端 0.15.5 debug（对照） | 44,801,094 B，SHA256 `50401EEDB9466F42A466FA46606C92BC8DA2E081CFA62F935EA47876214015FD` |
+| **包内自检（这次能做）** | `aapt2 dump strings` 在 release 包里查到「**检验通知权限**」（String #143）—— 文案改动**可以**包内自证。（同包里另有「检测通知」，那是 `:core` 里**测试通知自身**的标题 `notif_test_title` = 「检测通知 · 测试」，不是抽屉按钮，未改。） |
+| 外壳 | **不用重出**（`:core` 未变） |
+| 真机验收 | **待用户**：① 抽屉里按钮是否显示「检验通知权限」、三条说明是否都在**控件下面**、顺序是否为 字体 → 检验通知权限 → 显示详细工作过程 → 许可 → 重新配对；② **停在主页** → 电脑开新会话 → 点刷新 → 岛是否 1~2 秒内出现（这是本轮主修，偶发 bug 要连试几次） |
+
 ## 8. 待办
 
 - [x] **0.11：提问卡（底部弹出）+ `hold` 认领 + 会话列表实时角标**（2026-10-09，见 §4.19 / §7.22）
@@ -1649,7 +1922,7 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 - [x] **0.14.1：相邻「工作过程」卡合成一张（一轮一卡，`run_code` 步骤一条不少）+ 翻页失败不再自动重发（顶部改成可点的「点这里重试」并显示等了多久，读取超时 30 → 90 秒）+ 「我的话」改名「已发消息」**（2026-10-10，见 §4.26 / §7.29）
 - [ ] **0.14.1 待真机确认**：一轮只留一张「工作过程」卡、卡里步骤一条不少且顺序对、跨轮不误合并；滑到顶能自动加载、失败后不再自动重发、顶部那行能点着重试、加载中的秒数在涨、失败文案里的秒数合理
 - [ ] 0.14.1 已知取舍：跨「文件」卡不合并（一轮里文件卡本来就在末尾）；90 秒仍读不出来就没辙（宿主对 12.5 MB 会话的扫描速度不是客户端能改的）；加载中**没有取消键**（HttpURLConnection 的阻塞读打断不了）
-- [ ] 之后 M6：通知 + 超级岛（复用 `:core`）+ release 打包（要开 R8）+ 真机验收
+- [x] 之后 M6：通知 + 超级岛（复用 `:core`）+ release 打包（要开 R8）→ **0.15 已完成**（见 §4.27 / §7.30）；**只剩真机验收**
 - [x] 0.9：Markdown 渲染与网页端逐条一致（2026-10-09）
 - [ ] 0.9 待真机确认：标题层级与间距、表格横向滚动、代码块头部条与复制键、任务列表勾选框、链接点击、图片占位
 - [ ] 0.9 已知取舍：行内代码无描边/padding；图片只占位；表格按内容宽度（非 width:100%）
@@ -1694,6 +1967,18 @@ M6 主体。方案先给用户拍板（三个决策点：起停规则选 **A（�
 - [ ] 视觉基准：`screenshots/` 已加入 `.gitignore`（用户指定），**README 不再引用这些图**
 - [x] M6 前决定 release 是否开 R8 与资源压缩 → **开了**（0.15，见 §4.27.4：44.80 → 23.83 MB）
 - [x] **0.15（M6）：通知 + 超级岛接进原生客户端 + release 开 R8**（2026-10-10，见 §4.27 / §7.30）
+- [x] **0.15.1：焦点收口（用户选的 B）+ 岛的进度环 50%/100% + 设置面板「检测通知」**（2026-10-10，见 §4.28 / §7.31；`:core` 变了 → 外壳跟随出 **1.1.3**）
+- [ ] 0.15.1 真机验收：焦点 bug 是否还复现（多点几次）、运行中的岛是否显示 50%、设置里「检测通知」能否收到
+- [x] **0.15.2：emoji 兜底**（2026-10-10，见 §4.29 / §7.32）：按文件名从 `SystemFonts` 里挑系统那个彩色 emoji 字体当 custom fallback（**0 MB**）；**待真机验证 ✅ 是否正常显示**
+- [ ] 内置 Noto Color Emoji 的退路（**仅在** 0.15.2 的 `SystemFonts` 方案真机不生效时才考虑：~10 MB + 开源许可页补 OFL）
+- [x] **0.15.3：修「后台回来不刷新 / 文件卡丢失」**（2026-10-10，见 §4.30 / §7.33）：根因是 `Follow.stream` 的 `callbackFlow` 只有 64 槽且用 `trySend` **静默丢帧** → 加 `.buffer(Channel.UNLIMITED)` 治本 + `resync()`/`ON_START` 兜底 + `FramePumpTest` 回归测试
+- [x] **0.15.4：抽屉里「检测通知」「详细模式」改成和其他按钮同款**（2026-10-10，见 §4.31 / §7.34）：新增 `DshSecondarySwitch`，说明文字上移成 `PanelNote`（照抄「修复」那条的结构）
+- [x] **0.15.5**（2026-10-10，见 §4.32 / §7.35）：① 修 0.15.4 把**面板标题**当按钮文案传进去的 bug（按钮显示成了「设置」）→ 改名「检验通知权限」+ 说明文字挪到控件**下面**；② 主页刷新出"有会话在跑 / 等回答"时 `MirrorNotify.start` 拉起监测 —— 修「停在主页 → 电脑开新会话 → 点刷新也不出岛」
+- [ ] 0.15.5 真机验收：抽屉文案与说明位置；**停在主页点刷新是否出岛**（偶发，多试几次）
+- [ ] 0.15.4 真机看一眼（可跳过，被 0.15.5 覆盖）：抽屉两行是否与「字体 / 许可 / 修复」一致
+- [ ] 0.15.3 + 0.15.4 合并验收（同一个包 0.15.4 里都有）：放后台 → 通知 → 回来看正文 Markdown 与文件卡是否**立刻**在（重点测长消息）
+- [ ] 「App 在前台时不弹岛 / 不发第二条提醒」（用户提，**方案已给待做**）：`:core` 静态 `appVisible` + `buildNotification()` 不挂岛参数 + `alert()` 提前 return；`:client` 用 `LifecycleEventEffect` 上报；外壳不调 → 行为不变，但 `:core` 变 → 外壳要出 **1.1.4**
+- [ ] 用户定的「下一轮」：点通知 / 点岛**跳到对应会话**（`PendingIntent` 带 sessionId，要动 `:core`）
 - [ ] **0.15 待真机确认**：装 `dsh-mobile-mirror-client-0.15.apk`（R8 包）后 —— ① 有会话在跑时出现常驻通知与超级岛、跑完 8 秒绿岛后连同通知一起消失（空闲 30 秒自停）；② 提问时"额外弹"的那条通知：响不响、通知栏里有没有题面、答完是否自动撤；③ 跑完那条「已完成」是否留在通知栏；④ Android 13+ 首次进 App 的通知权限弹窗；⑤ **R8 包本身能不能正常跑**（这是这一版最大的未知）
 - [ ] 0.15 已知取舍（用户确认过的）：手机 App 不打开时，电脑上新开的会话在手机上不会有通知与岛（"没会话 = 完全停"的必然结果）；点通知/点岛只打开 App，**不落到对应会话**（用户定的下一轮做）
 - [ ] 通知重复问题：两个 App 并存时都会起前台服务轮询 → 装机只装原生版。0.15 起原生版是**按需**起（有会话在跑才起），所以这条在原生版这边轻了一些，但两个 App 同时开着且都有会话在跑时仍会看到两条常驻通知

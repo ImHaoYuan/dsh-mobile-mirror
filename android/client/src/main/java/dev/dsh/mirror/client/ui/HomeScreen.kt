@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -85,6 +86,14 @@ import dev.dsh.mirror.client.theme.LocalDshFonts
 fun HomeScreen(
     app: Context,
     onOpenDrawer: () -> Unit,
+    /**
+     * 首页输入框**能不能拿焦点**（0.15.1）。
+     *
+     * <p>首页与抽屉永远留在组合里（会话页只是盖在上面的覆盖物），所以被盖住时它的输入框
+     * 还活着、还能持有焦点 —— 用户点会话页输入框、字却进了首页那一个，就是这么来的。
+     * 这里连同 {@code clearFocus()} 一起做成两道保险：盖住时连"能拿焦点"都关掉。
+     */
+    focusEnabled: Boolean,
     /** 模型目录缓存（0.12，进程内一份，三个入口共用）。 */
     hub: ModelHub,
     /** 建会话前先记着的模型 / 模式：状态在 MainActivity —— 首页与抽屉里的「新建会话」共用同一份。 */
@@ -291,6 +300,7 @@ fun HomeScreen(
             onValueChange = { text = it },
             // 点回输入框就收起选择器：键盘与半屏清单同时出现会撑出屏幕
             onFocusChanged = { if (it) panel = ChipPanel.None },
+            focusEnabled = focusEnabled,
             hint = hint,
             canSend = text.isNotBlank(),
             // 0.8 起真发：建会话 → 进会话页 → 发首句。
@@ -345,6 +355,8 @@ private fun HomeComposer(
     value: String,
     onValueChange: (String) -> Unit,
     onFocusChanged: (Boolean) -> Unit,
+    /** 被覆盖层盖住时置 false：避免"看不见的输入框"继续接字（0.15.1）。 */
+    focusEnabled: Boolean,
     hint: String,
     canSend: Boolean,
     onSend: () -> Unit,
@@ -376,7 +388,12 @@ private fun HomeComposer(
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth().onFocusChanged { onFocusChanged(it.isFocused) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // 名字不能叫 canFocus：lambda 里那个 canFocus 是 FocusProperties 的属性，
+                    // 同名会变成自己赋给自己
+                    .focusProperties { canFocus = focusEnabled }
+                    .onFocusChanged { onFocusChanged(it.isFocused) },
                 textStyle = TextStyle(fontSize = 15.sp, color = Dsh.ListFg, fontFamily = body),
                 cursorBrush = SolidColor(Dsh.Brand),
                 singleLine = true,

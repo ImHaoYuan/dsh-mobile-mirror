@@ -6,6 +6,8 @@ import android.widget.Toast
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import dev.dsh.mirror.ServerPrefs
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import dev.dsh.mirror.client.notify.MirrorNotify
 import dev.dsh.mirror.client.net.Download
 import kotlinx.coroutines.Dispatchers
@@ -54,10 +56,13 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -112,6 +117,13 @@ fun ChatScreen(
 
     /** 胶囊行下面开着哪一块面板（0.12.3 起是就地展开的面板，不再是盖住整屏的卡片）。 */
     var panel by remember(target.id) { mutableStateOf(ChipPanel.None) }
+
+    // 焦点（0.15.1）：本页以前**一处焦点管理都没有** —— 而首页输入框永远留在组合里，
+    // 一旦焦点没交接成功，字就进了首页那个看不见的输入框（用户报的 bug）。两道保险：
+    // ① 进会话就自动聚焦本页输入框（进来本来就是要打字）；② 面板盖住输入框时主动收键盘。
+    val focus = LocalFocusManager.current
+    // 面板盖住输入框时收键盘（0.15.1）——本页以前完全没有焦点管理
+    LaunchedEffect(panel) { if (panel != ChipPanel.None) focus.clearFocus() }
     // 收起动画期间 panel 已经是 None，所以单独留一份「最后展开的是哪个」给内容用，
     // 否则内容会先变空、动画只剩一片空白在缩（首页文件夹清单同款）
     var lastPanel by remember(target.id) { mutableStateOf(ChipPanel.Model) }
@@ -174,6 +186,10 @@ fun ChatScreen(
     }
 
     LaunchedEffect(target.id) { model.connect(scope) }
+
+    // 回前台就重新同步一次（0.15.3）：等于是自动替用户做"退出会话重进"。
+    // 后台期间 SSE 可能丢过帧，页面会停在旧状态（流式预览不换、文件卡不挂）。
+    LifecycleEventEffect(Lifecycle.Event.ON_START) { model.resync(scope) }
     LaunchedEffect(target.id) { hub.ensure() }
     LaunchedEffect(model.expired) { if (model.expired) onExpired() }
     // 0.15：一旦有会话在跑，就把 :core 的前台服务拉起来（常驻通知 + 超级岛）。
@@ -524,6 +540,15 @@ private fun StatusStrip(text: String) {
 private fun ChatComposer(model: ChatModel, scope: CoroutineScope) {
     var draft by remember { mutableStateOf("") }
     var confirmStop by remember { mutableStateOf(false) }
+
+    // 进会话就自动聚焦输入框（0.15.1）。本页以前**一处焦点管理都没有**，而首页输入框
+    // 永远留在组合里 —— 焦点漏交接时字会跑进首页那个"看不见的输入框"（用户报的 bug）。
+    // requester 必须挂在本层节点上，所以效果也放这里。
+    val inputFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(120)   // 等一帧：requester 还没挂到节点上时 requestFocus() 会抛
+        runCatching { inputFocus.requestFocus() }
+    }
     val body = LocalDshFonts.current.body
     val hint = stringResource(R.string.chat_hint)
     val tStop = stringResource(R.string.chat_stop)
@@ -558,7 +583,7 @@ private fun ChatComposer(model: ChatModel, scope: CoroutineScope) {
             BasicTextField(
                 value = draft,
                 onValueChange = { draft = it },
-                modifier = Modifier.fillMaxWidth().heightIn(max = 120.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 120.dp).focusRequester(inputFocus),
                 textStyle = TextStyle(fontSize = 15.sp, lineHeight = 22.sp, color = Dsh.ListFg, fontFamily = body),
                 cursorBrush = SolidColor(Dsh.Brand),
                 maxLines = 5,

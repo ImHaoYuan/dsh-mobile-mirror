@@ -132,6 +132,14 @@ final class IslandMonitor {
     private static final long SESSIONS_IDLE_MS = 20000L;
     /** 「已完成」在岛上停留多久。用户定的 8 秒。 */
     private static final long DONE_HOLD_MS = 8000L;
+
+    /**
+     * 「运行中」那一段进度环占多少（0.15.1，用户定的）。
+     *
+     * <p>原来 {@code progress} 从来没被赋过值（一直是字段默认的 100），所以环**只会变色**、
+     * 看不出"正在跑"。用户要的是：运行中 **50%**，报错 / 询问 / 完成一律 **100%**。
+     */
+    private static final int RUNNING_PROGRESS = 50;
     /** 左边显示会话名前几个字符。用户定的 4 个。 */
     private static final int LEFT_CHARS = 4;
     /**
@@ -368,6 +376,7 @@ final class IslandMonitor {
             s.state = State.EXPIRED;
             s.right = ctx.getString(R.string.island_state_expired);
             s.color = RED;
+            s.progress = 100;
         } else if (lastOkAt == 0 || now - lastOkAt > STALE_MS) {
             // 数据不可信（没登录 / 连不上）—— 一律收岛，绝不让岛显示陈旧状态
             s.state = State.IDLE;
@@ -377,6 +386,7 @@ final class IslandMonitor {
             s.left = shortTitle(titleOf(waitingIds.get(0)));
             s.right = ctx.getString(R.string.island_state_waiting);
             s.color = ORANGE;
+            s.progress = 100;
             s.questionText = waitingText;
         } else if (!runningIds.isEmpty()) {
             s.state = State.RUNNING;
@@ -384,12 +394,14 @@ final class IslandMonitor {
             s.left = shortTitle(titleOf(runningIds.get(0)));
             s.right = ctx.getString(R.string.island_state_running);
             s.color = BLUE;
+            s.progress = RUNNING_PROGRESS;
         } else if (System.currentTimeMillis() < doneUntil) {
             s.state = State.DONE;
             s.title = doneTitle;
             s.left = shortTitle(doneTitle);
             s.right = ctx.getString(R.string.island_state_done);
             s.color = GREEN;
+            s.progress = 100;
         } else {
             s.state = State.IDLE;
         }

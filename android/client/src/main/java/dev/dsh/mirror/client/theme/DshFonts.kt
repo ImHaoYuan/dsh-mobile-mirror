@@ -5,6 +5,7 @@ import android.graphics.Typeface
 import android.graphics.fonts.Font as PlatformFont
 import android.graphics.fonts.FontFamily as PlatformFontFamily
 import android.net.Uri
+import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.text.font.Font
@@ -138,14 +139,46 @@ object DshFonts {
         return Chain(n, b)
     }
 
-    /** 拼一条「拉丁打底 + 中文兜底 + 系统兜底」的链，返回底层 Typeface。 */
+    /** 拼一条「拉丁打底 + 中文兜底 + emoji 兜底 + 系统兜底」的链，返回底层 Typeface。 */
     private fun chainOf(families: List<PlatformFontFamily>): Typeface? {
         if (families.isEmpty()) return null
         return runCatching {
             val builder = Typeface.CustomFallbackBuilder(families.first())
             for (i in 1 until families.size) builder.addCustomFallback(families[i])
+            // emoji 必须显式挂上，理由见 emojiFamily()
+            emojiFamily()?.let { builder.addCustomFallback(it) }
             builder.setSystemFallback("sans-serif")
             builder.build()
+        }.getOrNull()
+    }
+
+    /**
+     * 系统里那个**彩色 emoji 字体族**（0.15.2）。
+     *
+     * <p>为什么非挂不可：{@code CustomFallbackBuilder} 只会用「自己 addCustomFallback 进来的族」
+     * 加最后 {@code setSystemFallback} 指定的那一个族名，而 Android 的彩色 emoji 是**单独一个族**
+     * （系统 fonts.xml 里的 {@code emoji}）—— 只给 {@code "sans-serif"} 是**拿不到它的**：
+     * 用户报的「消息里的 ✅ 在手机上是一片黑色马赛克」就是这么来的（缺字形）。
+     *
+     * <p>做法上不往包里塞字体：直接问系统要那个字体文件（{@code SystemFonts.getAvailableFonts()}，
+     * API 29+ —— 客户端 minSdk 正好是 29）。想塞的话 Noto Color Emoji 要 ~10 MB，还得在
+     * 开源许可里补一条 OFL，代价完全不成比例。
+     *
+     * <p>**认文件、不认族名**：{@code android.graphics.fonts.Font} 只暴露文件 / 字重 / 变体轴，
+     * 没有族名（我第一版写了 {@code familyName}，编译期直接 Unresolved）。
+     * 系统自带的彩色 emoji 字体文件名都含 "moji"：{@code NotoColorEmoji.ttf}、
+     * {@code NotoColorEmojiLegacy.ttf}，小米这边是 MIUIEmoji / XiaomiEmoji 一类。
+     *
+     * @return 找到了就返回那个族；**找不到（或系统版本低）返回 null**，此时行为与 0.15.1 一致
+     *         （即：宁可没有 emoji，也不能因为找不到而崩或整个字体链失效）。
+     */
+    private fun emojiFamily(): PlatformFontFamily? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        return runCatching {
+            val f = android.graphics.fonts.SystemFonts.getAvailableFonts()
+                .firstOrNull { it.file?.name?.contains("moji", ignoreCase = true) == true }
+                ?: return@runCatching null
+            PlatformFontFamily.Builder(f).build()
         }.getOrNull()
     }
 

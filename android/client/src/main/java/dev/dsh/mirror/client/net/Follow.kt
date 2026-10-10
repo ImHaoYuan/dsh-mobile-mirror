@@ -3,9 +3,11 @@ package dev.dsh.mirror.client.net
 import android.content.Context
 import dev.dsh.mirror.ServerPrefs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -118,4 +120,16 @@ object Follow {
             worker.cancel()
         }
     }
+        // 0.15.3：**必须**配一个无上限缓冲，否则帧会被静默丢掉。
+        //
+        // callbackFlow（= channelFlow）默认只有 64 个槽，而上面全部投递都走 trySend ——
+        // 非阻塞投递、满了直接返回失败，**帧就这么没了**。消费者是本流的 collect 方
+        // （ChatModel.connect 在 Compose 作用域里 = 主线程）：长消息的流式预览排版一重，
+        // 主线程就落后，64 槽立刻满 → 后面那些帧（落库正文 / deliverables/presented /
+        // turn/end）全被丢掉 → 页面永远停在"流式预览"上：Markdown 不出现、文件卡不挂，
+        // 而连接是健康的所以连"正在重连"都不会显示，只有退出会话重进（新连接 + 全量快照）才好。
+        //
+        // channelFlow 会与下游的 buffer **融合**成同一个通道，所以这里写的容量就是它的容量：
+        // 无上限之后 trySend 不再失败，消费者慢只该导致排队，不该导致丢数据。
+        .buffer(Channel.UNLIMITED)
 }

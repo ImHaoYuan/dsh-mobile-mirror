@@ -248,6 +248,10 @@ private fun HomeWithDrawer(
     // 切抽屉页（设置 / 字体 / 许可 / 新建）同样要收键盘：首页的输入框还在底下活着
     LaunchedEffect(page) { focus.clearFocus() }
 
+    // 抽屉一开就收键盘。汉堡按钮那条走 onOpenDrawer，但**从左缘手势拉出抽屉**不会走它
+    // —— 这条兜住手势路径（0.15.1：用户报的"字进了首页输入框"的入口之一）。
+    LaunchedEffect(drawerState.isOpen) { if (drawerState.isOpen) focus.clearFocus() }
+
     // 抽屉一关就复位到会话列表：下次打开还是列表，不会停在半路的设置页
     LaunchedEffect(drawerState.currentValue) {
         if (drawerState.currentValue == DrawerValue.Closed) {
@@ -341,6 +345,9 @@ private fun HomeWithDrawer(
                                 // 看着像"点了没反应" —— 用户连点了 4 次，17 秒里建了 4 个空白会话。
                                 onCreated = { newId, newCwd ->
                                     page = DrawerPage.Sessions
+                                    // 这条以前漏了 clearFocus()：建完直接进会话，焦点还留在
+                                    // 抽屉里那个"新建会话"输入框上（0.15.1 补）
+                                    focus.clearFocus()
                                     chat = ChatTarget(
                                         id = newId,
                                         // 空标题：会话页顶栏会退回显示目录名，等宿主的标题投影到了再换
@@ -374,6 +381,9 @@ private fun HomeWithDrawer(
                     focus.clearFocus()
                     scope.launch { drawerState.open() }
                 },
+                // 首页被会话页或抽屉盖住时，连"能拿焦点"都关掉（0.15.1）：
+                // 焦点漏交接时字也不会跑进看不见的那个输入框
+                focusEnabled = chat == null && !drawerState.isOpen,
                 // 真发第一步：建会话（宿主 /api/session **不吃 prompt**，所以必须两步）。
                 // 拿到 id 后进会话页，并把这句话当 initialPrompt 交给它 —— 会话页拿到第一帧快照后再发，
                 // 这样乐观回显与宿主的权威回显落在同一个地方。

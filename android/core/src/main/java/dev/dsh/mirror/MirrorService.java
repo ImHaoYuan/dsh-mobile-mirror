@@ -49,6 +49,8 @@ public class MirrorService extends Service {
     static final int NOTIF_ID_SERVICE = 1;
     static final int NOTIF_ID_ASK = 2;
     static final int NOTIF_ID_DONE = 3;
+    /** 「检测通知」发的那条（设置面板点一下就有）。 */
+    static final int NOTIF_ID_TEST = 4;
 
     /**
      * 「按需模式」开关：客户端传 {@code true} = 没会话在跑就自己停；外壳不传 = 常驻。
@@ -274,6 +276,40 @@ public class MirrorService extends Service {
         alert.setDescription(ctx.getString(R.string.notif_channel_alert_desc));
         alert.setShowBadge(true);
         nm.createNotificationChannel(alert);
+    }
+
+    /**
+     * 「检测通知」：给设置面板用 —— 建好渠道后按 {@link #CHANNEL_ALERT} 发一条测试提醒。
+     *
+     * <p>返回**是否真的发出去了**：通知权限被系统关掉时如实返回 false，
+     * 让界面能说"发不出去"，而不是假装成功（0.15.1：用户报"第二条提醒没出来"，
+     * 最后确认是系统里把本应用的通知关了 —— 得给个当场能自证的地方）。
+     */
+    public static boolean notifyTest(Context ctx) {
+        NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+        if (nm == null) return false;
+        ensureChannels(ctx);
+        if (Build.VERSION.SDK_INT >= 24 && !nm.areNotificationsEnabled()) return false;
+
+        Intent open = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+        if (open == null) open = new Intent(Intent.ACTION_MAIN).setPackage(ctx.getPackageName());
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent pi = PendingIntent.getActivity(ctx, 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        Notification.Builder b = new Notification.Builder(ctx, CHANNEL_ALERT)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(ctx.getString(R.string.notif_test_title))
+                .setContentText(ctx.getString(R.string.notif_test_text))
+                .setStyle(new Notification.BigTextStyle().bigText(ctx.getString(R.string.notif_test_text)))
+                .setContentIntent(pi)
+                .setAutoCancel(true);
+        try {
+            nm.notify(NOTIF_ID_TEST, b.build());
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private Notification buildNotification() {

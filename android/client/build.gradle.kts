@@ -48,8 +48,40 @@ android {
         //       （用户选的 A：没会话 = 完全停，连常驻通知一起消失）。
         //       另发第二条「会话提醒」通知：提问带题面、跑完报完成，走 HIGH 渠道会响会弹。
         //       release 同时打开 R8 与资源压缩；外壳行为不变，但 :core 变了 → 另出 1.1.2。
-        versionCode = 31
-        versionName = "0.15"
+        // 修版 0.15.1：① 焦点收口（用户报：点会话输入框、字却进了首页那个看不见的输入框）
+        //       —— 进会话自动聚焦 + 抽屉一开就收焦点（含手势开抽屉）+ 新建会话面板补 clearFocus
+        //       + 会话页面板收键盘 + 首页输入框被盖住时不准拿焦点；
+        //       ② 岛的进度环：运行中 50%，报错/询问/完成 100%（以前恒为 100，只会变色）；
+        //       ③ 设置面板加「检测通知」：当场验证通知权限与「会话提醒」渠道。
+        //       :core 变了 → 外壳跟随出 1.1.3（岛的行为按用户要求变了，不再逐字节等价）。
+        // 修版 0.15.2：emoji 兜底（用户报：消息里的 ✅ 在手机上是一片黑色马赛克）。
+        //       根因：chainOf() 用 CustomFallbackBuilder，只 setSystemFallback("sans-serif")，
+        //       而彩色 emoji 是系统里**单独一个族**，这样拿不到 → 缺字形。
+        //       改法：从 SystemFonts.getAvailableFonts()（API 29+）里挑 familyName 含 "emoji"
+        //       的族当 custom fallback —— 0 MB、不下载、不涉许可；找不到就照旧（不崩）。
+        //       只动 :client → **外壳不用重出**。
+        // 修版 0.15.3：修「后台回来不刷新」（用户报：会话页放后台 → 通知弹出 → 回来，
+        //       ① 落库正文的 Markdown 不出现、② 文件卡不挂、③ 没有「正在重连」、④ 重进才好、
+        //       ⑤ 只有长消息中招）。根因：Follow.stream 是 callbackFlow + trySend 且没配
+        //       .buffer(…)：默认只有 64 槽，**trySend 满了静默丢帧**；消费者是主线程，
+        //       长消息流式排版一重就丢后面那些帧（落库正文 / deliverables/presented / turn/end）。
+        //       改：① Follow 加 .buffer(Channel.UNLIMITED)（channelFlow 会与 buffer 融合）—— 治本；
+        //       ② ChatModel.resync() + ChatScreen ON_START 重新同步 —— 兜底（= 自动"退出重进"）；
+        //       ③ 新增 FramePumpTest 两条 A/B 单测钉住这个机制。
+        //       只动 :client → 外壳不用重出。
+        // 修版 0.15.4：抽屉里「检测通知」原先是一行裸文字、看不出是按钮，「详细模式」也一样。
+        //       两处都改成和其他按钮同款（1dp l4 描边 + 圆角 12 + 高 44）：说明文字挪到按钮上方
+        //       走 PanelNote（与「修复」那条一致），详细模式用新增的 DshSecondarySwitch。
+        //       纯 :client 改动 → 外壳不用重出。
+        // 修版 0.15.5：① 抽屉里那个发测试通知的按钮在 0.15.4 里**误传了面板标题**（more_title =
+        //       「设置」），所以按钮上显示成了「设置」——改成传 more_notify_test 并改名为「检验通知权限」；
+        //       同时把说明文字从控件上面挪到**下面**（检测通知 / 详细模式 / 重新配对 三条）。
+        //       ② 主页刷新出"有会话在跑 / 等回答"时直接 MirrorNotify.start 把 :core 监测服务拉起：
+        //       原先只有回前台与进主页那一下会 ensure（查到有才起），停在主页时服务往往没起，
+        //       电脑上新开会话时点刷新也不出岛。
+        //       纯 :client 改动 → 外壳不用重出。
+        versionCode = 36
+        versionName = "0.15.5"
 
         // app_name 与外壳一样用 resValue 注入，避免与 strings.xml 重复定义。
         resValue("string", "app_name", "DSH镜像原生")
